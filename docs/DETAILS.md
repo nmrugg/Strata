@@ -1366,6 +1366,13 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   up to `max_rounds` calls in a row per answer. A tool that fails or takes longer than `timeout_s` (default 60 s)
   gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`
   (default 20,000 characters) are cut, with a note, before the model reads them. Stop stops a running tool too.
+- A tool's **picture** (a screenshot, a `get_image`-style tool) reaches the model as a picture, through the same
+  vision encoder as one you attach yourself, and the result's text says one came (`[image (image/jpeg, 273,240
+  bytes)]`). Picture blocks are not counted against `max_result_chars` - that cap is for text - but one over 32 MiB
+  is named instead of shown. Without a vision encoder the part becomes `[image omitted: this server has no image
+  encoder]`, and a picture the encoder cannot read becomes the same kind of note with its error; either way the chat
+  goes on. Only the turn that called the tool carries the picture: the web app's history keeps the note, so the
+  model does not see the same picture again on a later turn unless the tool returns it again.
 - Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as
   before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
   gets `strata_mcp` tool events in the stream).

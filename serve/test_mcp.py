@@ -15,8 +15,10 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serve import mcp as mcp_mod  # noqa: E402
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.mcp import McpCancelled, McpHub, hub_from_config  # noqa: E402
@@ -35,6 +37,18 @@ def call_script(name, **params):
     """The model's text for one tool call, as Qwen's template asks for it."""
     body = "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in params.items())
     return f"</think>\n\nLet me check.\n\n<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
+
+
+class FakeVision:
+    """A stand-in encoder (serve/test_server.py's): every picture is three rows in one file it owns."""
+
+    def __init__(self, d):
+        self.dir = Path(d)
+        self.rows = self.dir / "img.sve"
+        self.rows.write_bytes(b"rows")
+
+    def encode(self, source):
+        return self.rows, 3
 
 
 class ScriptedEngine(MockEngine):
@@ -106,6 +120,24 @@ class Client(unittest.TestCase):
         r = self.hub.call("fake__echo", {"text": "hello wörld"})
         self.assertEqual((r["ok"], r["text"], r["server"], r["tool"]), (True, "hello wörld", "fake", "echo"))
         self.assertEqual(self.hub.call("fake__add", {"a": 2, "b": 40})["text"], "42")
+        self.assertEqual(self.hub.call("fake__echo", {"text": "hi"})["images"], [])     # text-only: no pictures
+
+    def test_a_picture_result_is_a_picture(self):
+        """An MCP image block (get_image, a screenshot) comes back as the picture itself, not only as a note."""
+        self.hub.routes()
+        r = self.hub.call("fake__image", {"n": 2})
+        self.assertTrue(r["ok"])
+        named = f"[image (image/png, {len(fake.PNG) * 3 // 4:,} bytes)]"
+        self.assertEqual(r["text"], f"a picture\n{named}\n{named}")            # the text still says one came
+        self.assertEqual([i["source"] for i in r["images"]],
+                         [f"data:image/png;base64,{fake.PNG}"] * 2)            # ...and here it is
+
+    def test_a_picture_over_the_limit_is_only_named(self):
+        """A server must not be able to hand the conversation a picture of any size."""
+        with mock.patch.object(mcp_mod, "MAX_IMAGE_BYTES", 10):
+            text, images = mcp_mod.result_text(fake.image_result(1))
+        self.assertEqual(images, [])
+        self.assertIn("too big for the model, not shown", text)
 
     def test_errors_become_text(self):
         self.hub.routes()
@@ -370,6 +402,37 @@ class ToolLoop(unittest.TestCase):
         self.assertIn({"event": "limit", "max_rounds": 2}, mcp)
         self.assertTrue(mcp[-1].get("skipped"))
         self.assertEqual(self.chunks(text)[-1]["choices"][0]["finish_reason"], "stop")
+
+    def test_a_picture_a_tool_returned_reaches_the_encoder(self):
+        """The get_image case: the picture comes back as an image part of the tool's message, so the vision encoder
+        sees it (the note in the text tells the model a picture came with the result)."""
+        tok = ByteTokenizer()
+        pad = tok.encode("<|image_pad|>", parse_special=True)[0]
+        start = tok.encode("<|vision_start|>", parse_special=True)[0]
+        self.start(call_script("fake__image", n=2), "</think>\n\nI see two pictures.")
+        with tempfile.TemporaryDirectory() as d:
+            self.svc.vision = FakeVision(d)
+            code, text = self.post({"strata_mcp": True})
+            self.assertEqual(code, 200, text)
+            mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+            self.assertEqual(mcp[2]["images"], 2)                              # the web app's block says so
+            first, second = self.engine.prompts[0], self.engine.prompts[1]
+            self.assertEqual((first.count(start), second.count(start)), (0, 2))    # the tool's turn has the pictures
+            self.assertEqual(second.count(pad), 6)                          # two pictures, three rows each
+            body = self.engine.prompt_text(1)                               # specials are dropped there
+            self.assertIn(f"[image (image/png, {len(fake.PNG) * 3 // 4} bytes)]", body)
+
+    def test_a_picture_without_an_encoder_is_a_note(self):
+        """No vision encoder here: the call still works, the model reads the note, and the chat does not break."""
+        tok = ByteTokenizer()
+        start = tok.encode("<|vision_start|>", parse_special=True)[0]
+        self.start(call_script("fake__image", n=1), "</think>\n\nI cannot see it.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        self.assertEqual(self.engine.prompts[1].count(start), 0)               # no image reached the prompt
+        self.assertIn("[image omitted: this server has no image encoder]", self.engine.prompt_text(1))
+        self.assertEqual("".join((c["choices"][0]["delta"].get("content") or "")
+                                 for c in self.chunks(text)), "Let me check.I cannot see it.")
 
     def test_stop_during_a_tool(self):
         """Closing the connection while a slow tool runs stops the tool (notifications/cancelled) and the loop."""

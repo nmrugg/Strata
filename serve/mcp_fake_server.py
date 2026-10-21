@@ -4,9 +4,10 @@
     python serve/mcp_fake_server.py --http 8765      Streamable HTTP on 127.0.0.1:8765/mcp
 
 Tools: echo (returns its text), fail (a tool error, isError), sleep (answers after `seconds`), big (`n` characters),
-die (the process exits mid-call), add (two integers).  tools/list pages two tools at a time (`--page N`), so the
-client's pagination is exercised.  `--crash-at-start` exits before answering anything.  With FAKE_MCP_LOG set, the
-server appends what it saw (calls, cancellations) to that file, one JSON line each.
+die (the process exits mid-call), add (two integers), image (a text block and `n` 1x1 PNG blocks, the get_image case).
+tools/list pages two tools at a time (`--page N`), so the client's pagination is exercised.  `--crash-at-start` exits
+before answering anything.  With FAKE_MCP_LOG set, the server appends what it saw (calls, cancellations) to that file,
+one JSON line each.
 """
 from __future__ import annotations
 
@@ -28,9 +29,18 @@ TOOLS = [
     {"name": "die", "description": "Ends the server.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "add", "description": "Adds two integers.",
      "inputSchema": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}}},
+    {"name": "image", "description": "Returns a picture.",
+     "inputSchema": {"type": "object", "properties": {"n": {"type": "integer"}}}},
 ]
 PAGE = 2
 cancelled: set = set()
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+# a 1x1 PNG; image_result() puts `n` of them after the text block, as an MCP image tool does
+
+
+def image_result(n: int = 1) -> dict:
+    return {"content": [{"type": "text", "text": "a picture"}] +
+                       [{"type": "image", "data": PNG, "mimeType": "image/png"} for _ in range(n)]}
 
 
 def log(event: dict):
@@ -80,6 +90,8 @@ def handle(msg: dict):
             os._exit(3)
         elif name == "add":
             result = text(str(int(args.get("a", 0)) + int(args.get("b", 0))))
+        elif name == "image":
+            result = image_result(int(args.get("n", 1)))
         else:
             return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": f"unknown tool {name}"}}
         return {"jsonrpc": "2.0", "id": rid, "result": result}

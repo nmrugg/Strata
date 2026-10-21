@@ -12,9 +12,11 @@ back to the server that has it.  A server that does not start is left out with o
 it.  A server that stops later (a crash) is started again on its next call.
 
 Tool results reach the model as text: the MCP content blocks joined, capped at `max_result_chars` (a directory tree or
-a web page can be megabytes, far more than a context holds) with a note saying so.  A failed call - the tool's own
-error, a crash, a timeout - becomes a result that starts with "error:", so the model can react instead of the chat
-breaking.
+a web page can be megabytes, far more than a context holds) with a note saying so.  A picture is the exception: an
+`image` block becomes a picture of the tool's message, so one a tool took (a screenshot, `get_image`) reaches the
+vision encoder the way one the user attaches does; the text still says a picture came, and where there is no encoder
+the part turns into a note.  A failed call - the tool's own error, a crash, a timeout - becomes a result that starts
+with "error:", so the model can react instead of the chat breaking.
 """
 from __future__ import annotations
 
@@ -35,6 +37,8 @@ from serve.winjob import contain
 
 PROTOCOL = "2025-06-18"               # the MCP revision Strata asks for; the server's answer is used as given
 DEFAULTS = {"timeout_s": 60.0, "max_result_chars": 20000, "max_rounds": 8, "start_timeout_s": 120.0}
+MAX_IMAGE_BYTES = 32 << 20            # a picture a tool returns, like an image URL (server.py's IMAGE_URL_MAX): one
+                                      # bigger than this is named in the text instead of handed to the encoder
 
 
 class McpError(RuntimeError):
@@ -462,9 +466,15 @@ class McpServer:
 
 
 # ------------------------------------------------------------------------------------------------ the hub
-def result_text(result: dict) -> str:
-    """An MCP tool result as the text the model reads: the text blocks as they are, other blocks named."""
-    parts = []
+def result_text(result: dict) -> tuple[str, list[dict]]:
+    """An MCP tool result -> (the text the model reads, the pictures that go with it).
+
+    The text blocks are joined as they are and everything the model cannot be given is named in its place.  An `image`
+    block is the exception: it also comes back as a part in the form the chat template reads -
+    {"type": "image", "source": "data:<mime>;base64,..."} - the same one a user's attached picture turns into, so the
+    vision encoder sees it; the text still says a picture came.  One over `MAX_IMAGE_BYTES` is only named: a server
+    must not be able to hand the conversation an arbitrary blob.  Audio has no encoder here, so it stays a note."""
+    parts, images = [], []
     for block in result.get("content") or []:
         if not isinstance(block, dict):
             continue
@@ -477,14 +487,22 @@ def result_text(result: dict) -> str:
                                                                   f"({res.get('mimeType', 'binary')}), not shown]")
         elif kind == "resource_link":
             parts.append(f"[resource link: {block.get('name') or ''} {block.get('uri', '')}]".replace("  ", " "))
-        elif kind in ("image", "audio"):
+        elif kind == "image":
+            data = str(block.get("data") or "")
+            mime = str(block.get("mimeType") or "image/png")     # the spec's block always names one; a data: URL must
+            size = len(data) * 3 // 4
+            parts.append(f"[image ({mime}, {size:,} bytes)"
+                         f"{'' if 0 < size <= MAX_IMAGE_BYTES else ': too big for the model, not shown'}]")
+            if 0 < size <= MAX_IMAGE_BYTES:
+                images.append({"type": "image", "source": f"data:{mime};base64,{data}"})
+        elif kind == "audio":
             size = len(block.get("data") or "") * 3 // 4
-            parts.append(f"[{kind} ({block.get('mimeType', '?')}, {size:,} bytes): not shown to the model]")
+            parts.append(f"[audio ({block.get('mimeType', '?')}, {size:,} bytes): not shown to the model]")
         else:
             parts.append(json.dumps(block, ensure_ascii=False))
     if not parts and result.get("structuredContent") is not None:
         parts.append(json.dumps(result["structuredContent"], ensure_ascii=False))
-    return "\n".join(parts)
+    return "\n".join(parts), images
 
 
 def _clean(name: str) -> str:
@@ -549,18 +567,21 @@ class McpHub:
         return [{"type": "function", "function": t} for t in self.template_tools()]
 
     def call(self, name: str, arguments: dict, cancel: threading.Event | None = None) -> dict:
-        """Run one tool -> {"ok", "text" (what the model reads, capped), "chars" (its full length), "truncated",
-        "ms", "server", "tool"}.  Errors become text starting with "error:"; only McpCancelled is raised."""
+        """Run one tool -> {"ok", "text" (what the model reads, capped), "images" (its pictures, as parts of the
+        tool's message; they are not part of the character cap), "chars" (its full length), "truncated", "ms",
+        "server", "tool"}.  Errors become text starting with "error:"; only McpCancelled is raised."""
         t0 = time.monotonic()
         server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
         out = {"server": server.name if server else None, "tool": tool}
+        images: list[dict] = []
         if server is None:
             text, ok = f"error: there is no tool named {name!r}", False
         else:
             try:
                 res = server.call(tool, arguments if isinstance(arguments, dict) else {},
                                   float(self.settings["timeout_s"]), cancel)
-                text, ok = result_text(res), not res.get("isError")
+                text, images = result_text(res)
+                ok = not res.get("isError")
                 if not ok:
                     text = "error: " + (text or "the tool reported an error")
             except McpCancelled:
@@ -572,7 +593,7 @@ class McpHub:
         if cap > 0 and full > cap:
             text = text[:cap] + (f"\n\n[... truncated: the tool returned {full:,} characters; only the first "
                                  f"{cap:,} are shown]")
-        out.update(ok=ok, text=text, chars=full, truncated=cap > 0 and full > cap,
+        out.update(ok=ok, text=text, images=images, chars=full, truncated=cap > 0 and full > cap,
                    ms=int((time.monotonic() - t0) * 1000))
         return out
 

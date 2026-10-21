@@ -4420,17 +4420,24 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             if "r" not in box:
                 break
             r = box["r"]
-            print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters in "
+            pics = f", {len(r['images'])} picture{'s' * (len(r['images']) != 1)}" if r["images"] else ""
+            print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters{pics} in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
-            results.append(r["text"])
-            yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
+            results.append(r)
+            yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")},
+                          **({"images": len(r["images"])} if r["images"] else {})}
         if cancel.is_set() or len(results) < len(calls):
             done = {**done, "finish": "cancel"}
             break
         messages.append({"role": "assistant", "content": "".join(text).strip(),
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
                          "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
-        messages += [{"role": "tool", "content": r} for r in results]
+        # A picture a tool returned rides along in its message as an image part, the shape the template and
+        # prepare() read for a user's attached picture: it goes through the vision encoder, and a picture that cannot
+        # be encoded becomes a note there (_note_unreadable_tool_images).  A text-only result stays one string.
+        messages += [{"role": "tool",
+                      "content": ([{"type": "text", "text": r["text"]}, *r["images"]]
+                                  if r["images"] else r["text"])} for r in results]
         try:
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
         except ClientGone:                                      # #1999: the client left while a picture was prepared
