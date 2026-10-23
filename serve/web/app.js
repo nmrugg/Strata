@@ -539,22 +539,28 @@ function blocks(text) {
     para.push(l);
   }
   flushPara(); flushList();
-  return out.join("");
+  return out;                          // one entry per top-level element; renderBubble inserts them one by one
 }
-function markdown(text) {
-  let html = "", rest = text;
+// the answer as a list of blocks rather than one string: while it streams, only the last block can change, so
+// the page writes the earlier ones once and updates the last one in place (see renderBubble)
+function markdownBlocks(text) {
+  const out = [];
+  let rest = text;
   for (;;) {
     const m = rest.match(/(^|\n)```([^\n`]*)\n/);
-    if (!m) { html += blocks(rest); break; }
-    html += blocks(rest.slice(0, m.index));
+    if (!m) { out.push(...blocks(rest)); break; }
+    out.push(...blocks(rest.slice(0, m.index)));
     rest = rest.slice(m.index + m[0].length);
     const end = rest.match(/(^|\n)```[ \t]*(\n|$)/);
-    if (!end) { html += codeBlock(m[2].trim(), rest); break; }         // still streaming
-    html += codeBlock(m[2].trim(), rest.slice(0, end.index));
+    if (!end) { out.push(codeBlock(m[2].trim(), rest)); break; }         // still streaming
+    out.push(codeBlock(m[2].trim(), rest.slice(0, end.index)));
     rest = rest.slice(end.index + end[0].length);
   }
-  return html;
+  return out;
 }
+// the same thing as one string.  renderBubble() does not use it - it inserts the blocks one by one so the
+// settled ones keep their elements - but it is what anything else that wants the answer as HTML should call
+function markdown(text) { return markdownBlocks(text).join(""); }
 
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, openthink: false, opentools: false, esp: true, mcp: true, mcpthink: false};
@@ -857,38 +863,147 @@ const toolOpen = (t) => t.open === undefined ? settings.opentools === true : !!t
 // what an open tool block holds: the arguments, and the result as the model read it.  Built only while the block
 // is open - a result can be 20,000 characters - so opening one with a click fills it in here (see the toggle
 // listener below), exactly as the thinking body is filled when it opens.
+// the strings a tool block shows, in one place: toolHtml() writes them once when the block is made and
+// toolSync() compares against them afterwards, so the two can never drift apart
+const toolArgs = (t) => (t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2)) || "(being written)";
+const toolPreview = (t) => (t.result != null ? t.result : (t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2))
+                                            .replace(/\s+/g, " ")).slice(0, 200);
+const toolMs = (t) => (t.ms != null && t.state !== "skipped" ? `${fmt(t.ms / 1000, 1)} s` : "");
+const toolResultLabel = (t) => (t.result == null ? "" : `${t.ok ? "Result" : "Error"}` +
+                               `${t.chars ? ` · ${fmt(t.chars)} characters` : ""}${t.truncated ? ", cut for the model" : ""}`);
 function toolBodyHtml(t) {
-  const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
-  let body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
+  let body = `<div class="tool-call__label">Arguments</div>` +
+             `<pre class="tool-call__pre tool-call__pre-args">${esc(toolArgs(t))}</pre>`;
   if (t.result != null) {
-    body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
-            `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
+    body += `<div class="tool-call__label tool-call__label-result">${esc(toolResultLabel(t))}</div>` +
+            `<pre class="tool-call__pre tool-call__pre-result">${esc(t.result)}</pre>`;
   }
   return body;
 }
 function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
-  const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
-  const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   const open = toolOpen(t);
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
-    (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
-    `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
-    `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
+    `<span class="muted small tool-call__server">${esc(t.server || "")}</span>` +
+    `<span class="tool-call__preview muted">${esc(toolPreview(t))}</span>` +
+    `<span class="st-badge ${cls}">${esc(label)}</span>` +
+    `<span class="muted small tool-call__ms">${esc(toolMs(t))}</span>` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${open ? toolBodyHtml(t) : ""}</div></details>`;
 }
-// the answer's text with the tool blocks where the model called them
-function answerHtml(m) {
-  if (!m.tools || !m.tools.length) return markdown(m.text || "");
-  let html = "", pos = 0;
-  m.tools.forEach((t, k) => {
-    const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
-    if (at > pos) html += markdown(m.text.slice(pos, at));
+// the body of an open tool block: built once, then its text is replaced.  Re-parsing a 20,000-character result
+// every frame is what made an open block the most expensive part of a paint.
+function syncToolBody(box, t) {
+  if (!box._built) { box.innerHTML = toolBodyHtml(t); box._built = true; box._hasResult = t.result != null; return; }
+  const args = box.querySelector(".tool-call__pre-args");
+  if (args.textContent !== toolArgs(t)) args.textContent = toolArgs(t);
+  if (t.result == null) return;
+  if (!box._hasResult) {                                  // the result arrived after the block was first opened
+    box.insertAdjacentHTML("beforeend", `<div class="tool-call__label tool-call__label-result"></div>` +
+                                        `<pre class="tool-call__pre tool-call__pre-result"></pre>`);
+    box._hasResult = true;
+  }
+  const lab = box.querySelector(".tool-call__label-result"), pre = box.querySelector(".tool-call__pre-result");
+  if (lab.textContent !== toolResultLabel(t)) lab.textContent = toolResultLabel(t);
+  if (pre.textContent !== t.result) pre.textContent = t.result;
+}
+// a tool block already in the page: update only the text that changed.  Its two sprite icons, its summary and
+// its pre elements stay the same elements, which is the whole point - they were being remade 60 times a second.
+function toolSync(d, t) {
+  const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
+  if (d.dataset.state !== t.state) d.dataset.state = t.state;
+  const open = toolOpen(t);
+  if (d.open !== open) d.open = open;
+  const name = d.querySelector(".tool-call__name");
+  const nm = t.tool || t.name || "tool";
+  if (name.textContent !== nm) name.textContent = nm;
+  if (name.getAttribute("title") !== (t.name || "")) name.setAttribute("title", t.name || "");
+  const server = d.querySelector(".tool-call__server");
+  if (server.textContent !== (t.server || "")) server.textContent = t.server || "";
+  const prev = d.querySelector(".tool-call__preview");
+  const pv = toolPreview(t);
+  if (prev.textContent !== pv) prev.textContent = pv;
+  const badge = d.querySelector(".st-badge");
+  const bc = `st-badge ${cls}`;
+  if (badge.className !== bc) badge.className = bc;
+  if (badge.textContent !== label) badge.textContent = label;
+  const ms = d.querySelector(".tool-call__ms");
+  if (ms.textContent !== toolMs(t)) ms.textContent = toolMs(t);
+  if (open) syncToolBody(d.querySelector(".st-collapse__body"), t);
+}
+// The answer bubble, updated in place.  It is a sequence of parts: a text part (the slice of the answer between
+// two tool calls) and one tool part per call.  A part's place is fixed when it is made - a tool call's position
+// in the text is set at creation and the answer only grows - so parts are only ever added at the end, a paint
+// that changes nothing touches nothing, and a text part whose slice did not grow is not re-rendered at all.
+// The old path assigned bubble.innerHTML = <the whole answer> on every frame, which threw away and re-made
+// every element in it: each tool block's two sprite icons (the flicker), and with a block open a 20,000-character
+// result.  The numbers, before and after, are in LESSONS.md ("The web app's flash is the innerHTML assignment").
+function bubbleParts(m) {
+  const out = [], text = m.text || "";
+  let pos = 0;
+  (m.tools || []).forEach((t, k) => {
+    const at = Math.min(Math.max(t.at || 0, pos), text.length);
+    if (at > pos) out.push({kind: "text", from: pos, to: at});
     pos = at;
-    html += toolHtml(t, k);
+    out.push({kind: "tool", k});
   });
-  return html + markdown(m.text.slice(pos));
+  if (text.length > pos) out.push({kind: "text", from: pos, to: text.length});
+  return out;
+}
+const dropPart = (p) => (p.els || [p.el]).forEach((e) => e && e.remove());
+function addBlocks(bubble, p, blks) {
+  for (const b of blks) { bubble.insertAdjacentHTML("beforeend", b); p.els.push(bubble.lastElementChild); }
+  p.n = blks.length; p.last = blks[blks.length - 1] || "";
+}
+function makePart(bubble, w, m) {
+  const p = {...w, els: [], _to: w.to};
+  if (w.kind === "tool") { bubble.insertAdjacentHTML("beforeend", toolHtml(m.tools[w.k], w.k)); p.el = bubble.lastElementChild; }
+  else addBlocks(bubble, p, markdownBlocks(m.text.slice(w.from, w.to)));
+  return p;
+}
+function updatePart(bubble, m, p, w) {
+  if (p.kind === "tool") { toolSync(p.el, m.tools[p.k]); return; }
+  if (w.to === p._to) return;                              // nothing new written here: leave its elements alone
+  const blks = markdownBlocks(m.text.slice(p.from, w.to));
+  p._to = w.to;
+  if (blks.length === p.n && blks.length) {                // a settled block cannot change: only the last one
+    const last = blks[blks.length - 1];
+    if (last !== p.last) {
+      const old = p.els[p.els.length - 1];
+      old.insertAdjacentHTML("afterend", last);            // one element per block, so this is exact
+      p.els[p.els.length - 1] = old.nextElementSibling;
+      old.remove();
+      p.last = last;
+    }
+    return;
+  }
+  p.els.forEach((e) => e.remove());
+  p.els = [];                                              // the block count changed: rebuild this part (the tail)
+  addBlocks(bubble, p, blks);
+}
+function renderBubble(el, m, streaming) {
+  const bubble = el.querySelector(".st-bubble");
+  if (m.error) {
+    bubble.innerHTML = `<div class="msg-error"></div>`;
+    bubble.firstChild.textContent = m.error;
+    bubble._parts = null; bubble._ph = "";
+    return;
+  }
+  if (!m.text && streaming && !(m.tools && m.tools.length)) {
+    const ph = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+    if (bubble._ph !== ph) { bubble.innerHTML = ph; bubble._ph = ph; bubble._parts = null; }
+    return;
+  }
+  const want = bubbleParts(m), have = bubble._parts || [];
+  let i = 0;
+  while (i < want.length && i < have.length && want[i].kind === have[i].kind &&
+         (want[i].kind === "tool" ? want[i].k === have[i].k : want[i].from === have[i].from)) i++;
+  for (let j = have.length - 1; j >= i; j--) dropPart(have[j]);
+  have.length = i;
+  for (; i < want.length; i++) have.push(makePart(bubble, want[i], m));
+  for (let i = 0; i < have.length; i++) updatePart(bubble, m, have[i], want[i]);
+  bubble._parts = have; bubble._ph = "";
+  if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
 }
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
@@ -922,16 +1037,7 @@ function updateAssistant(el, m, streaming) {
     if (det.open || thinkingNow) body.textContent = m.reasoning;
     else body.dataset.pending = "1";
   }
-  const bubble = el.querySelector(".st-bubble");
-  if (m.error) {
-    bubble.innerHTML = `<div class="msg-error"></div>`;
-    bubble.firstChild.textContent = m.error;
-  } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
-  } else {
-    bubble.innerHTML = answerHtml(m);
-    if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
-  }
+  renderBubble(el, m, streaming);
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
 }
@@ -963,10 +1069,7 @@ $("chat").addEventListener("toggle", (e) => {
     const t = m && m.tools && m.tools[+d.dataset.tool];
     if (!t) return;
     t.open = d.open;                                  // no longer undefined: this block's own choice decides now
-    if (d.open) {                                     // its body is built only while open: a result can be 20,000 characters
-      const box = d.querySelector(".st-collapse__body");
-      if (box) box.innerHTML = toolBodyHtml(t);
-    }
+    if (d.open) syncToolBody(d.querySelector(".st-collapse__body"), t);   // built only while open: a result can be 20,000 characters
     return;
   }
   if (!d.classList.contains("think")) return;

@@ -39,6 +39,17 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_the_answer_is_updated_in_place_and_not_rebuilt(self):
+        # todo #7: the flash was the whole answer being assigned to the bubble on every frame, which threw away
+        # and re-made every element in it - each tool block's two sprite icons above all (todo #8's clicks, and
+        # the flicker the human reported).  A part whose text did not grow must not be touched at all.
+        self.assertNotIn("answerHtml", self.js)                      # the whole-answer string builder is gone
+        self.assertIn("function renderBubble(el, m, streaming)", self.js)
+        self.assertIn("function toolSync(d, t)", self.js)            # a tool block's text, not its elements
+        self.assertIn("function markdownBlocks(text)", self.js)      # blocks, so only the last one can change
+        self.assertIn("if (w.to === p._to) return;", self.js)        # unchanged text: no work, no DOM
+        self.assertIn("old.insertAdjacentHTML(\"afterend\", last);", self.js)   # one element replaced, not the subtree
+
     def test_a_tool_block_opens_on_the_click_and_not_on_a_rebuild(self):
         # todo #8: the answer's bubble is rewritten every animation frame while it streams.  The click handler used
         # to prevent the browser's own opening and ask for a rebuild, so a click whose mousedown and mouseup
@@ -49,7 +60,7 @@ class ChatSidebar(unittest.TestCase):
         toggle = re.search(r'\$\("chat"\)\.addEventListener\("toggle", \(e\) => \{(.*?)\n\}, true\);', self.js, re.S).group(1)
         self.assertIn('classList.contains("tool-call")', toggle)     # the state is taken from what the browser did
         self.assertIn("t.open = d.open", toggle)
-        self.assertIn("toolBodyHtml(t)", toggle)                     # the body an unopened block was built without
+        self.assertIn("syncToolBody(", toggle)                      # the body an unopened block was built without
 
     def test_the_tool_call_blocks_can_be_left_open(self):
         # todo #4: "Keep tool calls open", the same shape as the thinking switch.  A block the user clicked keeps

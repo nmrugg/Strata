@@ -20,6 +20,23 @@ function makeEl() {
     addEventListener(t, f) { (this._l = this._l || {})[t] = f; },
     appendChild(c) { this.children.push(c); c._parent = this; return c; },
     get lastElementChild() { return this.children.length ? this.children[this.children.length - 1] : null; },
+    get nextElementSibling() {
+      const p = this._parent; if (!p) return null;
+      const i = p.children.indexOf(this); return i >= 0 && i + 1 < p.children.length ? p.children[i + 1] : null;
+    },
+    get firstChild() { return this.children.length ? this.children[0] : null; },
+    // the page inserts exactly one element per markdown block, so one call makes one child: faithful where the
+    // code under test depends on element identity and on what sits next to what
+    insertAdjacentHTML(where, html) {
+      const n = makeEl(); n._html = html;
+      if (where === "beforeend") { this._ins = (this._ins || 0) + 1; this.children.push(n); n._parent = this; }
+      else if (where === "afterend") {
+        const p = this._parent; if (!p) throw new Error("insertAdjacentHTML afterend with no parent");
+        p._ins = (p._ins || 0) + 1;
+        p.children.splice(p.children.indexOf(this) + 1, 0, n); n._parent = p;
+      } else throw new Error("insertAdjacentHTML: this page never uses " + where);
+      return n;
+    },
     querySelectorAll(sel) { return this.children.filter((c) => c.className.includes(sel.slice(1))); },
     // the page reads a node it built with innerHTML; the stub hands back a place to write into
     querySelector(sel) {
@@ -44,7 +61,8 @@ function makeEl() {
       return null;
     },
   };
-  Object.defineProperty(el, "innerHTML", {get: () => el._html || "", set: (v) => { el._html = v; el.children = []; }});
+  Object.defineProperty(el, "innerHTML", {get: () => el._html || "",
+    set: (v) => { el._sets = (el._sets || 0) + 1; el._html = v; el.children = []; }});   // _sets counts whole-subtree replaces
   // a real classList has contains(), and the page's toggle listener uses it to tell a thinking block from a tool
   // block; without it every toggle the test fires would throw
   el.classList.contains = (c) => el.className.split(/\s+/).includes(c);
@@ -134,7 +152,8 @@ function run(hooks, stored, seed) {
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
-    "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, answerHtml, toolOpen, get busy() { return busy; }, " +
+    "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
+    "bubbleParts, toolSync, toolOpen, get busy() { return busy; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win};
@@ -478,8 +497,9 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   // 23. "Keep tool calls open" (todo #4): a tool block nobody has clicked follows the switch; once one is
   // clicked, that choice wins in both directions.  The body (arguments, the result as the model read it) is only
   // built while the block is open, so "not open" is checked by its absence, not by the preview line.
-  const isOpen = (m) => too.s.answerHtml(m).includes('data-tool="0" data-state="done" open');
-  const bodyShown = (m) => too.s.answerHtml(m).includes("<pre class=\"tool-call__pre\">the result</pre>");
+  const toolHtmlOf = (m) => too.s.toolHtml(m.tools[0], 0);
+  const isOpen = (m) => toolHtmlOf(m).includes('data-tool="0" data-state="done" open');
+  const bodyShown = (m) => toolHtmlOf(m).includes("<pre class=\"tool-call__pre tool-call__pre-result\">the result</pre>");
   const toolMsg = () => ({role: "assistant", text: "beforeafter", time: Date.now(),
                           tools: [{id: "t1", name: "x", state: "done", at: 6, result: "the result", round: 0}]});
   const too = run({}, {});
@@ -517,17 +537,17 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   const block = makeEl();
   block.tagName = "DETAILS"; block.className = "st-collapse tool-call"; block.dataset.tool = "0"; block.open = false;
   tmsgEl.appendChild(block);
-  assert.ok(!tg.s.answerHtml(tmsg).includes("<pre class=\"tool-call__pre\">the result</pre>"), "built closed, body empty");
+  assert.ok(!tg.s.toolHtml(tmsg.tools[0], 0).includes("tool-call__pre-result"), "built closed, body empty");
   block.open = true;                                    // the browser did this, from the click, before any handler ran
   tg.s.el("chat")._l["toggle"]({target: block});
   assert.strictEqual(tmsg.tools[0].open, true, "the page remembered the choice on the tool");
   assert.ok(block.querySelector(".st-collapse__body")._html.includes("the result"), "and filled in the body");
-  assert.ok(tg.s.answerHtml(tmsg).includes("<pre class=\"tool-call__pre\">the result</pre>"),
-            "a rebuild after the click keeps it open, with its body");
+  assert.ok(tg.s.toolHtml(tmsg.tools[0], 0).includes("<pre class=\"tool-call__pre tool-call__pre-result\">the result</pre>"),
+            "a later paint would render it open, with its body");
   block.open = false;
   tg.s.el("chat")._l["toggle"]({target: block});
   assert.strictEqual(tmsg.tools[0].open, false, "closing it is remembered too");
-  assert.ok(!tg.s.answerHtml(tmsg).includes("<pre class=\"tool-call__pre\">the result</pre>"), "and a rebuild keeps it closed");
+  assert.ok(!tg.s.toolHtml(tmsg.tools[0], 0).includes("tool-call__pre-result"), "and a later paint keeps it closed");
   // the click listener itself must no longer touch tool blocks: it would prevent the opening again
   tg.s.el("chat")._l["click"]({target: block});
   assert.strictEqual(tmsg.tools[0].open, false, "a click through it changes nothing");
@@ -538,6 +558,61 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   tg.s.el("chat")._l["toggle"]({target: thblock});
   assert.strictEqual(thblock.dataset.touched, "1", "the thinking block is marked as the user's own");
   done.push("tool calls: the browser opens them, the page remembers - a click is not lost to a rebuild");
+
+  // 25. the answer is updated in place (todo #7).  What is asserted is element identity and the count of whole-
+  // subtree assignments, because that is what the flicker is: each tool block carries two <use> references into
+  // web/sprite.svg, and re-making them 60 times a second is what shows on screen.
+  const rp = run({}, {});
+  await wait();
+  const rm = {role: "assistant", text: "para one\n\npara two", reasoning: "thinking", time: Date.now(), tools: []};
+  const rel = rp.s.msgEl(rm, 0);
+  const bubble = rel.querySelector(".st-bubble");
+  assert.strictEqual(bubble._sets, undefined, "the bubble was never innerHTML-assigned, only filled with parts");
+  const first = bubble.children[0], last0 = bubble.children[1];
+  assert.strictEqual(bubble.children.length, 2, "the first paint made one element per block");
+  // growing the answer: one element replaced per frame, never the whole bubble
+  const ins0 = bubble._ins || 0;
+  for (let i = 0; i < 10; i++) { rm.text += " more"; rp.s.updateAssistant(rel, rm, true); }
+  assert.strictEqual(bubble._sets, undefined, "growing the answer never re-assigns the bubble's innerHTML");
+  assert.strictEqual(bubble._ins, ins0 + 10, "and it inserts exactly one element per frame: the block that grew");
+  assert.strictEqual(bubble.children[0], first, "the settled block is the same element, not a copy of it");
+  assert.notStrictEqual(bubble.children[1], last0, "the growing block was replaced");
+  // thinking frames with the answer unchanged: nothing in the bubble is touched at all
+  const before = bubble.children.slice(), insA = bubble._ins;
+  for (let i = 0; i < 10; i++) { rm.reasoning += " hmm"; rp.s.updateAssistant(rel, rm, true); }
+  assert.deepStrictEqual(bubble.children, before, "a thinking frame touches no element of the answer");
+  assert.strictEqual(bubble._ins, insA, "and inserts nothing");
+  assert.strictEqual(bubble._sets, undefined, "and assigns no innerHTML");
+  // a tool call arrives: one new element, then its text is updated with the element staying put
+  rm.tools.push({id: "c1", name: "easyCMP__fs_read", server: "easyCMP", tool: "fs_read", state: "writing",
+                 at: rm.text.length, rat: 0});
+  rp.s.updateAssistant(rel, rm, true);
+  const det = bubble.children[bubble.children.length - 1];
+  const nameSpan = det.querySelector(".tool-call__name");
+  assert.strictEqual(bubble.children[0], first, "the answer's blocks survived the tool block arriving");
+  const insB = bubble._ins;
+  for (let i = 0; i < 10; i++) { rm.reasoning += " hmm"; rp.s.updateAssistant(rel, rm, true); }
+  assert.strictEqual(bubble.children[bubble.children.length - 1], det, "the tool block is still the same element");
+  assert.strictEqual(det.querySelector(".tool-call__name"), nameSpan, "and so is the span inside its summary");
+  assert.strictEqual(bubble._ins, insB, "nothing was inserted while the model thought after the call");
+  assert.strictEqual(bubble._sets, undefined, "and the bubble was never rebuilt");
+  Object.assign(rm.tools[0], {state: "running", arguments: {path: "a.txt"}, round: 1, open: true});
+  rp.s.updateAssistant(rel, rm, true);
+  assert.strictEqual(det.querySelector(".st-badge").textContent, "Running", "the badge follows the state");
+  assert.strictEqual(det.querySelector(".tool-call__name"), nameSpan, "with the elements untouched");
+  const box = det.querySelector(".st-collapse__body");
+  assert.ok((box._html || "").includes("a.txt"), "opening it built the body, with the arguments");
+  assert.ok(!(box._html || "").includes("tool-call__pre-result"), "and there was no result to show yet");
+  Object.assign(rm.tools[0], {state: "done", result: "the file", chars: 8, ok: true, ms: 412});
+  rp.s.updateAssistant(rel, rm, true);
+  assert.strictEqual(box.querySelector(".tool-call__pre-result").textContent, "the file",
+                     "the result the model read is written as text, not re-parsed");
+  const boxSets = box._sets, boxIns = box._ins || 0;
+  rp.s.updateAssistant(rel, rm, true);
+  assert.strictEqual(box._sets, boxSets, "the body was built once, not re-parsed on every paint");
+  assert.strictEqual(box._ins || 0, boxIns, "and nothing new was inserted into it");
+  assert.strictEqual(bubble._sets, undefined, "still no whole-bubble assignment in the whole stream");
+  done.push("flash: the answer is updated in place - settled blocks and tool icons keep their identity");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

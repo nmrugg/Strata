@@ -144,7 +144,35 @@ so anything the page schedules - `loadHealth`'s 2 s retry, a toast's dismissal -
 fires in a test. Call the function yourself instead of waiting for the timer, and say so
 in the comment, or the test looks like it covers the retry when it covers nothing.
 
-**Two traps in the web app's render path, both hit on 2026-10-23.** (1) `send()` captures
+**The web app's flash is the `innerHTML` assignment, not the markdown.** Measured on this
+box with the page's own renderer (node, 200 calls each): building the HTML for an 18,000-char
+answer is **26 us**, inside a code fence **10 us**, with an open tool block holding a
+17,600-char result **7 us** - so at the 60 paints/s the page allows (`app.js:1123`
+`if (!frame) frame = requestAnimationFrame(paint)`) string building costs **0.4-1.6 ms per
+second of streaming**. It is not the bottleneck. The cost was `bubble.innerHTML = answerHtml(m)`
+throwing away and re-parsing the whole bubble subtree every frame: 1 element for one
+18,000-char paragraph, 10 with a code fence, 15 with an open tool block, and **2 sprite
+`<use>` instances per tool block** (`i-tool`, `i-chevron`) - which is why the icons, not the
+text, were what the human saw flicker. Fixed by rendering the answer as parts and updating in
+place (`renderBubble`/`toolSync`/`markdownBlocks`). Same fake stream, 21 frames, counting
+whole-subtree assignments on the bubble:
+
+```
+phase                    before    after: assigns / inserts
+thinking                   11            1 / 0
+tool block created          2            0 / 1
+tool result                 1            0 / 0
+writing the answer         10            0 / 10
+end                         1            0 / 0
+total                      25            1 / 11
+```
+
+The one remaining assignment is the `Writing` placeholder painted before any text exists. The
+thinking body was already text-only (`body.textContent`), which is why it never flickered.
+Still not measured: what the browser spends on those assignments - there is no browser on
+this box for it. The visible proof is the human's own eyes.
+
+**Two traps in that same render path, both hit on 2026-10-23.** (1) `send()` captures
 `el = $("chat").lastElementChild` (`app.js:1059`) and `paint()` writes into that captured node
 (`app.js:1081`), so **any `renderChat()` while a request is running detaches the element the
 stream is painting into** and the answer silently stops appearing - do not "re-render the
