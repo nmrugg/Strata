@@ -418,10 +418,16 @@ is section 8, items 34-36.
     The page already knows a tool is running - each tool part carries a state and TOOL_STATE renders it as
     "Running" (serve/web/app.js:870) - so a client-only fix is about ten lines: when `busy` and some tool of
     the streaming message has state "running", show "Waiting - <tool>" in the pill and the card.
-    NOT YET MEASURED: whether `status["busy"]` really stays true while a tool thread runs (it is set at
-    serve/server.py:2981 and cleared in the request's finally at :3000; run_with_mcp keeps yielding
-    heartbeats, serve/server.py:4440-4450). Check it on a slow tool with `GET /metrics` before deciding
-    whether the server needs a state of its own; if it does, `live["state"]` is set at :3445.
+    MEASURED 2026-10-23, so the human's report is right: during a 7 s MCP tool call taken in the middle of
+    a live request, `GET /metrics` answered `live.state=idle` in 3 of 3 samples (1.4 s apart), with
+    `queued=0`. The state is derived from `status["busy"]` at serve/server.py:3415-3423, and that flag is
+    not set for the MCP round (`status.update(busy=True...)` at :2981 belongs to another path, cleared at
+    :3000). So the pill and the Monitor card really do say Idle while a tool runs.
+    Two ways to fix it, and the cheap one is client-side: the page already knows (the tool part carries a
+    state and TOOL_STATE renders "Running", serve/web/app.js:870), so "Waiting - <tool>" can be driven off
+    `busy` plus the streaming message's tool states, about ten lines, no restart. The server-side version
+    means setting a state around the tool round in run_with_mcp (serve/server.py:4389) and live[] at :3423,
+    which also shows up for API clients - worth it only if other clients should see it.
 
 36.  The settings drawer should warn when it is closed with changes not applied. [ui] TRIVIAL
     Three ways to close it and none of them checks: `$("drawer-close").onclick` and `$("scrim").onclick`
