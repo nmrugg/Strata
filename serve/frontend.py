@@ -809,6 +809,9 @@ class OutputParser:
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.abandoned = 0           # a call the model opened and never finished, dropped at the end of the turn
+        self.delivered = False       # the client got something it can use: answer text, or a completed call
+        self.finished_in = ""        # the parser state the turn ended in, and what was held there
+        self.held_at_end = ""
         # fence_think (opt-in, the config's "fence_quoted_thinking"): a closing think tag written on its own line
         # inside a code fence is the model showing the tag, not the end of its thinking.  Off by default: the
         # default path stays exactly as #537 left it.
@@ -1111,7 +1114,20 @@ class OutputParser:
                     best = max(best, n)
         return best
 
+    def note_delivered(self, evs: list[Event]) -> None:
+        """Remember that the client was given something it can use.  Answer text, or a
+        call that actually completed - a call only announced (tool_start) is not, since it may never finish."""
+        for ev in evs:
+            if ev.kind == "tool_call" or (ev.kind == "content" and ev.text):
+                self.delivered = True
+        return
+
     def feed(self, delta: str) -> list[Event]:
+        out = self._feed(delta)
+        self.note_delivered(out)
+        return out
+
+    def _feed(self, delta: str) -> list[Event]:
         self.buf += delta
         out: list[Event] = []
         while True:
@@ -1336,11 +1352,19 @@ class OutputParser:
                     self.state, self.lead = "call", False
 
     def finish(self, reason: str | None = None) -> list[Event]:
+        out = self._finish(reason)
+        self.note_delivered(out)
+        return out
+
+    def _finish(self, reason: str | None = None) -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
         already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `reason` is
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
+        self.finished_in, self.held_at_end = self.state, self.buf[:120]
+        if self.state == "rcall":
+            self.abandoned += 1      # a call opened INSIDE the reasoning and never closed: nothing is delivered
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
         if self.state == "call" and self.bare and function_end(self.buf) >= 0:

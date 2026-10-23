@@ -4278,6 +4278,15 @@ class Service:
             self.totals["abandoned_tool_calls"] = self.totals.get("abandoned_tool_calls", 0) + parser.abandoned
             print(f"[strata] {parser.abandoned} tool call(s) the model opened and never finished: dropped, no call "
                   "ran (the answer ends where the call began)", flush=True)
+        if finish == "stop" and not parser.delivered:
+            # the empty-turn probe: the turn ended on its stop token having given the client neither answer text
+            # nor a completed call.  This is what the chat sees as the engine dying, and until now nothing said
+            # so - the state and the held text below are what tell the two shapes apart.
+            self.totals["empty_turns"] = self.totals.get("empty_turns", 0) + 1
+            print(f"[strata] EMPTY TURN: the reply delivered no answer and no completed call "
+                  f"(state={parser.finished_in or '-'} held={parser.held_at_end!r} "
+                  f"abandoned={parser.abandoned} reasoning_tokens={thinking_n} "
+                  f"rescued={parser.rescued} refused={parser.refused})", flush=True)
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),

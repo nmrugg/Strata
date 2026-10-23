@@ -63,6 +63,23 @@ class Abandoned(unittest.TestCase):
         _, p = parse(self.head() + OPEN + "\n and I will explain the format later.")
         self.assertEqual(p.abandoned, 0)
 
+    def test_a_call_opened_inside_the_thinking_is_counted_too(self):
+        """The shape the log actually shows: the tag opens in the reasoning and never closes.  The parser holds it
+        (state rcall), so no answer and no call reach the client - the turn looks dead."""
+        text = "let me look\n" + OPEN + "\n" + FN + "lookup>\n" + PARAM + "term>\nalp"
+        _, p = parse(text)
+        self.assertEqual(p.abandoned, 1, "the held rcall is counted")
+        self.assertFalse(p.delivered, "and nothing usable was delivered")
+        self.assertEqual(p.finished_in, "rcall")
+
+    def test_delivered_tracks_answer_text_and_completed_calls(self):
+        _, p = parse(self.head() + WHOLE)
+        self.assertTrue(p.delivered, "a completed call is something the client can use")
+        _, p = parse("thinking" + THINK_END + "\n\njust an answer.")
+        self.assertTrue(p.delivered)
+        _, p = parse("only thinking here, no end tag")
+        self.assertFalse(p.delivered, "reasoning alone is not delivery: that is the empty turn")
+
     def test_the_count_is_about_the_model_not_about_the_request(self):
         # the content state recognises a call's structure whether or not the request declared tools, so an opened
         # call that never closes is counted either way: the counter reports what the model did.
