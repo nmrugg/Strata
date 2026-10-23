@@ -113,8 +113,18 @@ main { flex: 1; min-height: 0; display: flex; }
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item:hover .chat-item__title { color: var(--st-ink); }
 .chat-item.on .chat-item__title { color: var(--st-ink); font-weight: var(--st-fw-bold); }
-.chat-item__actions { display: flex; gap: 2px; flex: none; opacity: 0; }          /* the buttons come up on hover or focus */
-.chat-item:hover .chat-item__actions, .chat-item:focus-within .chat-item__actions { opacity: 1; }
+/* the edit and delete buttons take no room until they are shown: they are two 30px buttons, a 2px gap and the
+   row's own 2px gap = 64px, which in the 260px rail (228px of content, 16px of the title's own padding) left the
+   title 148px instead of 212px.  opacity: 0 kept that space reserved, so the name ellipsised early for buttons
+   nobody could see.  display: none gives it back; on hover the row is exactly as it was. */
+.chat-item__actions { display: none; gap: 2px; flex: none; }
+.chat-item:hover .chat-item__actions, .chat-item:focus-within .chat-item__actions { display: flex; }
+/* while a row is being renamed the field owns the whole row: :focus-within would otherwise bring the buttons
+   back and narrow the field by 64px mid-word, moving the caret under the typing */
+.chat-item:has(.chat-item__input) .chat-item__actions { display: none; }
+/* and where there is no hover at all, they are always shown - otherwise they would be unreachable, not just
+   invisible as they were before */
+@media (hover: none) { .chat-item__actions { display: flex; } }
 .chat-item__actions .st-btn--icon { width: 30px; height: 30px; }
 .chat-item__actions .st-btn--icon .st-icon { width: 16px; height: 16px; }
 .chat-item__input { flex: 1; min-width: 0; height: 34px; font-size: var(--st-fs-sm); }

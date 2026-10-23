@@ -39,6 +39,19 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_the_chat_list_name_uses_the_whole_row_until_you_hover(self):
+        # the edit and delete buttons used opacity: 0, which keeps their space reserved: two 30px buttons, a 2px
+        # gap and the row's 2px gap = 64px, so in the 260px rail (228px of content, 16px of the title's padding)
+        # the name had 148px instead of 212px and ellipsised for buttons nobody could see
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        base = re.search(r"\.chat-item__actions \{([^}]*)\}", css).group(1)
+        self.assertIn("display: none", base)
+        self.assertNotIn("opacity", base)
+        self.assertIn(".chat-item:hover .chat-item__actions, .chat-item:focus-within .chat-item__actions { display: flex; }", css)
+        # the field owns the row while renaming, and where there is no hover the buttons are always shown
+        self.assertIn(".chat-item:has(.chat-item__input) .chat-item__actions { display: none; }", css)
+        self.assertIn("@media (hover: none) { .chat-item__actions { display: flex; } }", css)
+
     def test_nothing_pretends_to_be_output(self):
         # todo #34: no "Writing" placeholder, no fake caret, and no answer bubble until there is real output.
         # (The word "Writing" survives in one place on purpose: TOOL_STATE's label for a tool call that is being
