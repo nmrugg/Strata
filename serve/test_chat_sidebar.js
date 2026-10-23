@@ -45,6 +45,9 @@ function makeEl() {
     },
   };
   Object.defineProperty(el, "innerHTML", {get: () => el._html || "", set: (v) => { el._html = v; el.children = []; }});
+  // a real classList has contains(), and the page's toggle listener uses it to tell a thinking block from a tool
+  // block; without it every toggle the test fires would throw
+  el.classList.contains = (c) => el.className.split(/\s+/).includes(c);
   return el;
 }
 
@@ -131,7 +134,9 @@ function run(hooks, stored, seed) {
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
-    "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, get busy() { return busy; }, setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, answerHtml, toolOpen, get busy() { return busy; }, " +
+    "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win};
 }
 
@@ -435,6 +440,104 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   leave.s.setBusy(false);
   assert.strictEqual(holds().length, 0, "ending twice does not throw and does not double-remove");
   done.push("leave warning: on while a request runs, off when it ends, none on an idle page");
+
+  // 22. "Keep thinking open" (todo #3): the setting drives the details' open attribute - for a finished answer,
+  // for one still streaming, and for a chat re-rendered later (renderChat builds each message with msgEl) - and
+  // a block the user opened or closed themselves is still left alone.
+  const th = run({}, {});
+  await wait();
+  const thinkMsg = (m) => th.s.msgEl(m, 0);      // msgEl renders an assistant message exactly as renderChat does
+  const detOf = (el) => el.querySelector("details.think");
+  assert.strictEqual(th.s.settings.openthink, false, "off is the default");
+  let done1 = thinkMsg({role: "assistant", text: "the answer", reasoning: "why it answered", time: Date.now()});
+  assert.notStrictEqual(detOf(done1).open, true, "off: the thinking of a finished answer stays closed");
+  th.s.setSettings({openthink: true});
+  done1 = thinkMsg({role: "assistant", text: "the answer", reasoning: "why it answered", time: Date.now()});
+  assert.strictEqual(detOf(done1).open, true, "on: it is open, answer already written");
+  assert.strictEqual(done1.querySelector(".thinking").textContent, "why it answered", "and its text is filled in");
+  const live = {role: "assistant", text: "", reasoning: "still going", time: Date.now()};
+  const liveEl = th.s.msgEl(live, 0);
+  th.s.updateAssistant(liveEl, live, true);
+  assert.strictEqual(detOf(liveEl).open, true, "on: open while it streams too");
+  detOf(liveEl).dataset.touched = "1";                     // the user clicked the block itself
+  detOf(liveEl).open = false;
+  th.s.updateAssistant(liveEl, live, true);
+  assert.strictEqual(detOf(liveEl).open, false, "the page does not fight a click the user made");
+  // with the switch off, the two existing rules are untouched: "Show thinking" opens it while it streams and
+  // closes it when the answer starts
+  const showOff = run({}, {});
+  await wait();
+  const showMsg = {role: "assistant", text: "", reasoning: "still going", time: Date.now()};
+  const showEl = showOff.s.msgEl(showMsg, 0);
+  showOff.s.updateAssistant(showEl, showMsg, true);
+  assert.strictEqual(detOf(showEl).open, true, "show: true opens it while it streams, as before");
+  showOff.s.updateAssistant(showEl, {...showMsg, text: "the answer"}, false);
+  assert.strictEqual(detOf(showEl).open, false, "and closes it when the answer starts, as before");
+  done.push("thinking: 'keep thinking open' drives the open attribute; off by default; a user click wins");
+
+  // 23. "Keep tool calls open" (todo #4): a tool block nobody has clicked follows the switch; once one is
+  // clicked, that choice wins in both directions.  The body (arguments, the result as the model read it) is only
+  // built while the block is open, so "not open" is checked by its absence, not by the preview line.
+  const isOpen = (m) => too.s.answerHtml(m).includes('data-tool="0" data-state="done" open');
+  const bodyShown = (m) => too.s.answerHtml(m).includes("<pre class=\"tool-call__pre\">the result</pre>");
+  const toolMsg = () => ({role: "assistant", text: "beforeafter", time: Date.now(),
+                          tools: [{id: "t1", name: "x", state: "done", at: 6, result: "the result", round: 0}]});
+  const too = run({}, {});
+  await wait();
+  assert.strictEqual(too.s.settings.opentools, false, "off is the default");
+  let tm = toolMsg();
+  assert.ok(!isOpen(tm), "off: the block is closed");
+  assert.ok(!bodyShown(tm), "and its body is not built");
+  too.s.setSettings({opentools: true});
+  tm = toolMsg();
+  assert.ok(isOpen(tm), "on: nobody has clicked it, so it is open");
+  assert.ok(bodyShown(tm), "and the result the model read is shown");
+  tm.tools[0].open = !too.s.toolOpen(tm.tools[0]);          // what a click records now (see 24)
+  assert.ok(!isOpen(tm), "a click closes it, switch aside");
+  tm.tools[0].open = !too.s.toolOpen(tm.tools[0]);
+  assert.ok(isOpen(tm), "and the next click opens it again");
+  const tooOff = run({}, {});
+  await wait();
+  const tmOff = toolMsg();
+  tmOff.tools[0].open = !tooOff.s.toolOpen(tmOff.tools[0]);
+  assert.ok(isOpen(tmOff), "off: a click still opens it, as before");
+  done.push("tool calls: 'keep tool calls open' opens an untouched block; after a click the click decides");
+
+  // 24. opening and closing a tool block while the engine writes (todo #8).  The answer's bubble is rewritten
+  // every frame, so a click handler that prevented the browser's own opening and asked for a rebuild lost the
+  // click whenever the node was replaced between mousedown and mouseup.  Now the browser opens the block and the
+  // page only remembers the state and fills in the body the block was built without.
+  const tg = run({}, {});
+  await wait();
+  const tmsg = {role: "assistant", text: "beforeafter", time: Date.now(),
+                tools: [{id: "t1", name: "x", state: "done", at: 6, result: "the result", round: 0}]};
+  tg.s.messages.push(tmsg);
+  const tmsgEl = tg.s.msgEl(tmsg, 0);
+  // the stub does not parse innerHTML, so the test builds the block the page would have made for it
+  const block = makeEl();
+  block.tagName = "DETAILS"; block.className = "st-collapse tool-call"; block.dataset.tool = "0"; block.open = false;
+  tmsgEl.appendChild(block);
+  assert.ok(!tg.s.answerHtml(tmsg).includes("<pre class=\"tool-call__pre\">the result</pre>"), "built closed, body empty");
+  block.open = true;                                    // the browser did this, from the click, before any handler ran
+  tg.s.el("chat")._l["toggle"]({target: block});
+  assert.strictEqual(tmsg.tools[0].open, true, "the page remembered the choice on the tool");
+  assert.ok(block.querySelector(".st-collapse__body")._html.includes("the result"), "and filled in the body");
+  assert.ok(tg.s.answerHtml(tmsg).includes("<pre class=\"tool-call__pre\">the result</pre>"),
+            "a rebuild after the click keeps it open, with its body");
+  block.open = false;
+  tg.s.el("chat")._l["toggle"]({target: block});
+  assert.strictEqual(tmsg.tools[0].open, false, "closing it is remembered too");
+  assert.ok(!tg.s.answerHtml(tmsg).includes("<pre class=\"tool-call__pre\">the result</pre>"), "and a rebuild keeps it closed");
+  // the click listener itself must no longer touch tool blocks: it would prevent the opening again
+  tg.s.el("chat")._l["click"]({target: block});
+  assert.strictEqual(tmsg.tools[0].open, false, "a click through it changes nothing");
+  // a thinking block still works the same way through the same listener
+  const thblock = makeEl();
+  thblock.tagName = "DETAILS"; thblock.className = "st-collapse think"; thblock.open = true;
+  tmsgEl.appendChild(thblock);
+  tg.s.el("chat")._l["toggle"]({target: thblock});
+  assert.strictEqual(thblock.dataset.touched, "1", "the thinking block is marked as the user's own");
+  done.push("tool calls: the browser opens them, the page remembers - a click is not lost to a rebuild");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

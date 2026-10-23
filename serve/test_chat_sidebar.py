@@ -39,6 +39,36 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_a_tool_block_opens_on_the_click_and_not_on_a_rebuild(self):
+        # todo #8: the answer's bubble is rewritten every animation frame while it streams.  The click handler used
+        # to prevent the browser's own opening and ask for a rebuild, so a click whose mousedown and mouseup
+        # straddled a rebuild landed on a node that was gone and did nothing.
+        click = re.search(r'\$\("chat"\)\.addEventListener\("click", \(e\) => \{(.*?)\n\}\);', self.js, re.S).group(1)
+        self.assertNotIn("preventDefault", click)                    # nothing stands between the click and the details
+        self.assertNotIn("tool-call", click)                         # and the tool blocks are not its business
+        toggle = re.search(r'\$\("chat"\)\.addEventListener\("toggle", \(e\) => \{(.*?)\n\}, true\);', self.js, re.S).group(1)
+        self.assertIn('classList.contains("tool-call")', toggle)     # the state is taken from what the browser did
+        self.assertIn("t.open = d.open", toggle)
+        self.assertIn("toolBodyHtml(t)", toggle)                     # the body an unopened block was built without
+
+    def test_the_tool_call_blocks_can_be_left_open(self):
+        # todo #4: "Keep tool calls open", the same shape as the thinking switch.  A block the user clicked keeps
+        # their choice (t.open is no longer undefined), so the switch only answers "nobody has clicked this one".
+        self.assertIn('id="s-opentools"', self.html)
+        self.assertIn('"s-opentools"', self.js)
+        self.assertIn("opentools: false", self.js)                        # off by default
+        self.assertIn("t.open === undefined ? settings.opentools === true", self.js)
+        self.assertIn('open ? toolBodyHtml(t) : ""', self.js)       # the body exists only while the block is open
+
+    def test_the_thinking_block_can_be_left_open(self):
+        # todo #3: "Keep thinking open" - a settings flag that drives the details element's open attribute
+        self.assertIn('id="s-openthink"', self.html)
+        self.assertIn('"s-openthink"', self.js)
+        self.assertIn("openthink: false", self.js)                          # off by default
+        upd = self.body("updateAssistant")
+        self.assertIn("settings.openthink && !det.dataset.touched", upd)     # a click the user made still wins
+        self.assertIn("!settings.openthink", upd)                            # off: it closes when the answer starts
+
     def test_it_is_opt_in_and_off_is_the_page_from_the_last_release(self):
         self.assertIn('store.get("history", false)', self.js)             # off by default
         self.assertIn("if (!historyOn) { store.set(\"chat\", cleanMessages(messages)); return; }", self.js)

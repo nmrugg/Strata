@@ -144,6 +144,18 @@ so anything the page schedules - `loadHealth`'s 2 s retry, a toast's dismissal -
 fires in a test. Call the function yourself instead of waiting for the timer, and say so
 in the comment, or the test looks like it covers the retry when it covers nothing.
 
+**Two traps in the web app's render path, both hit on 2026-10-23.** (1) `send()` captures
+`el = $("chat").lastElementChild` (`app.js:1059`) and `paint()` writes into that captured node
+(`app.js:1081`), so **any `renderChat()` while a request is running detaches the element the
+stream is painting into** and the answer silently stops appearing - do not "re-render the
+chat" when a setting changes. (2) A tool block opened by a click handler that called
+`preventDefault()` and then asked for a rebuild lost most of its clicks, because the rebuild
+replaces the node between mousedown and mouseup and no `click` fires (`todo` #8; now the
+browser does the toggling and the `toggle` listener only records `t.open = d.open`). Related:
+in `updateAssistant` the open/close rules must run **before** the thinking body is filled, or
+an auto-opened block renders open and empty - the `toggle` listener skips the fill for an open
+we asked for ourselves (`det._auto`).
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right

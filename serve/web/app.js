@@ -557,7 +557,7 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, mcpthink: false};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, openthink: false, opentools: false, esp: true, mcp: true, mcpthink: false};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
@@ -851,24 +851,32 @@ function msgEl(m, i) {
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
 const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
                     error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
+// A tool block's open state lives on the tool (the answer is rebuilt while it streams).  Until the user clicks
+// one, t.open is undefined and the "Keep tool calls open" switch decides; after a click their choice decides.
+const toolOpen = (t) => t.open === undefined ? settings.opentools === true : !!t.open;
+// what an open tool block holds: the arguments, and the result as the model read it.  Built only while the block
+// is open - a result can be 20,000 characters - so opening one with a click fills it in here (see the toggle
+// listener below), exactly as the thinking body is filled when it opens.
+function toolBodyHtml(t) {
+  const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
+  let body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
+  if (t.result != null) {
+    body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
+            `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
+  }
+  return body;
+}
 function toolHtml(t, k) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
-  let body = "";
-  if (t.open) {
-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
-    if (t.result != null) {
-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
-              `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
-    }
-  }
-  return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
+  const open = toolOpen(t);
+  return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
     (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
     `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
-    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
+    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${open ? toolBodyHtml(t) : ""}</div></details>`;
 }
 // the answer's text with the tool blocks where the model called them
 function answerHtml(m) {
@@ -902,12 +910,17 @@ function updateAssistant(el, m, streaming) {
     const thinkingNow = streaming && !m.text;
     el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
       m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
+    // the open state first, then the body: deciding after filling leaves an auto-opened block open and blank,
+    // because the toggle listener skips the fill for an open we asked for ourselves (it sees det._auto).
+    // open while it streams (if wanted), closed once the answer starts - unless the user toggled it themselves.
+    // "Keep thinking open" (settings.openthink) opens it always: while it streams, after the answer starts, and
+    // in a chat looked at later.  With that switch off these three lines do exactly what the two before did.
+    if (settings.openthink && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
+    else if (thinkingNow && settings.show && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
+    if (!thinkingNow && det.open && !det.dataset.touched && !settings.openthink) { det._auto = true; det.open = false; }
     const body = el.querySelector(".thinking");
     if (det.open || thinkingNow) body.textContent = m.reasoning;
     else body.dataset.pending = "1";
-    // open while it streams (if wanted), closed once the answer starts - unless the user toggled it themselves
-    if (thinkingNow && settings.show && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
-    if (!thinkingNow && det.open && !det.dataset.touched) { det._auto = true; det.open = false; }
   }
   const bubble = el.querySelector(".st-bubble");
   if (m.error) {
@@ -938,19 +951,25 @@ $("chat").addEventListener("click", (e) => {
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
-  // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
-  const sum = e.target.closest(".tool-call > summary");
-  if (sum) {
-    e.preventDefault();
-    const el = sum.closest(".st-msg"), m = messages[+el.dataset.i], t = m && m.tools && m.tools[+sum.parentElement.dataset.tool];
-    if (!t) return;
-    t.open = !t.open;
-    updateAssistant(el, m, !!busy && busy.msg === m);
-  }
+  // tool blocks are not opened here: a click handler that prevented the default and asked for a rebuild lost the
+  // click whenever the rebuild replaced the node between mousedown and mouseup, which is most of the time while
+  // the answer streams.  The browser opens them; the toggle listener below remembers it.
 });
 $("chat").addEventListener("toggle", (e) => {
   const d = e.target;
-  if (d.tagName !== "DETAILS" || !d.classList.contains("think")) return;
+  if (d.tagName !== "DETAILS") return;
+  if (d.classList.contains("tool-call")) {
+    const el = d.closest(".st-msg"), m = messages[+el.dataset.i];
+    const t = m && m.tools && m.tools[+d.dataset.tool];
+    if (!t) return;
+    t.open = d.open;                                  // no longer undefined: this block's own choice decides now
+    if (d.open) {                                     // its body is built only while open: a result can be 20,000 characters
+      const box = d.querySelector(".st-collapse__body");
+      if (box) box.innerHTML = toolBodyHtml(t);
+    }
+    return;
+  }
+  if (!d.classList.contains("think")) return;
   if (d._auto) { d._auto = false; return; }          // our own open/close, not the user's
   d.dataset.touched = "1";
   const body = d.querySelector(".thinking");
@@ -1258,6 +1277,8 @@ function loadDrawer(s = settings) {
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
   $("s-show").setAttribute("aria-checked", String(!!s.show));
+  $("s-openthink").setAttribute("aria-checked", String(s.openthink === true));
+  $("s-opentools").setAttribute("aria-checked", String(s.opentools === true));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
@@ -1310,6 +1331,8 @@ function outputs() {
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
+$("s-openthink").onclick = () => $("s-openthink").setAttribute("aria-checked", String($("s-openthink").getAttribute("aria-checked") !== "true"));
+$("s-opentools").onclick = () => $("s-opentools").setAttribute("aria-checked", String($("s-opentools").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
 // #2100: flipping this changes how a tool turn is rebuilt, so the next request in every chat that used tools stops
@@ -1329,6 +1352,8 @@ $("s-apply").onclick = async () => {
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               show: $("s-show").getAttribute("aria-checked") === "true",
+              openthink: $("s-openthink").getAttribute("aria-checked") === "true",
+              opentools: $("s-opentools").getAttribute("aria-checked") === "true",
               esp: $("s-esp").getAttribute("aria-checked") === "true",
               mcp: $("s-mcp").getAttribute("aria-checked") === "true",
               mcpthink: $("s-mcpthink").getAttribute("aria-checked") === "true"};
