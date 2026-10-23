@@ -3636,8 +3636,16 @@ class ReasoningCloseRetryHeldCall(unittest.TestCase):
         self.assertFalse(c["message"].get("content"))
         self.assertFalse(c["message"].get("tool_calls"))       # the held call is never delivered: the death
 
-    def test_on_it_closes_the_thinking_and_answers(self):
+    def test_plain_true_does_not_reach_into_a_held_call(self):
+        """true is exactly what it always was: it rescues thinking that never closed, not a call that never closed."""
         self.svc.reasoning_close_retry = True
+        c = self.chat()
+        self.assertEqual(len(self.engine.prompts), 1, "no retry: the rescue does not cover this state")
+        self.assertFalse(c["message"].get("content"))
+
+    def test_calls_closes_the_thinking_and_answers(self):
+        self.svc.reasoning_close_retry = True
+        self.svc.reasoning_close_retry_calls = True
         c = self.chat()
         self.assertEqual(len(self.engine.prompts), 2, "the retry sends one more prompt with the thinking closed")
         self.assertEqual(c["message"]["content"], HeldCallEngine.ANSWER)

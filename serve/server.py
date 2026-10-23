@@ -145,8 +145,9 @@ VISION_START = "<|vision_start|>"
 REPEAT_STOP_TOKENS = 256
 ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thinking budget is cut down to fit max_tokens
 # #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
-# #1053 (opt-in "reasoning_close_retry": true): a reply that ends on its stop token still inside <think>, with no answer
-# and no call, is continued once with the thinking closed (the same way the budget's wrap-up closes it)
+# #1053 (opt-in "reasoning_close_retry": true, or "calls" to also cover an abandoned tool call): a reply that ends
+# on its stop token still inside <think>, with no answer and no call, is continued once with the thinking closed
+# (the same way the budget's wrap-up closes it)
 REASONING_CLOSE = "\n</think>\n\n"
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
@@ -2866,6 +2867,7 @@ class Service:
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        self.reasoning_close_retry_calls = False      # "calls": the same rescue also covers an abandoned tool call
         self.fence_quoted_thinking = False         # opt-in: a closing think tag inside a code fence is the tag quoted
         self.mcp_keep_round_thinking = False           # #2100: keep an MCP round's thinking in the next round's prompt
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
@@ -4002,8 +4004,12 @@ class Service:
                                 for ev in evs:
                                     if self.reasoning_loop_recovery and ev.kind == "reasoning":
                                         reasoning_text += ev.text or ""
-                                    if ev.kind in ("content", "tool_call"):
-                                        answered = True     # something the client can actually use came out
+                                    if ev.kind in ("content", "tool_call") or (
+                                            ev.kind == "tool_start" and not self.reasoning_close_retry_calls):
+                                        # something the client can actually use came out.  A call that was only
+                                        # announced counts as answered except in the "calls" mode, whose whole
+                                        # point is that an announced call that never closed delivered nothing.
+                                        answered = True
                                     yield "event", ev
                                 if evs:
                                     last_out = time.perf_counter()
@@ -4108,11 +4114,13 @@ class Service:
                             continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens
-                                and parser.state in ("reasoning", "rcall")
-                                # #2101: "rcall" is a <tool_call> the model opened and never closed - it wrote the
-                                # tag and then rambled or stopped.  Holding it back means no answer AND no call, so the
-                                # turn delivers nothing at all; the parser's own rcall branch already treats a </think>
-                                # inside a held call as "it never was a call", which is what closing the thinking does.
+                                and (parser.state == "reasoning"
+                                     or (self.reasoning_close_retry_calls and parser.state == "rcall"))
+                                # "rcall" (the config's "reasoning_close_retry": "calls") is a <tool_call> the model
+                                # opened and never closed - it wrote the tag and then rambled or stopped.  Holding it
+                                # back means no answer AND no call, so the turn delivers nothing at all; the parser's
+                                # own rcall branch already treats a </think> inside a held call as "it never was a
+                                # call", which is what closing the thinking does.
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
@@ -6477,7 +6485,14 @@ def main() -> int:
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
-    svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    # #1053 (opt-in, off by default): false = never; true = a reply that ends inside its thinking with no answer;
+    # "calls" = that, and also a reply stuck inside a tool call the model opened and never finished.  "true" is
+    # exactly what it always was: the wider rescue is a separate step, so a config that set true changes nothing.
+    rc = cfg.get("reasoning_close_retry", False)
+    if rc is not False and rc is not True and rc not in ("true", "calls"):
+        raise SystemExit(f'[strata] config "reasoning_close_retry" must be false, true or "calls", not {rc!r}')
+    svc.reasoning_close_retry = rc in (True, "true", "calls")
+    svc.reasoning_close_retry_calls = rc in ("calls",)
     svc.fence_quoted_thinking = cfg.get("fence_quoted_thinking") is True    # opt-in: a think tag quoted in a fence
     svc.mcp_keep_round_thinking = cfg.get("mcp_keep_round_thinking") is True   # #2100: the MCP round-thinking default
     if cfg.get("prevent_sleep") is not None and not isinstance(cfg["prevent_sleep"], bool):
