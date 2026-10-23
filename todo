@@ -393,3 +393,45 @@ Checked against the tree on 2026-10-23 (engine 0.1.43.1).
     Order I would take: fix the clobbering (revision + tombstones) -> BroadcastChannel for
     the list -> 21/31 -> shared stream.
 
+## 8. Added 2026-10-23: the streaming look, and the settings drawer (all Trivial)
+
+34.  No "Writing", no fake caret, and no answer bubble until there is real output. [ui] TRIVIAL
+    Three things pretend to be output while only thinking has arrived:
+      - the placeholder itself: `const ph = m.reasoning ? `<span class="muted cursor">Writing</span>` :
+        `<span class="cursor"></span>`` in renderBubble (serve/web/app.js:1014);
+      - the caret drawn on the bubble: `if (streaming) bubble.classList.add("cursor")`
+        (serve/web/app.js:1035) with `.cursor::after` at serve/web/app.css:57-58 - it is a CSS ::after on the
+        whole bubble, so it also sits at the END of the finished answer until the element goes away. That is the
+        "fake green cursor at the end" being complained about;
+      - the empty bubble: msgEl writes a `<div class="st-bubble">` for every assistant message before any
+        content exists (serve/web/app.js:860-862), so a bordered empty box sits under the thinking block.
+    The want: nothing at all until the model writes content - no box, no word, no caret - and no caret left
+    over afterwards. Shape: hide the bubble (and the meta row) while `!m.text && !(m.tools && m.tools.length)`,
+    and stop adding the `cursor` class: the parts path already updates in place, so a caret that lives on the
+    bubble is never cleaned up by anything.
+    Careful: since item 7 nothing assigns the whole bubble's innerHTML, so the placeholder branch must be
+    deleted, not replaced (LESSONS.md, "Three traps in that same render path", trap 3 - the placeholder is now
+    cleared explicitly at app.js:1018, and that clear can go with it).
+
+35.  A "Waiting" state while an MCP tool runs, instead of Idle. [ui] mostly; [py] possibly one field
+    The header pill and the Monitor's state card come from /metrics' `live.state`, which is derived at
+    serve/server.py:3415-3423 from `status["busy"]` and `first_token`: "reading" before the first token,
+    "generating" after it, "idle" when no request is in hand. The page draws the pill at
+    serve/web/app.js:184-190 (setPill at :175) and the card at :246-266.
+    The page already knows a tool is running - each tool part carries a state and TOOL_STATE renders it as
+    "Running" (serve/web/app.js:870) - so a client-only fix is about ten lines: when `busy` and some tool of
+    the streaming message has state "running", show "Waiting - <tool>" in the pill and the card.
+    NOT YET MEASURED: whether `status["busy"]` really stays true while a tool thread runs (it is set at
+    serve/server.py:2981 and cleared in the request's finally at :3000; run_with_mcp keeps yielding
+    heartbeats, serve/server.py:4440-4450). Check it on a slow tool with `GET /metrics` before deciding
+    whether the server needs a state of its own; if it does, `live["state"]` is set at :3445.
+
+36.  The settings drawer should warn when it is closed with changes not applied. [ui] TRIVIAL
+    Three ways to close it and none of them checks: `$("drawer-close").onclick` and `$("scrim").onclick`
+    (serve/web/app.js:1534-1535) and Escape (serve/web/app.js:1536). Only Apply writes: the
+    `$("s-apply").onclick` block at :1500 reads every control into `settings` and `store.set("sampling", ...)`.
+    So compare the controls against `settings` (the same reads loadDrawer at :1421 writes, and every switch is
+    an aria-checked string) and, if any differ, confirm before openDrawer(false).
+    Care: `s-mcpthink` already fires its own confirm when flipped (:1466) because it re-reads a chat, and
+    `s-share` writes the SERVER's shared defaults (:1512) - the discard warning must not re-trigger either.
+
