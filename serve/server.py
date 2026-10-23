@@ -2866,6 +2866,7 @@ class Service:
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        self.mcp_keep_round_thinking = False           # #2100: keep an MCP round's thinking in the next round's prompt
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -3389,6 +3390,13 @@ class Service:
                      if k not in ("input", "output", "reasoning", "response") and not k.startswith("_")}
                     | {"wallclock_s": r.get("wallclock_s", round(time.perf_counter() - r["_clock"], 3))}
                     for r in reversed(records)]
+
+    def mcp_keep_thinking(self, req: dict) -> bool:
+        """#2100: does this request want an MCP round's thinking kept in the history?  The page's switch wins; without
+        it the run config's "mcp_keep_round_thinking" (off unless true) is the default.  The page rebuilds the same
+        turn itself, so the value it sends and the value it renders with must be the same one - see run_with_mcp."""
+        v = req.get("strata_mcp_thinking")
+        return self.mcp_keep_round_thinking if v is None else bool(v)
 
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
@@ -4349,7 +4357,7 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names):
+                 mcp_names, keep_thinking=False):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
@@ -4429,9 +4437,18 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         if cancel.is_set() or len(results) < len(calls):
             done = {**done, "finish": "cancel"}
             break
-        messages.append({"role": "assistant", "content": "".join(text).strip(),
-                         **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
-                         "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
+        # #2100: whether the round's thinking goes back into the history is the "strata_mcp_thinking" switch, and it
+        # MUST be the same choice the page makes when it rebuilds the turn (assistantMessages in serve/web/app.js).
+        # The engine reuses a prompt only when it starts with exactly the tokens it already holds, and the template
+        # renders an EMPTY thinking block for a turn without reasoning_content: if the two sides disagree, the token
+        # prefix breaks at the first tool round of the chat and every later request re-reads everything after it.
+        # Off (the default) keeps the prompt smaller but drops the reasoning from the model's own later rounds; on
+        # keeps the reasoning and the reuse, and costs context.
+        round_msg = {"role": "assistant", "content": "".join(text).strip(),
+                     "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]}
+        if keep_thinking and reasoning:
+            round_msg["reasoning_content"] = "".join(reasoning).strip()
+        messages.append(round_msg)
         # A picture a tool returned rides along in its message as an image part, the shape the template and
         # prepare() read for a user's attached picture: it goes through the vision encoder, and a picture that cannot
         # be encoded becomes a note there (_note_unreadable_tool_images).  A text-only result stays one string.
@@ -5531,7 +5548,7 @@ def make_handler(svc: Service):
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
-                               {t["name"] for t in extra}) if use_mcp else None
+                               {t["name"] for t in extra}, svc.mcp_keep_thinking(req)) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
@@ -6448,6 +6465,7 @@ def main() -> int:
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.mcp_keep_round_thinking = cfg.get("mcp_keep_round_thinking") is True   # #2100: the MCP round-thinking default
     if cfg.get("prevent_sleep") is not None and not isinstance(cfg["prevent_sleep"], bool):
         raise SystemExit(f"[strata] config \"prevent_sleep\" must be true or false, not {cfg['prevent_sleep']!r}")
     from serve.keepawake import KeepAwake

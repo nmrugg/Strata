@@ -557,7 +557,7 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, mcpthink: false};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
@@ -963,14 +963,14 @@ function apiMessages() {
       out.push({role: "user", content: imgs.length ? [{type: "text", text},
         ...imgs.map((i) => ({type: "image_url", image_url: {url: i.url}}))] : text});
     } else if (!(busy && busy.msg === m)) {            // the answer being asked for now is not history yet
-      out.push(...assistantMessages(m));
+      out.push(...assistantMessages(m, settings.mcpthink === true));
     }
   }
   return out;
 }
 // An answer that used MCP tools goes back as the model wrote it: per round the text before the calls, the calls and
 // their results (as the model read them), then the rest - so the next question can build on what the tools found.
-function assistantMessages(m) {
+function assistantMessages(m, keepThinking) {
   const ran = (m.tools || []).filter((t) => t.round != null && t.result != null && t.state !== "skipped");
   // #1392: a turn with no answer text (only reasoning, a stop before the first content token, or an error) still goes
   // back as an assistant turn, so the history keeps alternating and a reasoning model sees that it already answered.
@@ -981,12 +981,24 @@ function assistantMessages(m) {
     return [msg];
   }
   const out = [];
-  let pos = 0;
+  let pos = 0, rpos = 0;
+  const reas = m.reasoning || "";
   for (const r of [...new Set(ran.map((t) => t.round))]) {
     const calls = ran.filter((t) => t.round === r);
     const at = Math.min(Math.max(pos, calls[0].at || 0), m.text.length);
-    out.push({role: "assistant", content: m.text.slice(pos, at).trim(),
-              tool_calls: calls.map((t) => ({id: t.id, type: "function", function: {name: t.name, arguments: JSON.stringify(t.arguments || {})}}))});
+    const msg = {role: "assistant", content: m.text.slice(pos, at).trim(),
+                 tool_calls: calls.map((t) => ({id: t.id, type: "function", function: {name: t.name, arguments: JSON.stringify(t.arguments || {})}}))};
+    // #2100: only when the switch is on does the round's thinking go back, and it must match what the server put in
+    // the prompt for that round (serve/server.py, run_with_mcp): the two rebuilds have to tokenize identically, or the
+    // engine's checkpoint stops matching and the chat re-reads everything past the first tool round.  t.rat is the
+    // thinking length when the call started, which is where this round's thinking ends.
+    if (keepThinking) {
+      const rat = Math.min(Math.max(rpos, calls[0].rat || 0), reas.length);
+      const think = reas.slice(rpos, rat).trim();
+      if (think) msg.reasoning_content = think;
+      rpos = rat;
+    }
+    out.push(msg);
     for (const t of calls) out.push({role: "tool", tool_call_id: t.id, content: t.result});
     pos = at;
   }
@@ -1028,7 +1040,11 @@ async function send() {
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
-  if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
+  if (settings.mcp !== false && mcpInfo.tools > 0) {          // this server may run MCP tools for it
+    body.strata_mcp = true;
+    // #2100: the same choice assistantMessages() renders with, so the two rebuilds of a tool turn agree
+    body.strata_mcp_thinking = settings.mcpthink === true;
+  }
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
@@ -1233,6 +1249,8 @@ function loadDrawer(s = settings) {
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
+  $("s-mcpthink").setAttribute("aria-checked", String(s.mcpthink === true));
+  $("mcp-think-row").hidden = !(mcpInfo.tools > 0);
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   outputs();
 }
@@ -1282,6 +1300,16 @@ for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
+// #2100: flipping this changes how a tool turn is rebuilt, so the next request in every chat that used tools stops
+// matching the tokens the engine holds and re-reads its history once.  Say so before allowing it.
+$("s-mcpthink").onclick = () => {
+  const on = $("s-mcpthink").getAttribute("aria-checked") !== "true";
+  const warn = on
+    ? "Turn tool-round thinking ON?\n\nThe model re-reads its own reasoning on later tool rounds, and the chat grows by that thinking every round.\n\nThe next request in each chat that used tools re-reads its history once."
+    : "Turn tool-round thinking OFF?\n\nLater tool rounds no longer see the reasoning of earlier ones, and the chat stops growing by it.\n\nThe next request in each chat that used tools re-reads its history once.";
+  if (!confirm(warn)) return;
+  $("s-mcpthink").setAttribute("aria-checked", String(on));
+};
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
@@ -1290,7 +1318,8 @@ $("s-apply").onclick = async () => {
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               show: $("s-show").getAttribute("aria-checked") === "true",
               esp: $("s-esp").getAttribute("aria-checked") === "true",
-              mcp: $("s-mcp").getAttribute("aria-checked") === "true"};
+              mcp: $("s-mcp").getAttribute("aria-checked") === "true",
+              mcpthink: $("s-mcpthink").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
