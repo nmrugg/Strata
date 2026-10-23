@@ -203,6 +203,23 @@ directly, so it still passed when the X and the scrim were rewired back to
 `closing asks first - 0 !== 1`. Wire-level claims need wire-level tests; text assertions on
 the wiring line are a second-best, not a substitute.
 
+**Blank chats are not stable, and more than one is reachable today.** `newChat()` invents an
+id (`c<time><rand>`) and `openHistory` pushes a blank chat into `chats` **without writing it**,
+so a blank chat's id changes on every page load. And `startChat` only refuses when the
+*current* chat is blank: blank A → open used chat B → New chat → blank C, which `showChat`
+does write, so the list can hold several blanks. Anything keyed to a chat id therefore must
+not key blank chats by id - they are fungible. The composer draft uses one shared `"blank"`
+key for exactly that reason, and `startChat` now reuses the blank chat the list already has
+(4a695a05) instead of adding another. Persisting blank chats to stabilise their id was the
+first instinct and is the wrong fix: it fills the list with empty rows.
+
+**A composer draft belongs in localStorage, not the chat record.** The conversations live in
+IndexedDB one record per chat because a chat can be megabytes (`openHistory`, `writeChat`);
+writing the record on every keystroke to save a few hundred characters of draft would be
+ruinous. `store.set("draft." + key, ...)` is synchronous and tiny. The store helper is
+deliberately `get`/`set` only - a test pins that (`test_chat_sidebar.py`) - so "no draft" is
+an empty string, not a deleted key.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right
