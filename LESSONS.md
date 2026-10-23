@@ -220,6 +220,22 @@ ruinous. `store.set("draft." + key, ...)` is synchronous and tiny. The store hel
 deliberately `get`/`set` only - a test pins that (`test_chat_sidebar.py`) - so "no draft" is
 an empty string, not a deleted key.
 
+**Three more things, learned while grouping the answer into think/work blocks (todo #12, 2026-10-23).**
+(1) `querySelector` never returns the element it is called on. `syncThink` asked the details
+element for `.st-collapse think` - its own class - which is `null` in a browser and would have
+thrown on the next line; the stub auto-creates a node, so it looked like a test problem instead.
+A part's own element must be used directly, and only its descendants queried.
+(2) The layout costs exactly one rebuild per round: while a round has no call yet, its text is a
+top-level part, and the moment the call appears that text moves into the new container and is
+re-created. Once per round, never per frame - and the test says so out loud rather than
+pretending identity is perfect.
+(3) Before changing how a turn is *displayed*, write the replay tripwire first: assert
+`assistantMessages()` output is byte-identical. The same offsets (`at`, `rat`) feed both the
+layout and what goes back to the server, and a one-character difference there breaks the
+engine's prompt prefix at the first tool round. The stub also has to fire a `toggle` event when
+script sets `details.open`, or the page's own `_auto` flag leaks onto the next simulated user
+click and a test fails for a reason that does not exist in a browser.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right
