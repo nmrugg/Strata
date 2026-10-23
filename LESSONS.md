@@ -1,0 +1,174 @@
+# Lessons learned
+
+Hard-won operational knowledge for anyone (human or LLM) working on Strata on this box.
+Not style rules — those are in `AGENTS.md`. This file is for things that cost time to
+discover.
+
+**Add to this file when you learn something the hard way.** One short entry, with the
+evidence that produced it. Prefer a measured number over an adjective, and cite
+`file:line` you actually read. Delete an entry when it stops being true.
+
+## Existential
+
+**Never restart the server you are running on.** The process serving port 8080
+(`serve/server.py`) is what generates your own turns. A restart ends your session
+mid-sentence, and you cannot finish the change you were making. Make it, verify it, tell
+the human to restart, stop. Same for `/unload`. Config and code changes take effect only
+on restart, so there is never a reason to do it yourself.
+
+**Never write the chat template's control tags as literal text** — not in prose, not in
+reasoning, not in code you display. That is the thinking pair, the tool-call pair, and the
+turn pair. A session on 2026-10-23 died roughly six times in one day because the agent's
+own output contained them while it was *describing* the bug: some consumer (Strata's
+parser, the MCP transport, or the harness rendering the agent's reasoning) read the text as
+a real boundary and cut the turn. Refer to them in words. In commands and test files build
+them from pieces (`chr(60) + "/think" + chr(62)`) so the literal sequence never appears in
+output. Markdown fences are safe; tag names are not.
+
+## Verify, then claim
+
+**Read the code before describing it, and quote `file:line` you have opened.** In one
+session the agent cited a line number for a mechanism that lived elsewhere (pointed at
+`frontend.py:1373`, which was unrelated code, for something actually at `1399`), and claimed
+a second mechanism (`finish()` dumps held markup as content) from reading rather than
+running — a direct test contradicted it: with `stream_tools` on, that path drops the text
+silently instead. Every confident unverified claim cost a correction cycle.
+
+**When a test fails, check whether the test or the code is wrong — do not assume either.**
+Several failures in one session were the agent's own malformed test fixtures: a missing
+parameter closer, a tag placed mid-line when the parser requires line start, a truncated
+closer string. In each case the code was right. But the reverse also happened: a validation
+that rejected an absent config key (`cfg.get(k)` returning `None` where `False` was
+assumed) was a genuine bug that would have stopped every config without that key from
+starting. Three shipped tests caught it. Check which one is wrong.
+
+**"Already exists" is a claim that must be tested against the want, not the feature name.**
+Six todo items were marked as already done and five were wrong or only partly true.
+Markdown rendering exists but was not applied to the user's messages. A prefix pin exists
+but pins a document, not a conversation. Session save/restore exists but is per-slot and
+manual, which is not the "this conversation stays cached" promise being asked for. When the
+human asks for X, check whether the existing thing does X, not whether it is related to X.
+
+## Measure before you build
+
+**Get a captured real sample before writing a parser rule.** A fix was implemented for
+turns stuck in parser state `rcall`, and a test was written that made it look verified. The
+test input was invented. The real log had never shown `rcall` — the observed deaths were a
+different state. The fix was dead weight and had to be moved behind a flag. The correct
+order is: instrument, collect one real failure, then fix the shape you actually saw.
+
+**Trust recorded real data over plausible reasoning.** The obvious rule "a real end of
+thinking is always followed by a line break" is clean, local, and *wrong*: the shipped
+corpus `serve/fixtures/rcall_specimens.json` (37 recorded real cases, including 12 real
+strandings) contains a case where the tag is followed directly by text and the correct
+answer is that the text **is** the answer. That corpus rejected the change immediately and
+is the reason both directions of this bug (#804, then #1058 fixing an over-correction of
+#804) are recorded rather than repeated. Run it before touching the parser.
+
+**Instrument, then check that the instrument can see the failure.** A counter was added for
+abandoned tool calls and reported zero for a whole session while the human kept seeing
+failures — because it only looked at states `call`/`json`, and the shape that mattered was
+elsewhere. A counter that cannot see the bug is worse than none, because it looks like
+evidence.
+
+**The numbers that made the design question answerable, measured 2026-10-23:**
+- parked conversation state: **19.1 KB per token** (193,453 tokens = 3.55 GiB)
+- parking cost: **326 ms** for that conversation
+- re-reading it: **~97 s** at ~2,000 tok/s; a 533,954-token prompt took **332 s**
+- NVMe (FireCuda 520, ext4, `oflag=direct`, 3 GiB): **2.3 GB/s write, 3.2 GB/s cold read**
+- so a 1M-token conversation is **~18 GiB of state**: ~8 s to save, ~6 s to resume, ~500 s
+  to re-read — and RAM cannot hold one (4 GiB park budget, 34 GiB available, 35 GiB in swap)
+
+## Where things actually go
+
+**Two logs, and the important one is lost by default.** Engine stderr →
+`/programs/Strata/strata-iq3_s.log`. The **server's** prints (`reasoning_close_retry`
+firing, `EMPTY TURN`, `tool calls inside the thinking`, tool execution times) go to the
+terminal and reach no file unless started with
+`... 2>&1 | tee -a /tmp/strata-server.log`. This single fact caused most of a day of
+guessing about a bug whose signature was being printed and discarded.
+
+**The config's `env` block reaches only the engine child process** (`server.py:2626-2632`).
+`STRATA_WATCHDOG_S` there works because the *engine* reads it. `STRATA_DEBUG` there does
+nothing, because the *server* reads it via `os.environ`. A key that looks correctly placed
+and silently does nothing is worse than an error. Server-side env vars go in the shell
+command line.
+
+**Grep self-pollution.** With `STRATA_DEBUG=1` the server dumps the model's entire raw
+output per request. Those dumps contain the agent's own words about the bug, so searching
+for a probe string matches the dumps of yourself searching for it. One count read "2 empty
+turns and 1 abandoned call"; anchored (`^\[strata\] EMPTY TURN`) it was zero of each.
+Anchor patterns, and prefer `/metrics` counters (`totals.empty_turns`,
+`totals.abandoned_tool_calls`) over grepping a log that contains your own text.
+
+**Counters appear only when non-zero.** `/metrics` omits `empty_turns` entirely rather than
+reporting `0`. Absent means zero, not broken — but it reads like a missing feature and cost
+a detour.
+
+**Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
+("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
+kept answering normally while the agent's tools went dark. Attribute the crash to the right
+process before diagnosing it.
+
+## Structure, not parsing
+
+**Boundaries that are represented as text can be forged by the content.** The engine
+already knows them as token IDs — 248068/248069 the thinking pair, 248058/248059 the
+tool-call pair, 248045/248046 the turn pair, all marked special in `token_type.json` — and
+it sends raw IDs on its `T` lines. The server detokenises and throws the ID away one line
+later (`server.py:3995`), then tries to recover the structure by string matching. That is
+why quoted and genuine tags are byte-identical and no local rule can separate them. Any
+serious fix goes through the IDs, not the text. (Unverified whether the engine forwards
+special IDs on `T` lines — check `generate.cpp:11818` before sizing it.)
+
+**Conversation reuse has no identity.** Reuse is exact token-prefix matching with no client
+session ID (`DETAILS.md`, "Multiple conversations"). Nothing can be told "warm chat 7" or
+"pin this conversation". Anything that wants a per-conversation promise — pinning,
+auto-save, preloading, multi-tab sync — has to solve identity first, and the client is
+currently the only thing that knows which conversation it is in.
+
+**Anything the client re-derives will eventually disagree with the server.** The
+re-read bug came from the web app rebuilding a tool turn's history slightly differently
+from how the server had built it (dropped thinking), so the prompt stopped matching the
+engine's checkpoint and the whole tail was re-read. Same root as multi-tab clobbering and
+the preloading problem. Prefer passing state through over reconstructing it.
+
+## Working style
+
+**One change per commit, and say what it leaves alone.** Several commits in one session
+mixed a diagnostic with a behaviour change, which made the behaviour change impossible to
+review or revert on its own. `AGENTS.md` already requires this; it is here because it was
+broken anyway.
+
+**New behaviour goes behind a flag with the default unchanged, and the flag needs a test
+for both positions.** A parser fix that changed the default path violated the repo rule and
+had to be re-gated. The repo already has the pattern: `false | true | "calls"` mirrors
+`reasoning_loop_recovery: false | "stop" | "recover"`, and a tri-state avoids new flag
+sprawl. Also validate the *absent* case — `cfg.get(k)` returning `None` is not `False`.
+
+**Do not edit the human's config without asking.** It silently changes behaviour on the
+next restart, and it can turn a fix off. A config key that is documented as off-by-default
+means the human has to opt in; say so explicitly rather than setting it.
+
+**Scripted text edits need a read-back.** Two automated renumberings of a markdown list
+corrupted it — one truncated every item number to its first digit, another promoted body
+lines into items. Both were caught only by printing the result afterwards. Keep a backup
+before a bulk edit, and verify the count and the cross-references, not just that the
+command exited 0.
+
+**Ask what the human actually wants before scoping.** One todo item was wrong for most of a
+day because it described the mechanism the agent inferred rather than the behaviour asked
+for; the difference was "cancel on switch" (three lines) versus "warm the conversation when
+I start typing" (a new engine verb). Cheap question, expensive assumption.
+
+**State every config change you make, and never describe your own change as pre-existing.**
+In one session the agent added `open_browser: false` and `reasoning_close_retry: true` to
+`strata-iq3_s.json`, then later told the human "you set that, so it's done" and listed the
+same flags as if they were the box's original configuration. Config edits are invisible
+state: they change behaviour on the next restart, they can turn a fix off, and a fresh
+checkout would not have them. Three rules follow:
+- say what you changed in the config, in the same message you changed it;
+- do not call a thing "already configured" without checking whether *you* configured it;
+- do not touch the config at all without asking - see the flag rule above.
+The same trap produced a false "already exists" list: six todo items were marked done, and
+the state that made them look done was partly the agent's own recent edits.

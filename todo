@@ -1,0 +1,385 @@
+# Strata TODO
+
+Sorted easiest first. Tags: [config] = flag or setting only, no code. [ui] = web app only.
+[py] = serve/server.py. [eng] = C++ engine. [exists] = already works, just not obvious.
+Checked against the tree on 2026-10-23 (engine 0.1.43.1).
+
+## 1. Trivial - config, or a few lines of UI (under an hour each)
+
+1.  Warn on closing the browser while a request is running. [ui]
+    Nothing today: app.js has no beforeunload handler. Add one keyed off the busy flag.
+2.  Play a sound on start up. [py] [ui]
+    The server already prints a start narration; a beep is a print in the web page once
+    /health turns ok. Browsers block autoplay before first interaction, so it needs a
+    click-armed flag - still small.
+3.  Auto-expand thinking (option). [ui]
+    The thinking block is a details element; a settings flag drives the open attribute.
+4.  Auto-expand tool calls (option). [ui]
+    Same shape as 3.
+5.  Toggle markdown / plain text for my own messages. [ui]
+    Extends the existing renderer; store the choice in the settings blob.
+6.  Display my content in markdown. [ui]
+    markdown() already exists and is used for assistant turns only.
+7.  Prevent UI flashing while the model is writing. [ui]
+    Re-rendering whole messages per chunk; needs in-place updates. Bounded, one file.
+8.  Be able to open and close thinking and tool calls while the engine is writing. [ui]
+    Something is going on, maybe repaiting, that makes clicking them do nothing most of the time.
+
+## 2. Small - one file, clear scope (a few hours each)
+
+9.  Read and switch to another conversation while one is running. [ui] TRIVIAL - 3 lines
+    The server does not care; it is purely the page refusing. app.js has three guards:
+    openChat (line 721), startChat (726), deleteChat (736), all
+    "if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }".
+    The answer keeps streaming into its own message object either way, so switching away
+    and back is already safe. Drop the guard in openChat (reading) and keep or soften it
+    for startChat/deleteChat.
+10.  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
+    The SERVER ALREADY DOES THIS: docs/BATCHING.md - "By default Strata serves one request
+    at a time: the others wait in the server's queue." Nothing engine-side is missing, and
+    --batch N would run them at once instead of queued.
+    What is missing is entirely in the page: one busy flag, one send button disabled
+    (app.js:1015), one stream reader. Needs per-request state (controller, target message,
+    chat id) so two streams can be tracked and painted into the right chat.
+11.  Show what the model is typing inside a tool call instead of "(being written)". [py] [ui]
+    Half-built already: OutputParser emits tool_start and tool_args pieces (frontend.py:799)
+    and the server turns stream_tools on (server.py:3838). But run_with_mcp deliberately
+    drops the argument pieces ("its argument pieces are not streamed to the client",
+    server.py:4376). Forwarding them plus a small UI change is the whole job.
+12.  New thinking blocks after each tool call instead of one bubble at the top. [py] [ui]
+    The web app keeps one reasoning string per message (m.reasoning) and rounds are already
+    split by t.rat (the thinking length when a call started), so the segmentation data is
+    there. Needs the message model to hold a list of thinking runs.
+13.  Import and export conversations. [ui] [py]
+    Export exists but only as human-readable Markdown (app.js:1145). Needs a machine format.
+    llama.cpp's chat format is JSONL with a "messages" array - a reader for that is small.
+    Import is easy for text; images and tool rounds need care to round-trip.
+
+## 3. Medium - two or three layers, or a decision to make first (days)
+
+14.  Edit and delete posts in a conversation, mine and the model's. [ui] [py]
+    Chat-level rename and delete exist (renameChat, deleteChat); message-level do not.
+    Straightforward to build. See 15 for the cost.
+15.  Make editing or deleting not re-read everything. [eng] [py]
+    Partly possible today: STRATA_CACHE_MESSAGE_BOUNDARY=1 saves a checkpoint at the previous
+    turn boundary so a replaced final message reuses the history before it. Limits from
+    docs/MESSAGE_BOUNDARY_CACHE.md: prefixes of at least 8,192 tokens, a tail of at most
+    1,024, off for layer splits, opt-in, and it can split prefill chunks. Editing near the
+    end is cheap; editing early in a long chat is not, because every later token changes.
+    Real feasibility: good for the last few messages, no help in the middle.
+16.  Pin one conversation so it is always fast to open: in RAM while Strata runs, on disk
+    when it does not. [py] [eng] [ui] HARD - and the one item here that needs a decision
+    before code. This absorbs three earlier items that turned out to be the same want
+    (keep the last conversation on disk / pin one so it is never evicted / always fast to
+    open), because they are not three features.
+    THE WANT, from the human: a button on a chat saying "this one stays cached". Open it
+    later - even after Strata was stopped and started again - and it resumes fast instead
+    of re-reading. NOT already done: what exists is a per-SLOT save/restore of whatever is
+    loaded at that moment, which is not a per-conversation promise and does not survive a
+    server restart.
+    THREE MECHANISMS THAT ALREADY EXIST, and what each is missing:
+      - the live conversation cache (park/restore in RAM). Works; measured 326 ms for
+        193,453 tokens. But it is LRU with a byte budget, so it makes no "always" promise -
+        a 6.7K side chat evicted a 195K conversation on this box and cost a 107 s re-read.
+      - the checkpoint pin (--prompt-cache-root, and "strata_prefix" on a request). Pins a
+        PREFIX, never a conversation, and exactly one at a time (generate.cpp:11169 refuses
+        a pin below --prompt-cache 3).
+      - session files (POST /slots/0?action=save|restore). Real, validated, per-slot, manual.
+        Not keyed to a conversation and never automatic.
+    THE NUMBERS THAT FRAME IT (measured here 2026-10-23):
+      - parked state: 19.1 KB per token (193,453 tokens = 3.55 GiB)
+      - re-read: ~2,000 tok/s, so ~97 s for that chat; a 533,954-token prompt took 332 s
+      - NVMe (FireCuda 520, ext4, oflag=direct, 3 GiB): 2.3 GB/s write, 3.2 GB/s cold read
+      - a 1M-token conversation: ~18 GiB of state -> ~8 s to write, ~6 s to read, against
+        ~500 s to re-read. RAM cannot hold one at that size (budget 4096 MiB; 34 GiB
+        available with 35 GiB already in swap), so at 1M "always cached" MUST mean disk.
+    WHAT IS MISSING, in order:
+      1. Conversation identity. Reuse is exact token-prefix matching with no client session
+         ID (DETAILS.md, "Multiple conversations"), so there is nothing to hang a flag on.
+         The web app has a chat id in IndexedDB; the server has never seen it. Either send
+         it on the request or key on a hash of the conversation's first tokens.
+      2. A per-conversation file store: one file per chat id, written on idle/unload, read
+         on open, with retention. The session-file format already does the hard part
+         (STRSESS header, validated against model and config fingerprint, checkpoints + K/V
+         + draft K/V) and the RAM-headroom guard is already applied to save and restore
+         (--conversation-cache-min-free-mib 2560).
+      3. The switch itself. 18 GiB is ~6 s of I/O on the single FIFO slot, so opening a
+         pinned chat while another generates needs a queue or a second engine (see the
+         parallel and replicas items).
+    DO NOT START WITH CODE. Answer the design question first: for chats near 1M tokens is
+    "always cached" a disk promise (~6 s to resume, ~18 GiB of free disk per chat) or a RAM
+    promise (impossible at that size here)? That answer drives all three steps, and it
+    belongs in docs/ before it belongs in serve/.
+
+17.  Fork a conversation (clone, not nested). [ui]
+    A chat is an object with a messages array in IndexedDB; a deep copy is short.
+18.  Add and edit a system prompt, set ONCE when the conversation starts. [ui] [py] EASY
+    There is no system-prompt field in the web app today (no system_prompt anywhere in
+    app.js), and the server already supports one: a leading system/developer message is
+    merged into the template's system turn (chat_template.jinja). So this is a per-chat
+    field stored with the chat object in IndexedDB, sent as the first message on every
+    request of that chat. Because it never changes mid-chat, it costs nothing: the system
+    turn stays identical turn to turn and the pinned root checkpoint keeps matching.
+    Editing it LATER is the only case that re-reads the chat once - worth a confirm dialog,
+    same as the tool-thinking toggle.
+19.  Close the browser and keep the conversation running. [py] [ui]
+    Today a disconnect ends the request: GeneratorExit at server.py:4171 settles it, and the
+    docs advertise that closing the connection really stops the model. Needs generation
+    detached from the HTTP response, a server-side buffer of what it produced, and a way to
+    re-attach. Also interacts with the idle-unload and watchdog paths. This is the biggest
+    item in this tier.
+
+## 4. Large - engine work, or a new subsystem (weeks)
+
+20.  Run two conversations at the SAME TIME, not queued. [eng] [py] [ui]
+    Distinct from 10 (which is queuing, already supported). True simultaneity is
+    "parallel": N (--batch N), docs/BATCHING.md, measured +31-39% total throughput with
+    2-4 clients on one GPU. Two hard caveats for this box:
+      - The engine keeps no pipelined slot as a conversation cache (server.py:1656), so
+        --batch fights the parking that fixes the re-read problem. Pick one behaviour or
+        design the interaction.
+      - Slots share the engine context: 4 chats x 200K tokens = 800K of a 1M context, and
+        each held or parked conversation costs RAM (measured here: ~19 KB per token).
+    Feasible, but it is a capacity decision, not a feature flag.
+21.  Preload conversations when I start typing. [py] [eng]
+    Restoring a parked or on-disk conversation before the request lands needs conversation
+    identity (see 16) and a restore path that is not tied to a slot. Also speculative
+    loading competes with the request that is actually coming. Worth revisiting after 16
+    and 17 exist.
+22.  Back the conversation cache with NVMe instead of RAM. [eng]
+    Your drive measured 2.3 GB/s write, 3.2 GB/s cold read (FireCuda 520, ext4, oflag=direct,
+    3 GiB). A 3.5 GiB snapshot of this conversation is ~1.5 s to write and ~1.1 s to read,
+    against ~100 s to re-read 195K tokens - roughly 90x faster than the current fallback, and
+    50 GB free holds about 14 such conversations versus 1 in 4 GiB of RAM.
+    Strata already does this for experts (the file tier, --mmap-experts, --resident-budget-gib)
+    so the plumbing pattern exists; a file tier for the park cache is new engine code plus
+    eviction policy. Note the docs warn a parked conversation being paged is itself a stall
+    cause (#2049, #2065), so this needs the same care the expert tier got.
+23.  Dynamic elements in the system prompt (date, system info) - frozen at chat start. [ui] [py]
+    With 18 done, this is a one-time fill: compute the date and system info when a chat is
+    created, store them in the chat's system prompt, and never recompute them. Then the
+    system turn is byte-identical for the whole chat and the pinned root keeps matching.
+    Do NOT recompute per request: anything that changes in the front of the prompt breaks
+    the shared prefix for the entire chat. The server already fights exactly this for
+    Claude Code, which stamps a per-request billing header into its system prompt; it pins
+    those stamps so the prompt stays identical turn to turn (DETAILS.md). If a value really
+    must change mid-chat, "effort_position": "end" is the existing pattern to copy: put the
+    varying text in a short turn right before the answer, after the checkpoint.
+
+24.  Warm the conversation while I type, and cancel the warming when I switch.
+    [py] [eng] [ui] HARD, and the description here replaced a wrong one (it used to say
+    "cancel when switching", which is a different, much smaller feature).
+
+    WHAT IS WANTED
+      - Open a chat whose state is parked in RAM or saved on disk -> bring it back into RAM
+        the moment it gets focus / I start typing, not when I press Enter.
+      - Start a new chat in a conversation that was cold -> begin reading the shared prefix
+        while I type, so the 300-second part is already finished by the time I send.
+      - Switch to a different chat mid-typing -> CANCEL that speculative read, so it does
+        not compete with the request I actually send.
+    The measured cost it removes: a cold 533,954-token prompt took 332 s in the log today.
+    Starting that at focus instead of at Enter is the whole point.
+
+    WHY IT IS HARD - three blockers, in order of how much they hurt
+      1. There is no way to say "prepare X" without sending a prompt. The only engine verbs
+         are GEN (read a prompt AND generate) and the session save/restore pair. A warm-up
+         would either generate tokens nobody asked for, or need a new engine command
+         ("read to here, hold, generate nothing"). That new verb is the real work.
+      2. The engine serves ONE request at a time (docs/BATCHING.md: "By default Strata serves
+         one request at a time: the others wait in the server's queue"). A speculative read
+         of an old chat therefore BLOCKS the real request if you press Enter while it runs -
+         which is worse than today. So cancel-on-switch is not a refinement; it is a
+         precondition. And cancellation mid-read is already delicate: a cancelled read
+         checkpoints what it got to and the retry resumes from there (seen today: 57,344 read
+         then resumed at 55,758), so the partial work is not wasted - that helps here.
+      3. "The conversation" has no identity. Reuse is exact token-prefix matching with no
+         client session ID (DETAILS.md, "Multiple conversations"). So the server cannot be
+         told "warm chat 7"; it can only be handed a token prefix. The client would have to
+         render the whole history to know what to warm - which is the expensive part it is
+         trying to avoid, and is the same reconstruction that caused the re-read bug today.
+
+    WHAT ALREADY EXISTS - and it covers maybe half of this
+      - Parked conversations restore in ~0.3 s per ~190K tokens (measured today: 326 ms for
+        193,453 tokens, 3.55 GiB) versus ~330 s to re-read. So for a PARKED chat, warming is
+        already fast; the gap is that parking happens on switch-AWAY, not on focus.
+      - --conversation-cache-min-tokens decides which chats get a slot at all (see 16/17).
+      - Session files (save/restore) already put a conversation on disk - item 16 automates
+        that, and 16 is therefore a prerequisite for the "stored on hard drive" half.
+      - The pinned system-prompt root (6,606 tokens here) means a new chat in the same app
+        already reuses the common prefix without any warming.
+
+    SMALLEST USEFUL STEP, before any of the hard parts
+      A client-side prefetch that costs no engine work: on focus/first keystroke, render the
+      history and POST it with max_tokens=1 and "strata_checkpoint": false. That reads the
+      prompt, checkpoints it, and generates one token - so the real send reuses the prefix.
+      Caveats that must be handled: it still occupies the single FIFO slot (so cancel must
+      work, and aborting mid-read is the same path as today), it spends the 332 s whether or
+      not you send, and it pollutes /metrics and the counters with a request you never
+      meant. Gate it behind a setting and label it in the status line.
+      Order I would build: 17 (auto save/restore) -> 18 (pin one chat) -> this prefetch ->
+      then the engine-side "read, hold, generate nothing" verb if the prefetch is not enough.
+
+## 5. Added 2026-10-23: MCP servers from the front end
+
+25.  Add and remove MCP servers in the web app. [ui] [py] MEDIUM
+    Reading is done: GET /mcp returns every server, its state and its tools, and the Monitor
+    lists them (app.js:402-432, the mcp-card). What is missing is writing.
+    The plumbing exists: the Settings view already edits the run config (#564, svc.config_path,
+    GET/POST /settings), and the config's "mcp_servers" block is plain JSON in the same shape
+    as Claude Desktop's mcpServers. So this is a form on top of the config write that already
+    happens, not a new subsystem.
+    Care: a server entry is a COMMAND LINE that runs on this PC with your rights (SECURITY.md,
+    docs/MCP_SERVER.md "Safety"). Adding one from a browser page needs the same origin check
+    the MCP tools already use (_own_page), and an API key when the server is reachable from
+    other devices. Starting/stopping a server also restarts the engine's tool list, which
+    changes the system turn and costs every chat one re-read (see 18's note).
+26.  Enable and disable a whole MCP server from the front end. [ui] [py] EASY
+    The config already supports "disabled": true per entry, and the server leaves it out with
+    one log line. So this is a checkbox that writes that flag - the smallest item in this tier.
+27.  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM
+    Nothing today: McpHub offers every tool of an enabled server as <server>__<tool> and
+    routes a call back to whichever server has it (serve/mcp.py). Needs a per-tool exclusion
+    list in the config, filtered in McpHub.template_tools(exclude=...) - that parameter is
+    already there and already used to drop the request's own tools on a name clash, so the
+    hook exists. Also worth showing the filtered count in the mcp-card so it is obvious which
+    tools the model can actually see.
+
+
+## 6. Bug: the turn that delivers nothing, and the leaking tags
+
+28.  Leaked markup in the answer: literal backslash-n pairs, closing think tags, closing
+    thinking tags. [py] [ui] - this is the one you are seeing in the window
+    All three symptoms are one event: text that LOOKS like structure being READ as
+    structure, by whichever layer is consuming the stream. Three layers have done it to me
+    today - Strata's OutputParser, the MCP transport, and the harness that renders my own
+    reasoning. Each assumes the model's structure arrives as plain text and must be
+    re-recognised by the reader, so every reader is a place it can go wrong.
+    Part of it is innocent: the vocabulary really does contain backslash-n as a single token
+    (ByteLevel BPE), so a model that writes those two characters in prose gets them back.
+    The tags are the harmful case.
+    Two real defects found in Strata's own parser, both now gated:
+      - a closing think tag quoted on its own line inside a code fence is treated as the
+        real end, so the thinking stops mid-example and the rest of the fence plus the real
+        answer becomes the answer. #537 only catches the tag right after a quote or a
+        backtick. Fixed behind "fence_quoted_thinking" (91927798, OFF by default).
+      - a tool call the model opens and never finishes is dropped silently: the answer ends
+        where the call began and no call runs. Now counted and logged (a69b91c3, 75f1774a).
+    WHY A BETTER PARSER MAY BE IMPOSSIBLE: the shipped corpus
+    (serve/fixtures/rcall_specimens.json, 37 recorded real cases) rejected a rule that
+    looked obviously right - "a real end is always followed by a line break". One real
+    specimen has the tag followed directly by text, and the correct answer is that the text
+    IS the answer. Quoted and genuine tags arrive byte-identical, so no local rule can tell
+    them apart. This codebase has already produced both directions of the bug (#804, then
+    #1058 fixing an over-correction of #804).
+    THE STRUCTURAL FIX: stop representing boundaries as text. The engine already knows them
+    as token IDs - 248068/248069 the think pair, 248058/248059 the tool_call pair,
+    248045/248046 the turn pair, all marked special in token_type.json - and it sends raw
+    IDs on its T lines today; the server detokenises them and throws the ID away one line
+    later (serve/server.py:3995). Roughly 80-120 lines, two files, IF the engine forwards
+    those IDs on T lines (UNVERIFIED - check generate.cpp:11818; if it filters them, add a
+    small C++ change plus a CUDA/HIP/SYCL rebuild per AGENTS.md).
+29.  The model stopping before or while writing tool calls.
+    Same failure as 28. Measured on this box over 200 rounds: 5 turns ended giving the
+    client neither answer text nor a completed call, and 13 turns were rescued by
+    reasoning_close_retry. The engine finished everything and the parser dropped nothing,
+    so it was never the engine.
+    INSTRUMENTED (75f1774a): the server now prints once per bad turn -
+        [strata] EMPTY TURN: the reply delivered no answer and no completed call
+                 (state=rcall held='...' abandoned=1 reasoning_tokens=142 rescued=0 refused=0)
+    and /metrics counts totals.empty_turns. It observes only; it rescues nothing.
+    PROVEN NOT TO BE THE FIX: the rescue behind "reasoning_close_retry": "calls" (778cfab5)
+    targets parser state "rcall" - a call opened INSIDE the reasoning. That state has never
+    appeared in the real log. Every observed death showed a "writing a tool call" phase, and
+    tool_start is emitted from exactly one method (_scan, frontend.py:1023), which only runs
+    from state "call" - the answer, after the thinking closed. Different state, different
+    shape. The test that "verified" the widening (ReasoningCloseRetryHeldCall) used a
+    synthetic rcall input I made up; it proves the mechanism works for a shape nobody has
+    observed. So: the widening is not a fix, and the rungs of this ladder were built in the
+    wrong order.
+    WHAT THE OBSERVED SHAPE DOES: with stream_tools on (the server always sets it), a call
+    announced but not completed is DROPPED at finish() - frontend.py:1378 clears the buffer
+    and returns, so the client gets neither answer nor call. That is the empty turn. The
+    leaked-markup path (finish() printing CALL_START + the held body as content,
+    frontend.py:1399) is a different branch, reached when the call was never announced.
+    Both are counted by abandoned_tool_calls; only the first is counted by empty_turns.
+    Which branch the real deaths took is still NOT directly measured - the probe was not
+    running for them. It is now, so the next one will say.
+    Do not assume the leaked tags in the window came from either branch: several were
+    provably my own text, written while discussing the tags.
+    STILL TO MEASURE: totals.empty_turns counts the genuinely-empty turns; the leaked-markup
+    turns are NOT counted by it today. Add that (a call abandoned in state call/json is
+    already counted in abandoned_tool_calls) and correlate it with what the window shows.
+
+## 7. Added 2026-10-23: server-side conversation log, and offline queueing
+
+30.  The server writes the conversation to disk (flag on, configurable dir, optional gzip).
+    [py] MEDIUM - and it is the instrument the glitch in section 6 actually needs
+    Today the server keeps only in-memory numbers: Service.history is a deque(maxlen=500) of
+    per-request stats, read by GET /metrics?requests=all. Nothing about the actual messages
+    is kept, so when a turn delivers nothing there is no record of what the model wrote.
+    That is why this took so long to pin down - the evidence left no trace.
+    A hook already exists, and it is closer to done than this item assumed: with
+    STRATA_DEBUG=1 the server prints a "req" line per request AND, at server.py:4253, the
+    model's ENTIRE raw generated text ("raw: ...") for every request. That is the ground
+    truth the whole diagnosis was missing, and it needs no code - it is one env var, now set
+    in strata-iq3_s.json. _debug_req (server.py:4373) keeps only an 80-char preview of the
+    last message, which cannot show a stray tag, but the raw line can.
+    What is still missing, and what this item is actually about: durability and shape. The
+    raw dump goes to stdout (so it lives only as long as the tee file), it is not keyed to a
+    conversation, there is no retention, and it is unbounded - with max_rounds 900 on a
+    700K-token chat it will grow fast.
+    Build: "conversation_log_dir" plus "conversation_log_gzip": true. Append-only JSONL, one
+    record per turn: the messages as received, the rendered prompt's tail, the model's raw
+    output, and the parser's verdict - delivered / finished_in / held_at_end / abandoned /
+    rescued / refused, all of which now exist on OutputParser. gzip is stdlib (serve/ uses no
+    gzip or zlib today, so it is new but trivial).
+    Care: this stores full conversation text on disk. It needs the same origin and host
+    guards as the other admin endpoints, a stated retention policy, and it must not write
+    request bodies that carry an API key.
+31.  Queue a request when the server is down and send it when it is back. [ui] MEDIUM
+    Today the page just errors. The SERVER side is already right: requests queue behind the
+    FIFO (docs/BATCHING.md - "By default Strata serves one request at a time: the others
+    wait in the server's queue"), and a restart never hangs a waiter - it ends with a clean
+    503 (serve/test_restart_waiters.py, #1012). So this is entirely client-side.
+    Needs: an outbox in IndexedDB (the store already exists), a health poll, ordering rules,
+    and a decision about a second message arriving while one is queued. It must survive a
+    reload, which is what makes it an IndexedDB problem rather than an array.
+32.  Related: item 19 (close the browser, keep the conversation running) is the server side of
+    the same wish. With 31 in place, 21 gets much easier - the output is already on disk, so
+    a reconnect can read it instead of needing a live stream.
+33.  Multiple tabs open at once, kept in sync. [ui] MEDIUM - and it splits into two problems
+    of very different size.
+    Today: nothing. app.js has no BroadcastChannel and no "storage" event listener, so two
+    tabs are two independent apps over one IndexedDB. Worse, every save writes the WHOLE chat
+    (saveChat / store.set("chat", ...)), so the tab that saves last silently overwrites the
+    other's work. Two tabs open now is already a data-loss bug, not just a missing feature.
+
+    EASY HALF - chat-list and metadata sync. [ui] roughly a day
+    A BroadcastChannel("strata") plus three messages: chat created, renamed, deleted, and
+    "chat N changed". Handlers refresh the sidebar and, if the open chat is the one that
+    changed, reload its messages. Rename and delete are whole-record operations, so they
+    broadcast cleanly.
+    Needs two things the store does not have:
+      - a revision or updatedAt per chat, so a save can be rejected when the record changed
+        under it (compare-and-put), otherwise the sync makes the clobbering more visible,
+        not less;
+      - tombstones for deletes, so a tab that still holds a deleted chat does not write it
+        back on its next save.
+    Deleting a chat while the OTHER tab is streaming into it needs a decision: stop that
+    stream, or let it finish and drop the result.
+
+    HARD HALF - one answer visible in both tabs, and queueing from both. [py] [ui]
+    The server side is already right: requests queue behind the FIFO (docs/BATCHING.md -
+    "the others wait in the server's queue"), so two tabs sending at once is safe and the
+    second simply waits. Nothing to build there.
+    What cannot be done client-side is sharing the STREAM. An in-flight answer belongs to one
+    tab's fetch and AbortController; the other tab cannot attach to it, and if the owning tab
+    closes, the generator's GeneratorExit (serve/server.py:4171) ends the request. So a
+    second tab shows nothing until a reload.
+    That is item 19 wearing a different hat: the generation has to be detached from the
+    connection that started it, buffered server-side, and re-attachable. Do 21 (and 31, which
+    puts the output on disk) first and this becomes a poll - much smaller than building it
+    now.
+    Order I would take: fix the clobbering (revision + tombstones) -> BroadcastChannel for
+    the list -> 21/31 -> shared stream.
+

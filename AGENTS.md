@@ -21,6 +21,12 @@ offers the same steps as tools.
   `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.
+- Read **[LESSONS.md](LESSONS.md)** before working on this box: it records things that cost time to discover
+  (what to never restart, why the server's own log is missing by default, which config keys reach only the
+  engine child, and which parser rules real recorded data has already rejected).
+- **Add to [LESSONS.md](LESSONS.md) whenever you learn something the hard way.** One short entry, with the
+  evidence that produced it - a measured number beats an adjective, and cite `file:line` you actually read.
+  Delete an entry when it stops being true. Do not fold these into AGENTS.md: this file grows, AGENTS.md should not.
 
 ## Contributing a change or report
 
