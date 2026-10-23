@@ -807,6 +807,7 @@ class OutputParser:
         self.pending: list[list] = []
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
+        self.abandoned = 0           # a call the model opened and never finished, dropped at the end of the turn
         self.fence, self.line, self.ticks = "", "", 0
         # recover (opt-in, the config's "tool_call_recovery"): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
@@ -1316,6 +1317,10 @@ class OutputParser:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
                 out.append(Event("tool_call", call=self.scall))
+            else:
+                # announced (so the client saw a tool start) and never finished: nothing is delivered for it (#211),
+                # which from the chat looks like the engine died.  Counted, so the server can say so instead.
+                self.abandoned += 1
             self.buf = ""
             self._reset_scan()
             return out
@@ -1325,7 +1330,9 @@ class OutputParser:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
             text = CALL_START + self.buf if self.state in ("call", "json") and not self.bare else self.buf
-            out.append(Event(kind, text))
+            if self.state in ("call", "json") and not self.bare:
+                self.abandoned += 1             # the same unfinished call, counted the same way whatever
+            out.append(Event(kind, text))       # stream_tools says (that flag decides only whether it was announced)
             self.buf = ""
         return out
 

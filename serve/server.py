@@ -4262,6 +4262,12 @@ class Service:
             self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
                   f"reasoning (quoted, or the turn did not end on a stop)", flush=True)
+        if parser.abandoned:
+            # the model opened a tool call and stopped without closing it: nothing is delivered for it (#211), so
+            # without this line the turn simply looks dead - the answer ends early and no call ever runs.
+            self.totals["abandoned_tool_calls"] = self.totals.get("abandoned_tool_calls", 0) + parser.abandoned
+            print(f"[strata] {parser.abandoned} tool call(s) the model opened and never finished: dropped, no call "
+                  "ran (the answer ends where the call began)", flush=True)
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
