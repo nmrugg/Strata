@@ -1056,8 +1056,13 @@ function updateAssistant(el, m, streaming) {
     else if (thinkingNow && settings.show && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
     if (!thinkingNow && det.open && !det.dataset.touched && !settings.openthink) { det._auto = true; det.open = false; }
     const body = el.querySelector(".thinking");
-    if (det.open || thinkingNow) body.textContent = m.reasoning;
-    else body.dataset.pending = "1";
+    // follow the thinking the way the chat follows the answer: only if the reader was already at the bottom of
+    // it.  Measured before the text grows, because the new thinking is exactly what pushes the bottom away.
+    const follow = streaming && nearEnd(body, 48);
+    if (det.open || thinkingNow) {
+      body.textContent = m.reasoning;
+      if (follow) body.scrollTop = body.scrollHeight;
+    } else body.dataset.pending = "1";
   }
   renderBubble(el, m, streaming);
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
@@ -1079,7 +1084,9 @@ function renderChat() {
   if (historyOn) renderSidebar();                   // the name in the list follows the first question
   scrollDown(true);
 }
-function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
+// how far from the bottom of a scroll container still counts as "at the bottom"
+const nearEnd = (s, px) => s.scrollHeight - s.scrollTop - s.clientHeight < px;
+function nearBottom() { return nearEnd($("chat-scroll"), 120); }
 function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom()) s.scrollTop = s.scrollHeight; }
 
 $("chat").addEventListener("click", (e) => {

@@ -792,5 +792,39 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(d4.s.drawerDirty(), true, "the share switch counts: until Apply it is worth nothing");
   done.push("drawer: closing with unapplied changes asks; Apply asks nothing; a refused flip is not a change");
 
+  // 30. the thinking block follows its own text only if you were already at the bottom of it.  The stub does not
+  // grow scrollHeight when text is set, so what is checked is the decision (follow or leave alone) and where it
+  // scrolls to, measured from the geometry before the update - which is exactly the order the page uses.
+  const sc = run({}, {});
+  await wait();
+  const smsg = {role: "assistant", text: "", reasoning: "one", time: Date.now()};
+  const sels = sc.s.msgEl(smsg, 0);
+  const sbody = sels.querySelector(".thinking");
+  sbody.clientHeight = 420;
+  sbody.scrollHeight = 420; sbody.scrollTop = 0;
+  smsg.reasoning = "line of thinking\n".repeat(40);
+  sc.s.updateAssistant(sels, smsg, true);
+  assert.strictEqual(sbody.scrollTop, 420, "at the bottom: it follows the new thinking");
+  sbody.scrollHeight = 1200; sbody.scrollTop = 100;      // the reader scrolled up to re-read
+  smsg.reasoning += "more thinking\n".repeat(40);
+  sc.s.updateAssistant(sels, smsg, true);
+  assert.strictEqual(sbody.scrollTop, 100, "scrolled up: not yanked to the bottom");
+  sbody.scrollTop = 1200 - 420 - 30;                    // 30px off the bottom: still "at" it
+  sc.s.updateAssistant(sels, smsg, true);
+  assert.strictEqual(sbody.scrollTop, 1200, "just off the bottom: it still follows");
+  // and a finished message is never dragged: a history block opened with "Keep thinking open" shows where you
+  // left it, not the end of the reasoning
+  const o = run({}, {});
+  await wait();
+  o.s.setSettings({openthink: true});
+  const om = {role: "assistant", text: "the answer", reasoning: "what it thought", time: Date.now()};
+  const oel = o.s.msgEl(om, 0);
+  const ob = oel.querySelector(".thinking");
+  ob.clientHeight = 20; ob.scrollHeight = 900; ob.scrollTop = 500;
+  o.s.updateAssistant(oel, om, false);
+  assert.strictEqual(ob.textContent, "what it thought", "a finished block is filled in");
+  assert.strictEqual(ob.scrollTop, 500, "and is not dragged to the bottom");
+  done.push("thinking: auto-scroll follows only when you were already at the bottom of it");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

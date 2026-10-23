@@ -39,6 +39,15 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_the_thinking_block_follows_only_if_you_were_at_its_bottom(self):
+        # the thinking body is its own scroll container (.st-collapse__body.thinking, max-height 420px in
+        # app.css).  The chat already follows the answer only when you are at the bottom of it; the block had
+        # nothing, so new thinking ran out of sight below the fold.
+        upd = self.body("updateAssistant")
+        self.assertIn("const follow = streaming && nearEnd(body, 48);", upd)
+        self.assertIn("if (follow) body.scrollTop = body.scrollHeight;", upd)
+        self.assertIn('function nearBottom() { return nearEnd($("chat-scroll"), 120); }', self.js)   # one helper
+
     def test_the_chat_list_name_uses_the_whole_row_until_you_hover(self):
         # the edit and delete buttons used opacity: 0, which keeps their space reserved: two 30px buttons, a 2px
         # gap and the row's 2px gap = 64px, so in the 260px rail (228px of content, 16px of the title's padding)
