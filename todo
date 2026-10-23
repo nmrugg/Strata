@@ -391,8 +391,13 @@ is section 8, items 34-36.
 
 ## 8. Added 2026-10-23: the streaming look, and the settings drawer (all Trivial)
 
-34.  No "Writing", no fake caret, and no answer bubble until there is real output. [ui] TRIVIAL
-    Three things pretend to be output while only thinking has arrived:
+34.  No "Writing", no fake caret, and no answer bubble until there is real output. [ui] DONE
+    2026-10-23 in f453c192: the placeholder branch and the caret class are gone from
+    renderBubble, `.cursor::after` is gone from app.css (the blink keyframes stay, the
+    Running/Writing tool badge uses them), and updateAssistant now hides the bubble unless
+    the message has text, a tool call or an error - and hides the meta row too while only
+    thinking has arrived, so a stopped or empty turn is still visible as one.
+    (Was:) Three things pretend to be output while only thinking has arrived:
       - the placeholder itself: `const ph = m.reasoning ? `<span class="muted cursor">Writing</span>` :
         `<span class="cursor"></span>`` in renderBubble (serve/web/app.js:1014);
       - the caret drawn on the bubble: `if (streaming) bubble.classList.add("cursor")`
@@ -401,14 +406,11 @@ is section 8, items 34-36.
         "fake green cursor at the end" being complained about;
       - the empty bubble: msgEl writes a `<div class="st-bubble">` for every assistant message before any
         content exists (serve/web/app.js:860-862), so a bordered empty box sits under the thinking block.
-    The want: nothing at all until the model writes content - no box, no word, no caret - and no caret left
-    over afterwards. Shape: hide the bubble (and the meta row) while `!m.text && !(m.tools && m.tools.length)`,
-    and stop adding the `cursor` class: the parts path already updates in place, so a caret that lives on the
-    bubble is never cleaned up by anything.
-    Careful: since the in-place render change (19aca0c2) nothing assigns the whole bubble's innerHTML, so the
-    placeholder branch must be
-    deleted, not replaced (LESSONS.md, "Three traps in that same render path", trap 3 - the placeholder is now
-    cleared explicitly at app.js:1018, and that clear can go with it).
+    What shipped: the placeholder branch was deleted rather than replaced (nothing else in the parts
+    path assigns the whole bubble), the explicit clear that 19aca0c2 had needed for it went with it,
+    and hiding the element beat deleting it - msgEl still creates the bubble, so the parts machinery
+    keeps stable element references and the thinking block is the only thing on screen while the
+    model thinks.
 
 35.  A "Waiting" state while an MCP tool runs, instead of Idle. [ui] mostly; [py] possibly one field
     The header pill and the Monitor's state card come from /metrics' `live.state`, which is derived at
@@ -429,8 +431,12 @@ is section 8, items 34-36.
     means setting a state around the tool round in run_with_mcp (serve/server.py:4389) and live[] at :3423,
     which also shows up for API clients - worth it only if other clients should see it.
 
-36.  The settings drawer should warn when it is closed with changes not applied. [ui] TRIVIAL
-    Three ways to close it and none of them checks: `$("drawer-close").onclick` and `$("scrim").onclick`
+36.  The settings drawer should warn when it is closed with changes not applied. [ui] DONE
+    2026-10-23 in 73e775ae: `closeDrawer()` asks once when `drawerDirty()`, and the X, the
+    scrim and Escape all go through it; `drawerSettings()` is now the single read of the
+    controls, shared by Apply and the check. The share switch counts as a change; a
+    `s-mcpthink` flip whose own confirm was refused does not.
+    (Was:) Three ways to close it and none of them checks: `$("drawer-close").onclick` and `$("scrim").onclick`
     (serve/web/app.js:1534-1535) and Escape (serve/web/app.js:1536). Only Apply writes: the
     `$("s-apply").onclick` block at :1500 reads every control into `settings` and `store.set("sampling", ...)`.
     So compare the controls against `settings` (the same reads loadDrawer at :1421 writes, and every switch is
