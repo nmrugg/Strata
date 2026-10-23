@@ -140,12 +140,15 @@ function run(hooks, stored, seed) {
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
   const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
                removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); }};
-  const env = {
+  const confirms = [], confirmAnswer = {yes: true};   // the page asks confirm() twice now: the tool-thinking
+  const env = {                                        // guard and the discard guard - record and answer both
     document, localStorage: {getItem: (k) => (k in stored ? stored[k] : null), setItem: (k, v) => { stored[k] = v; }},
     indexedDB: idb, location: {hash: "", pathname: "/", origin: "http://127.0.0.1"},
     history: {replaceState() {}}, matchMedia: () => ({matches: false, addEventListener() {}}),
     fetch: hooks.fetch || (async () => ({ok: true, json: async () => ({}), text: async () => ""})),
-    setTimeout: () => 0, requestAnimationFrame: () => 0, navigator: {clipboard: {writeText: async () => {}}},
+    confirm: (m) => { confirms.push(m); return confirmAnswer.yes; },
+    setTimeout: () => 0, clearTimeout: () => 0, requestAnimationFrame: () => 0,
+    navigator: {clipboard: {writeText: async () => {}}},
     innerWidth: 1200, innerHeight: 800, window: win, queueMicrotask,
   };
   const names = Object.keys(env);
@@ -155,8 +158,9 @@ function run(hooks, stored, seed) {
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, apiMessages, get busy() { return busy; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
+    "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
-  return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win};
+  return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer};
 }
 
 const wait = () => new Promise((r) => setTimeout(r, 30));
@@ -712,6 +716,60 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(pbul.children.length, 1, "and only the answer's block is in it");
   assert.ok((pbul.children[0]._html || "").includes("the answer begins"), "which is the answer");
   done.push("placeholder: 'Writing' is dropped when the first answer text arrives");
+
+  // 29. the settings drawer warns before it throws away changes (todo #36).  Only Apply writes, so closing on
+  // the X, the scrim or Escape used to discard whatever the switches had been moved to, silently.
+  const dr = run({}, {});
+  await wait();
+  dr.s.openDrawer(true);
+  await wait();                                   // let the panel finish reading the server's share state
+  assert.strictEqual(dr.s.drawerDirty(), false, "opening the panel changes nothing");
+  dr.s.el("drawer-close").onclick();              // the X, not the function: what the page actually wires up
+  assert.strictEqual(dr.confirms.length, 0, "closing with nothing changed asks nothing");
+  assert.strictEqual(dr.s.el("drawer").dataset.open, "false", "and it closes");
+  dr.s.openDrawer(true);
+  await wait();
+  dr.s.el("s-temp").value = 0.9;
+  assert.strictEqual(dr.s.drawerDirty(), true, "a moved slider is an unapplied change");
+  dr.confirmAnswer.yes = false;
+  dr.s.el("scrim").onclick();                     // and the scrim, the third way out is the Escape key
+  assert.strictEqual(dr.confirms.length, 1, "closing asks first");
+  assert.strictEqual(dr.s.el("drawer").dataset.open, "true", "a refused discard leaves the panel open");
+  assert.strictEqual(dr.s.settings.temperature, 0.6, "and the setting in force is untouched");
+  dr.confirmAnswer.yes = true;
+  dr.s.el("scrim").onclick();
+  assert.strictEqual(dr.confirms.length, 2, "it asked again");
+  assert.strictEqual(dr.s.el("drawer").dataset.open, "false", "agreeing closes it");
+  assert.strictEqual(dr.s.settings.temperature, 0.6, "discarded, exactly as the warning said");
+  dr.s.openDrawer(true);
+  await wait();
+  dr.s.el("s-temp").value = 0.9;
+  await dr.s.el("s-apply").onclick();
+  assert.strictEqual(dr.confirms.length, 2, "Apply asks nothing");
+  assert.strictEqual(dr.s.el("drawer").dataset.open, "false", "and Apply closes");
+  assert.strictEqual(dr.s.settings.temperature, 0.9, "and Apply is what writes the setting");
+  const d2 = run({}, {});
+  await wait();
+  d2.s.openDrawer(true);
+  await wait();
+  d2.s.el("s-mdmine").setAttribute("aria-checked", "true");
+  assert.strictEqual(d2.s.drawerDirty(), true, "a switch moved counts as unapplied too");
+  const d3 = run({}, {});
+  await wait();
+  d3.s.openDrawer(true);
+  await wait();
+  d3.confirmAnswer.yes = false;                   // the tool-round-thinking switch asks its own question first
+  d3.s.el("s-mcpthink").onclick();
+  assert.strictEqual(d3.s.el("s-mcpthink").getAttribute("aria-checked"), "false", "a refused flip left it off");
+  assert.strictEqual(d3.s.drawerDirty(), false, "so it is not an unapplied change");
+  assert.strictEqual(d3.confirms.length, 1, "one question only: the switch's own, not a discard prompt");
+  const d4 = run({}, {});
+  await wait();
+  d4.s.openDrawer(true);
+  await wait();
+  d4.s.el("s-share").setAttribute("aria-checked", "true");
+  assert.strictEqual(d4.s.drawerDirty(), true, "the share switch counts: until Apply it is worth nothing");
+  done.push("drawer: closing with unapplied changes asks; Apply asks nothing; a refused flip is not a change");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

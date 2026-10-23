@@ -188,6 +188,15 @@ twice - placeholder, then clear. Related: in `updateAssistant` the open/close ru
 **before** the thinking body is filled, or an auto-opened block renders open and empty - the
 `toggle` listener skips the fill for an open we asked for ourselves (`det._auto`).
 
+**Run the negative control before committing.** A test that calls the function instead of
+driving the wired control passes on code that is not wired at all. Found by doing exactly
+that on 2026-10-23: the drawer's "warn before discarding" case called `closeDrawer()`
+directly, so it still passed when the X and the scrim were rewired back to
+`openDrawer(false)` (`node exit=0` on deliberately broken code). Rewriting the case to click
+`el("drawer-close").onclick()` and `el("scrim").onclick()` made the same control fail with
+`closing asks first - 0 !== 1`. Wire-level claims need wire-level tests; text assertions on
+the wiring line are a second-best, not a substitute.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right

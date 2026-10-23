@@ -1496,20 +1496,33 @@ $("s-mcpthink").onclick = () => {
   $("s-mcpthink").setAttribute("aria-checked", String(on));
 };
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
+// what the drawer's controls say, without applying it.  Apply and the "you have unapplied changes" check both
+// read through this, so the two can never drift apart (the same reason toolSync compares against toolHtml's
+// helpers rather than re-deriving the strings).
+function drawerSettings() {
+  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
+  const on = (id) => $(id).getAttribute("aria-checked") === "true";
+  return {thinking: sel ? sel.dataset.v : DEFAULTS.thinking, temperature: +$("s-temp").value,
+          top_p: +$("s-topp").value, top_k: +$("s-topk").value, max: $("s-max").value.trim(),
+          seed: $("s-seed").value.trim(), show: on("s-show"), openthink: on("s-openthink"),
+          opentools: on("s-opentools"), mdmine: on("s-mdmine"), mdtheirs: on("s-mdtheirs"),
+          esp: on("s-esp"), mcp: on("s-mcp"), mcpthink: on("s-mcpthink")};
+}
+// only Apply writes, so closing the panel with switches changed throws the changes away.  The share switch is
+// counted too: it decides what Apply sends the server, and until Apply it is worth nothing.
+function drawerDirty() {
+  const d = drawerSettings();
+  if (Object.keys(DEFAULTS).some((k) => String(d[k]) !== String(settings[k]))) return true;
+  return ($("s-share").getAttribute("aria-checked") === "true") !== sharedOn;
+}
+function closeDrawer() {
+  if (drawerDirty() && !confirm("Discard the changes in this panel?\n\nThey take effect only when you press Apply, so closing now leaves every setting as it was.")) return;
+  openDrawer(false);
+}
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
   const mdWas = settings.mdmine, thWas = settings.mdtheirs;
-  settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
-              top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
-              show: $("s-show").getAttribute("aria-checked") === "true",
-              openthink: $("s-openthink").getAttribute("aria-checked") === "true",
-              opentools: $("s-opentools").getAttribute("aria-checked") === "true",
-              mdmine: $("s-mdmine").getAttribute("aria-checked") === "true",
-              mdtheirs: $("s-mdtheirs").getAttribute("aria-checked") === "true",
-              esp: $("s-esp").getAttribute("aria-checked") === "true",
-              mcp: $("s-mcp").getAttribute("aria-checked") === "true",
-              mcpthink: $("s-mcpthink").getAttribute("aria-checked") === "true"};
+  settings = drawerSettings();
   store.set("sampling", settings);
   // these two switches are about how the messages on the screen are drawn, so redraw them - but never while an
   // answer is streaming: send() paints into the element it captured (app.js's
@@ -1531,9 +1544,9 @@ $("s-apply").onclick = async () => {
   toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
-$("drawer-close").onclick = () => openDrawer(false);
-$("scrim").onclick = () => openDrawer(false);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
+$("drawer-close").onclick = closeDrawer;
+$("scrim").onclick = closeDrawer;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") closeDrawer(); });
 
 // ------------------------------------------------------------------ start
 setBusy(false);

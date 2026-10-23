@@ -39,6 +39,17 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_the_drawer_warns_before_losing_unapplied_changes(self):
+        # todo #36: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
+        self.assertIn("function closeDrawer()", self.js)
+        self.assertIn('$("drawer-close").onclick = closeDrawer;', self.js)
+        self.assertIn('$("scrim").onclick = closeDrawer;', self.js)
+        self.assertIn('=== "true") closeDrawer(); });', self.js)                 # Escape goes the same way
+        self.assertIn("function drawerDirty()", self.js)
+        self.assertIn("function drawerSettings()", self.js)
+        self.assertIn("settings = drawerSettings();", self.js)      # Apply and the check read the controls once
+        self.assertNotIn('$("scrim").onclick = () => openDrawer(false);', self.js)
+
     def test_markdown_for_each_author_with_a_per_message_switch(self):
         # todo #5 and #6: the drawer sets the default for each author (mine off, the model's on, as the page
         # always drew them) and every message carries an "md" button in its meta row that overrides that one.
