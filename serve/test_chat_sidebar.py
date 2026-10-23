@@ -41,7 +41,11 @@ class ChatSidebar(unittest.TestCase):
 
     def test_a_chat_with_unsent_text_is_marked_in_the_list(self):
         css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
-        self.assertIn('.chat-item__title.draft::before { content: "*"; color: var(--st-accent); margin-right: 4px; }', css)
+        # the draft marker is the row's own ink - no colour of its own.  The accent is deliberately free for the
+        # unread-reply marker (todo #37), which should win when a chat has both.
+        rule = re.search(r"\.chat-item__title\.draft::before \{([^}]*)\}", css).group(1)
+        self.assertIn('content: "*"', rule)
+        self.assertNotIn("color", rule)
         item = self.body("chatItem")
         self.assertIn('draftKeyOf(c.id, !c.messages.length)', item)     # the same key the composer writes
         self.assertIn('class="chat-item__title${drafted ? " draft" : ""}"', item)
