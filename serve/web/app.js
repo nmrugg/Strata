@@ -599,6 +599,16 @@ let chats = [], chat = null, chatId = "", db = null;
 let messages = store.get("chat", []);         // off: the single chat; on: the open chat's messages
 let sidebarQuery = "", sidebarOpen = true, storageWarned = false;
 
+// the composer's text is kept per conversation: switching chats swaps it, and a reload finds it back.
+// A chat that has no messages yet is keyed as "blank" instead of by its id: newChat() invents a fresh id on
+// every page load and blank chats are never written to the store, so an id-keyed draft would be orphaned by a
+// reload - and persisting blank chats just to keep an id stable would fill the list with empty chats. One blank
+// draft is the right amount, because one blank chat is as good as another (startChat reuses the one it has).
+const draftKeyOf = (id, blank) => "draft." + (blank ? "blank" : id);
+const draftKey = () => draftKeyOf(chatId, !messages.length);
+function saveDraft() { store.set(draftKey(), $("input").value); }
+function loadDraft() { const t = store.get(draftKey(), ""); if ($("input").value !== t) { $("input").value = t; autosize(); } }
+
 function warnStorage(text) {
   if (storageWarned) return;
   storageWarned = true;
@@ -667,6 +677,8 @@ async function openHistory(fromScreen) {
   if (!chats.includes(chat)) chats.push(chat);
   chatId = chat.id;
   messages = chat.messages;
+  if (!store.get(draftKey(), "")) saveDraft();      // text typed before the store opened belongs to this chat
+  loadDraft();
   if (!db) warnStorage("This browser will not keep IndexedDB; the list lives in memory until the page is closed.");
 }
 
@@ -718,9 +730,11 @@ function renderSidebar() {
 }
 
 function showChat(c) {
+  if (c.id !== chatId) saveDraft();            // what you typed belongs to the chat you are leaving
   chat = c; chatId = c.id; messages = c.messages;
   store.set("chatId", chatId);
   writeChat(chat);            // renderChat renders the list, so the write here does not render it again
+  loadDraft();                // and the box takes on the text that belongs to the chat you are entering
   renderChat();
 }
 function openChat(id) {
@@ -731,7 +745,18 @@ function openChat(id) {
 function startChat() {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (!messages.length) { $("input").focus(); return; }        // already a fresh chat
-  const prev = chatId, c = newChat();
+  const prev = chatId;
+  // one blank chat is as good as another: making a second one only fills the list with rows that all say
+  // "New chat", and each would then want its own draft. Reuse the blank one the list already has.
+  const blank = chats.find((c) => !c.messages.length);
+  if (blank) {
+    showChat(blank);
+    $("input").focus();
+    toast("info", "New chat", "You already had a blank chat - it is in the list on the left.", 6000,
+          {label: "Undo", run: () => openChat(prev)});
+    return;
+  }
+  const c = newChat();
   chats.push(c);
   showChat(c);
   $("input").focus();
@@ -743,6 +768,9 @@ function deleteChat(c) {
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
   if (i < 0) return;                                // the list only ever passes a chat it holds
   chats.splice(i, 1);
+  const dkey = draftKeyOf(c.id, !c.messages.length);   // a delete that is undone should not cost you the text
+  const draft = store.get(dkey, "");                   // you were typing into it
+  store.set(dkey, "");
   dropRecord(c);                                    // the record; the Undo puts it back
   if (wasOpen) {
     const next = chats[0] || newChat();
@@ -752,6 +780,7 @@ function deleteChat(c) {
   toast("info", "Chat deleted", chatTitle(c), 6000, {label: "Undo", run: () => {
     if (chats.includes(c)) return;                  // already put back
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
+    if (draft) store.set(dkey, draft);                // before showChat, which reads the draft back
     if (wasOpen) showChat(c); else { writeChat(c); renderSidebar(); }
   }});
 }
@@ -1201,12 +1230,14 @@ function setBusy(on) {
 async function send() {
   const text = $("input").value.trim();
   if ((!text && !attachments.length) || busy) return;
+  const key = draftKey();                    // taken before the message lands: a blank chat is keyed differently
   messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
   renderAttachments();
   $("input").value = "";
   autosize();
+  store.set(key, "");                                          // sent: that draft is spent
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
@@ -1308,7 +1339,7 @@ $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
-$("input").addEventListener("input", autosize);
+$("input").addEventListener("input", () => { autosize(); saveDraft(); });
 
 $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
@@ -1561,6 +1592,7 @@ setBusy(false);
 // a narrow screen starts with the list closed so the chat has room
 setSidebar(store.get("sidebar", true) && !matchMedia("(max-width: 760px)").matches, false);
 setHistory(historyOn, false, false);                   // off by default: the page as it was
+if (!historyOn) loadDraft();                           // on: openHistory reads it once the store has answered
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });

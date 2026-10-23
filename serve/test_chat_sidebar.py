@@ -39,6 +39,22 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_the_composer_keeps_its_text_per_conversation(self):
+        # the box keeps what you typed: per chat across a switch, and across a reload.  A chat with no messages
+        # is keyed "blank" rather than by its id, because blank chats are never written to the store and newChat()
+        # invents a fresh id on every load - persisting them just to stabilise the id would fill the list with
+        # empty rows, and the list had no reason to hold more than one blank chat anyway.
+        self.assertIn('const draftKeyOf = (id, blank) => "draft." + (blank ? "blank" : id);', self.js)
+        self.assertIn("const draftKey = () => draftKeyOf(chatId, !messages.length);", self.js)
+        show = self.body("showChat")
+        self.assertIn("if (c.id !== chatId) saveDraft();", show)
+        self.assertIn("loadDraft();", show)
+        self.assertIn('addEventListener("input", () => { autosize(); saveDraft(); });', self.js)
+        self.assertIn("store.set(key, \"\");", self.body("send"))      # the key is taken before the message lands
+        self.assertNotIn("if (db) writeChat(chat);", self.body("openHistory"))
+        self.assertIn("const blank = chats.find((c) => !c.messages.length);", self.body("startChat"))
+        self.assertIn("if (!historyOn) loadDraft();", self.js)
+
     def test_the_thinking_block_follows_only_if_you_were_at_its_bottom(self):
         # the thinking body is its own scroll container (.st-collapse__body.thinking, max-height 420px in
         # app.css).  The chat already follows the answer only when you are at the bottom of it; the block had

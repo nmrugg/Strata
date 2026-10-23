@@ -160,7 +160,7 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, apiMessages, get busy() { return busy; }, " +
+    "bubbleParts, toolSync, toolOpen, apiMessages, get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
@@ -825,6 +825,54 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(ob.textContent, "what it thought", "a finished block is filled in");
   assert.strictEqual(ob.scrollTop, 500, "and is not dragged to the bottom");
   done.push("thinking: auto-scroll follows only when you were already at the bottom of it");
+
+  // 31. the composer keeps its text per conversation and across a reload: type in one chat, switch away, come
+  // back, and it is still there.  Sending spends it.
+  const g = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+                {a: {id: "a", title: "chat a", time: Date.now(), messages: [msg("first")]},
+                 b: {id: "b", title: "chat b", time: Date.now(), messages: [msg("second")]}});
+  await wait();
+  assert.strictEqual(g.s.chatId, "a", "chat a is open");
+  g.s.el("input").value = "half a question about a";
+  g.s.el("input")._l["input"]();                       // the page's own input handler saves as you type
+  assert.strictEqual(JSON.parse(g.stored["strata.draft.a"]), "half a question about a", "kept under this chat");
+  g.s.openChat("b");
+  await wait();
+  assert.strictEqual(g.s.el("input").value, "", "switching to b empties the box: b has no draft");
+  g.s.el("input").value = "something for b";
+  g.s.el("input")._l["input"]();
+  g.s.openChat("a");
+  await wait();
+  assert.strictEqual(g.s.el("input").value, "half a question about a", "back to a and the text is there");
+  const g2 = run({}, JSON.parse(JSON.stringify(g.stored)), JSON.parse(JSON.stringify(g.records)));
+  await wait();
+  assert.strictEqual(g2.s.el("input").value, "half a question about a", "and a reload finds it again");
+  g2.s.el("input").value = "asking now";
+  g2.s.el("input")._l["input"]();
+  await g2.s.send();
+  assert.strictEqual(JSON.parse(g2.stored["strata.draft.a"]), "", "sending spends the draft");
+  assert.strictEqual(g2.s.el("input").value, "", "and the box is empty");
+  // a blank chat is never written to the store and its id is invented per load, so its draft is the one "blank"
+  const bl = run({}, {"strata.history": "true"}, {});
+  await wait();
+  bl.s.el("input").value = "a fresh question";
+  bl.s.el("input")._l["input"]();
+  assert.strictEqual(JSON.parse(bl.stored["strata.draft.blank"]), "a fresh question", "the blank chat's draft");
+  const bl2 = run({}, JSON.parse(JSON.stringify(bl.stored)), {});
+  await wait();
+  assert.notStrictEqual(bl2.s.chatId, bl.s.chatId, "the blank chat has a different id on the new load");
+  assert.strictEqual(bl2.s.el("input").value, "a fresh question", "and the draft is still found");
+  // and New chat reuses the blank chat that is already there instead of adding a second
+  const n = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("full")},
+                {full: {id: "full", title: "full", time: Date.now(), messages: [msg("used")]},
+                 blank: {id: "blank", title: "", time: Date.now(), messages: []}});
+  await wait();
+  assert.strictEqual(n.s.chatId, "full", "a used chat is open");
+  n.s.startChat();
+  await wait();
+  assert.strictEqual(n.s.chatId, "blank", "New chat reused the blank chat already in the list");
+  assert.strictEqual(n.s.chats.length, 2, "and did not add a third row to it");
+  done.push("drafts: the box keeps its text per chat and across a reload, and New chat reuses a blank chat");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
