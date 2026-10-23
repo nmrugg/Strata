@@ -39,6 +39,13 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_a_chat_with_unsent_text_is_marked_in_the_list(self):
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        self.assertIn('.chat-item__title.draft::before { content: "*"; color: var(--st-accent); margin-right: 4px; }', css)
+        item = self.body("chatItem")
+        self.assertIn('draftKeyOf(c.id, !c.messages.length)', item)     # the same key the composer writes
+        self.assertIn('class="chat-item__title${drafted ? " draft" : ""}"', item)
+
     def test_the_composer_keeps_its_text_per_conversation(self):
         # the box keeps what you typed: per chat across a switch, and across a reload.  A chat with no messages
         # is keyed "blank" rather than by its id, because blank chats are never written to the store and newChat()

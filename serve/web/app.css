@@ -112,6 +112,9 @@ main { flex: 1; min-height: 0; display: flex; }
                     padding: 8px; color: var(--st-ink-soft); font: 500 var(--st-fs-sm)/1.35 var(--st-font);
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item:hover .chat-item__title { color: var(--st-ink); }
+/* a chat whose composer still holds text you have not sent (app.js keeps a draft per conversation).  The
+   current row does not need it - you are looking at the box - so it is only drawn where the list is redrawn */
+.chat-item__title.draft::before { content: "*"; color: var(--st-accent); margin-right: 4px; }
 .chat-item.on .chat-item__title { color: var(--st-ink); font-weight: var(--st-fw-bold); }
 /* the edit and delete buttons take no room until they are shown: they are two 30px buttons, a 2px gap and the
    row's own 2px gap = 64px, which in the 260px rail (228px of content, 16px of the title's own padding) left the

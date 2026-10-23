@@ -874,5 +874,30 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(n.s.chats.length, 2, "and did not add a third row to it");
   done.push("drafts: the box keeps its text per chat and across a reload, and New chat reuses a blank chat");
 
+  // 32. a conversation that still holds unsent text is marked in the list.  The stub does not parse the row's
+  // innerHTML, so what is checked is the markup the page generates for the row.
+  const mk = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+                 {a: {id: "a", title: "chat a", time: Date.now(), messages: [msg("first")]},
+                  b: {id: "b", title: "chat b", time: Date.now(), messages: [msg("second")]}});
+  await wait();
+  const rowHtml = (id) => mk.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
+  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "nothing marked yet");
+  mk.s.el("input").value = "typing in a";
+  mk.s.el("input")._l["input"]();
+  mk.s.openChat("b");
+  await wait();
+  assert.ok(rowHtml("a").includes('class="chat-item__title draft"'), "chat a is marked: it has unsent text");
+  assert.ok(!rowHtml("b").includes('class="chat-item__title draft"'), "chat b is not");
+  assert.ok(rowHtml("a").includes("you have text typed here that has not been sent"), "and the tooltip says why");
+  mk.s.openChat("a");
+  await wait();
+  assert.strictEqual(mk.s.el("input").value, "typing in a", "and opening it gives the text back");
+  mk.s.el("input").value = "";
+  mk.s.el("input")._l["input"]();
+  mk.s.openChat("b");
+  await wait();
+  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "an emptied draft clears the marker");
+  done.push("chat list: a conversation with unsent text is marked with an asterisk");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
