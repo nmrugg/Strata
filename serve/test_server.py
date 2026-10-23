@@ -2300,6 +2300,22 @@ class DesktopVramNote(unittest.TestCase):
             self.assertFalse(server.linux_desktop({}))
 
 
+class StartBeep(unittest.TestCase):
+    """the config's "start_beep": the terminal's bell at the end of the "ready:" line.  Off unless the key is a
+    real true, so the absent key - every config that does not name it - keeps the narration byte-identical."""
+
+    def test_on(self):
+        from serve.server import start_beep
+        self.assertEqual(start_beep({"start_beep": True}), chr(7))
+
+    def test_off(self):
+        from serve.server import start_beep
+        self.assertEqual(start_beep({}), "")                                # absent: the default
+        self.assertEqual(start_beep({"start_beep": False}), "")
+        self.assertEqual(start_beep({"start_beep": "true"}), "")            # a string is not a bool
+        self.assertEqual(start_beep({"start_beep": 1}), "")                 # as for "lazy_load", "api_monitor"
+
+
 class StartFailureLog(unittest.TestCase):
     """#496: whatever stopped the engine before READY, the error carries this start's last log lines."""
 

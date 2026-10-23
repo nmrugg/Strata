@@ -125,6 +125,25 @@ served at `/` and is also read per request (`server.py:5119`) but carries **no**
 `Cache-Control`, so a plain reload can show a stale page - hard-refresh it. Only `serve/*.py`
 and the config need the human to restart (and you never do it yourself - see Existential).
 
+**`/health`'s `loaded` does not mean "the model is loaded".** It is
+`Service.loaded()` = `not hasattr(engine, "alive") or engine.alive()` (`serve/server.py:2941-2943`),
+and `alive()` is just "the engine child process has not exited" - `proc.poll() is None`
+(`serve/server.py:872-875`). It is also useless as a start-up readiness signal, because
+the port does not listen until the model is already up: `httpd = serve(svc, ...)` is
+`serve/server.py:6633`, after `loading the model (the first start takes a minute or two)
+...` at `serve/server.py:6448` and after the `StrataEngine(...)` constructor. So a page
+has exactly one signal - "my fetch of /health stopped failing" - and cannot tell "still
+loading" from "not started yet". That is why the start-up sound is a **server-side console
+bell**, not a page sound (a page sound was tried on 2026-10-23 and rejected: it also needs
+a click before any browser will play it). With `"lazy": true` or the idle-unload timer the
+model can still come and go under an open page, and the page does not notice:
+`loadHealth()` re-polls only after a *failed* fetch (`serve/web/app.js:100-109`).
+
+**The app.js harness stubs `setTimeout` to a no-op** (`serve/test_chat_sidebar.js`, `env`),
+so anything the page schedules - `loadHealth`'s 2 s retry, a toast's dismissal - never
+fires in a test. Call the function yourself instead of waiting for the timer, and say so
+in the comment, or the test looks like it covers the retry when it covers nothing.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right

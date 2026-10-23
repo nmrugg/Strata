@@ -20,11 +20,13 @@ control tags as literal text anywhere in your output.
 
 ## Your job
 
-Work the **Trivial** tier of `todo` — items 1 through 8 — **one at a time**, in this order:
+Work the **Trivial** tier of `todo` — items 2 through 8 — **one at a time**, in this order.
+Item 1 (warn on closing while a request runs) is **already done**, commit `7a6e63ac`; do not
+redo it. Standing instruction from the human: **no legacy browser fallbacks** — current
+browsers only (see `LESSONS.md`, "No legacy browser fallbacks").
 
 | # | item | shape |
 |---|---|---|
-| 1 | Warn on closing the browser while a request is running | `app.js` only |
 | 2 | Play a sound / beep on start up | `app.js`, maybe one server line |
 | 3 | Option: auto-expand thinking | `app.js` + `index.html` |
 | 4 | Option: auto-expand tool calls | same |
@@ -33,7 +35,7 @@ Work the **Trivial** tier of `todo` — items 1 through 8 — **one at a time**,
 | 7 | Stop the UI flashing while the model writes | `app.js` re-render path |
 | 8 | Be able to open and close thinking / tool calls while the engine is writing | `app.js` |
 
-Do 1, stop, and wait. **Never chain items.** The workflow is:
+Do 2, stop, and wait. **Never chain items.** The workflow is:
 
 1. Read the relevant code and tell me in two sentences what you found and what you'll change.
 2. Make the change. Keep it to the one item.

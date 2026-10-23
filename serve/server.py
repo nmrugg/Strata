@@ -5929,6 +5929,13 @@ def desktop_vram_note(backend, vram_free_mib, args: list, desktop: bool) -> str:
             f"{(DESKTOP_RESERVE_MIB - reserve) / 1024:.1f} GB less, a few % of speed)")
 
 
+def start_beep(cfg: dict) -> str:
+    """the config's "start_beep": the terminal's bell (chr(7)) when the model is ready, so a first start that
+    takes a minute or two says out loud when it is over.  "" unless the key is a real true, as for "lazy_load"
+    and "api_monitor"; off when the key is absent.  A log made with "2>&1 | tee" gets one BEL byte in it."""
+    return chr(7) if cfg.get("start_beep") is True else ""
+
+
 def lan_addresses() -> list[str]:
     """This PC's IPv4 addresses on its networks (what another device types in), without loopback/link-local."""
     import socket
@@ -6633,9 +6640,10 @@ def main() -> int:
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
+    bell = start_beep(cfg)                              # "start_beep": true in the config; absent is off
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
-          f"{', API key required' if svc.api_key else ''})", flush=True)
+          f"{', API key required' if svc.api_key else ''}){bell}", flush=True)
     print(f"       open http://{here}:{a.port}/ in a browser to chat; close this window to stop the model", flush=True)
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         # issue #26: reachable from other devices - say at which address, and what can still block it

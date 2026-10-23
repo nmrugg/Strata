@@ -57,6 +57,7 @@ class Apply(unittest.TestCase):
                         {"sampling.temperature": -1}, {"sampling.top_p": 0}, {"sampling.top_k": 65},
                         {"sampling.min_p": 2}, {"reasoning_budget_tokens": 1.5}, {"fit_max_tokens": "yes"},
                         {"effort_position": "middle"}, {"vram_reserve_mib": -5}, {"idle_unload_s": True},
+                        {"start_beep": "yes"}, {"start_beep": 1},
                         {"aliases": [1]}, {}, None, ["x"]):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 runconfig.apply(CFG, changes)
@@ -72,6 +73,8 @@ class Apply(unittest.TestCase):
         self.assertEqual(got["sampling.temperature"]["value"], 0.7)
         self.assertEqual(got["vram_reserve_mib"]["value"], 1500)
         self.assertIsNone(got["fit_max_tokens"]["value"])
+        self.assertEqual(got["start_beep"]["kind"], "bool")
+        self.assertIsNone(got["start_beep"]["value"])               # not in the file: off
         self.assertEqual(got["anthropic_thinking"]["choices"], ["model", "on_request"])
         self.assertNotIn("api_key", got)
         self.assertNotIn("mcp_servers", got)
@@ -113,13 +116,15 @@ class Http(unittest.TestCase):
         self.assertEqual(status, 200, v)
         self.assertEqual({k["key"]: k["value"] for k in v["keys"]}["sampling.temperature"], 0.7)
         with contextlib.redirect_stdout(io.StringIO()):
-            status, v = self.call("POST", {"set": {"sampling.temperature": 1.0, "open_browser": False}},
+            status, v = self.call("POST", {"set": {"sampling.temperature": 1.0, "open_browser": False,
+                                                   "start_beep": True}},
                                   {"Origin": f"http://{self.host}"})
         self.assertEqual(status, 200, v)
-        self.assertEqual(v["changed"], ["sampling.temperature", "open_browser"])
+        self.assertEqual(v["changed"], ["sampling.temperature", "open_browser", "start_beep"])
         cfg = self.saved()
         self.assertEqual(cfg["sampling"]["temperature"], 1.0)
         self.assertIs(cfg["open_browser"], False)
+        self.assertIs(cfg["start_beep"], True)                    # the bell: a key of the file like any other
         for k in ("mcp_servers", "cors_origins", "host", "args", "exe"):
             self.assertEqual(cfg[k], CFG[k], k)
         self.assertEqual(json.loads((self.path.parent / "strata-q2_0.json.bak").read_text(encoding="utf-8")), CFG)
