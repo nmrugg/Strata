@@ -3593,6 +3593,57 @@ class ReasoningCloseRetry(unittest.TestCase):
         self.assertEqual(c["message"]["reasoning_content"], 'two plus two is "4"')
 
 
+class HeldCallEngine(EndsInsideThinkingEngine):
+    """#2101: the reply that ACTUALLY kills a tool turn.  The model opens a tool call, never closes it, and stops.
+    The half-written call is held by the parser (state "rcall"), so the turn yields no answer and no call: the user
+    sees nothing at all.  A prompt that closes the thinking gets the answer."""
+    THOUGHT = "unused: set in __init__"
+
+    def __init__(self, tok):
+        super().__init__(tok)
+        self.THOUGHT = ("Let me run that.\n<tool_call>\n<function=lookup>\n<parameter=term>\nalpha\n"
+                        "</parameter>\nthen I will read the result and tell the user what I found.")
+
+
+class ReasoningCloseRetryHeldCall(unittest.TestCase):
+    """#2101: reasoning_close_retry also rescues a reply stuck inside an unterminated tool call (#2101)."""
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.engine = HeldCallEngine(self.tok)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def chat(self):
+        body = {"model": "m", "max_tokens": 300,
+                "messages": [{"role": "user", "content": "look up alpha"}],
+                "tools": [{"type": "function", "function": {"name": "lookup",
+                                                            "parameters": {"type": "object",
+                                                                           "properties": {"term": {"type": "string"}}}}}]}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())["choices"][0]
+
+    def test_off_the_turn_delivers_nothing(self):
+        c = self.chat()
+        self.assertEqual(len(self.engine.prompts), 1)
+        self.assertFalse(c["message"].get("content"))
+        self.assertFalse(c["message"].get("tool_calls"))       # the held call is never delivered: the death
+
+    def test_on_it_closes_the_thinking_and_answers(self):
+        self.svc.reasoning_close_retry = True
+        c = self.chat()
+        self.assertEqual(len(self.engine.prompts), 2, "the retry sends one more prompt with the thinking closed")
+        self.assertEqual(c["message"]["content"], HeldCallEngine.ANSWER)
+        self.assertEqual(c["finish_reason"], "stop")
+
+
 class ThinkingBudget(unittest.TestCase):
     """#123: reasoning_budget_tokens (opt-in): at the budget the thinking is wrapped up and the model answers,
     continuing from the prompt plus what it generated plus the wrap-up (a prefix the engine already holds)."""

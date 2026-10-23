@@ -4000,8 +4000,8 @@ class Service:
                                 for ev in evs:
                                     if self.reasoning_loop_recovery and ev.kind == "reasoning":
                                         reasoning_text += ev.text or ""
-                                    if ev.kind in ("content", "tool_start", "tool_call"):
-                                        answered = True
+                                    if ev.kind in ("content", "tool_call"):
+                                        answered = True     # something the client can actually use came out
                                     yield "event", ev
                                 if evs:
                                     last_out = time.perf_counter()
@@ -4105,7 +4105,12 @@ class Service:
                                   "instruction (reasoning_loop_recovery)", flush=True)
                             continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
-                                and not answered and not wrap and not opens and parser.state == "reasoning"
+                                and not answered and not wrap and not opens
+                                and parser.state in ("reasoning", "rcall")
+                                # #2101: "rcall" is a <tool_call> the model opened and never closed - it wrote the
+                                # tag and then rambled or stopped.  Holding it back means no answer AND no call, so the
+                                # turn delivers nothing at all; the parser's own rcall branch already treats a </think>
+                                # inside a held call as "it never was a call", which is what closing the thinking does.
                                 and parser.buf != THINK_END         # #537: not after a held </think>, the end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
