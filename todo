@@ -3,40 +3,36 @@
 Sorted easiest first. Tags: [config] = flag or setting only, no code. [ui] = web app only.
 [py] = serve/server.py. [eng] = C++ engine. [exists] = already works, just not obvious.
 Checked against the tree on 2026-10-23 (engine 0.1.43.1).
-
-## 1. Trivial - config, or a few lines of UI (under an hour each)
-
-1.  Warn on closing the browser while a request is running. [ui] DONE 2026-10-23
-    Done in 7a6e63ac ("ask when leaving while thinking"): warnOnLeave added at
-    serve/web/app.js:1017-1019, wired to the busy flag at 1024-1025. The legacy
-    e.returnValue fallback was removed deliberately - see LESSONS.md, "No legacy
-    browser fallbacks" (repo precedent commit 894329fc).
-2.  Play a sound on start up. [py] [ui]
-    The server already prints a start narration; a beep is a print in the web page once
-    /health turns ok. Browsers block autoplay before first interaction, so it needs a
-    click-armed flag - still small.
-3.  Auto-expand thinking (option). [ui]
-    The thinking block is a details element; a settings flag drives the open attribute.
-4.  Auto-expand tool calls (option). [ui]
-    Same shape as 3.
-5.  Toggle markdown / plain text for my own messages. [ui]
-    Extends the existing renderer; store the choice in the settings blob.
-6.  Display my content in markdown. [ui]
-    markdown() already exists and is used for assistant turns only.
-7.  Prevent UI flashing while the model is writing. [ui]
-    Re-rendering whole messages per chunk; needs in-place updates. Bounded, one file.
-8.  Be able to open and close thinking and tool calls while the engine is writing. [ui]
-    Something is going on, maybe repaiting, that makes clicking them do nothing most of the time.
+Numbers are kept for cross-reference, so they are not renumbered when work finishes.
+Items 1-8 (the whole Trivial tier) were done and removed on 2026-10-23: 513721b8 (leave
+warning), ae1598b0 ("start_beep"), 78d2a8d1 (keep-thinking/keep-tool-calls open, and tool
+blocks opening on the click), 19aca0c2 (the answer updated in place), 86c61adb and 3ebbb7fe
+(markdown per author, the per-message "md" switch, and its colours). The live Trivial work
+is section 8, items 34-36.
 
 ## 2. Small - one file, clear scope (a few hours each)
 
-9.  Read and switch to another conversation while one is running. [ui] TRIVIAL - 3 lines
+9.  Read and switch to another conversation while one is running. [ui] NOT three lines - the
+    old text here was wrong, corrected 2026-10-23
     The server does not care; it is purely the page refusing. app.js has three guards:
-    openChat (line 721), startChat (726), deleteChat (736), all
+    openChat (serve/web/app.js:727), startChat (:732), deleteChat (:742), all
     "if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }".
-    The answer keeps streaming into its own message object either way, so switching away
-    and back is already safe. Drop the guard in openChat (reading) and keep or soften it
-    for startChat/deleteChat.
+    WHAT WAS WRONG: "the answer keeps streaming into its own message object either way, so
+    switching away and back is already safe". The message object is indeed safe, but the
+    ELEMENT is not: showChat (:720) calls renderChat(), which removes every .st-msg node,
+    while send() holds the one it captured at :1205 (`const el = $("chat").lastElementChild`)
+    and paint() writes into that captured node (:1227). Drop the guard as written and the
+    answer stops appearing mid-stream, silently. Same trap as LESSONS.md, "Three traps in
+    that same render path", trap 1.
+    The real fix, still one file: paint() must resolve its element each time (keep a
+    message-id -> element map, or look the row up by index in the chat container), and
+    showChat re-attaches the row of a chat that has a live stream. Then drop the guard in
+    openChat and keep or soften it for startChat/deleteChat.
+    A second thing, verified but unresolved: saveChat() at the end of send() writes the
+    chat that is OPEN at that moment (:712 uses `chat`, not the chat the request started
+    in), so with switching allowed a finished answer would not be written to its own
+    chat's record until that chat is opened again. Item 10 (two streams) is the same
+    identity problem, larger.
 10.  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
     The SERVER ALREADY DOES THIS: docs/BATCHING.md - "By default Strata serves one request
     at a time: the others wait in the server's queue." Nothing engine-side is missing, and
@@ -409,7 +405,8 @@ Checked against the tree on 2026-10-23 (engine 0.1.43.1).
     over afterwards. Shape: hide the bubble (and the meta row) while `!m.text && !(m.tools && m.tools.length)`,
     and stop adding the `cursor` class: the parts path already updates in place, so a caret that lives on the
     bubble is never cleaned up by anything.
-    Careful: since item 7 nothing assigns the whole bubble's innerHTML, so the placeholder branch must be
+    Careful: since the in-place render change (19aca0c2) nothing assigns the whole bubble's innerHTML, so the
+    placeholder branch must be
     deleted, not replaced (LESSONS.md, "Three traps in that same render path", trap 3 - the placeholder is now
     cleared explicitly at app.js:1018, and that clear can go with it).
 
