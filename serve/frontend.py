@@ -784,6 +784,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 
 
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
+THINK_HOLD_MAX = 4096    # a closing think tag inside an open code fence is held at most this long for it to close
 
 
 class OutputParser:
@@ -791,7 +792,7 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False):
+                 recover: bool = False, fence_think: bool = False):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -808,6 +809,10 @@ class OutputParser:
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.abandoned = 0           # a call the model opened and never finished, dropped at the end of the turn
+        # fence_think (opt-in, the config's "fence_quoted_thinking"): a closing think tag written on its own line
+        # inside a code fence is the model showing the tag, not the end of its thinking.  Off by default: the
+        # default path stays exactly as #537 left it.
+        self.fence_think = fence_think
         self.fence, self.line, self.ticks = "", "", 0
         # recover (opt-in, the config's "tool_call_recovery"): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
@@ -926,6 +931,37 @@ class OutputParser:
     def _in_code(self) -> bool:
         """The text so far leaves the next character inside a code fence or inline code."""
         return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+
+    def _fence_quoted_think(self, i: int) -> bool | None:
+        """The closing think tag at `i`, with the reasoning text so far inside a code fence (opt-in, fence_think).
+
+        #537 catches the tag written right after a quote or a backtick; a tag on its own line between fence markers is
+        preceded by a newline, so that rule misses it and the thinking ends in the middle of the example - the rest of
+        the fence and the model's real answer then arrive as the answer.  The two cases cannot be told apart at the tag
+        itself: an unclosed fence in the reasoning and a quoted example look identical until the fence closes or the
+        turn ends.  The template's own shape breaks the tie - a real end is followed by a blank line, a quoted example
+        has the closing fence marker on the next line.
+
+        True: the fence closes on a non-blank line before any blank one, so the tag was part of the example.
+        False: not inside a fence, or a blank line comes first (the real end), or the wait ran out.
+        None: inside an open fence with neither signal yet - hold and decide on the next piece.
+        """
+        snap = (self.fence, self.line, self.ticks)
+        self._track(self.buf[:i])
+        fence, ticks = self.fence, self.ticks
+        self.fence, self.line, self.ticks = snap
+        # a fence opened on its own line is tracked as `fence`; one written after text on the same line is only
+        # visible as an odd number of backticks over the paragraph.
+        close = fence * 3 if fence else ("`" * 3 if ticks % 2 == 1 else None)
+        if close is None:
+            return False
+        tail = self.buf[i + len(THINK_END):]
+        for ln in tail.split("\n")[1:-1]:        # the last piece is still arriving; the tag's own line cannot close
+            if ln.lstrip().startswith(close):
+                return True
+            if not ln.strip():
+                return False                      # a blank line: the template's own end of the thinking
+        return None if len(tail) < THINK_HOLD_MAX else False
 
     def _quoted_think_end(self, i: int) -> bool | None:
         """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the
@@ -1149,6 +1185,8 @@ class OutputParser:
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
                 quoted = self._quoted_think_end(i)
+                if quoted is False and self.fence_think:      # a tag inside an open code fence may be an example
+                    quoted = self._fence_quoted_think(i)
                 if quoted is None:                   # held like a partial tag until the character after it is here
                     if i:
                         out.append(Event("reasoning", self._track(self.buf[:i])))
@@ -1326,6 +1364,11 @@ class OutputParser:
             return out
         if self.state == "reasoning" and self.buf == THINK_END:   # the output ends on a held `</think>`: its end
             self.buf, self.state = "", "content"
+        elif (self.fence_think and self.state == "reasoning" and self.buf.startswith(THINK_END)):
+            # held undecided inside an open fence and the turn ended: the fence never closed, so the tag was the
+            # end after all and what follows it is the answer the client is waiting for.
+            self.buf, self.state = self.buf[len(THINK_END):], "content"
+            self.lead = True
         if self.buf:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
