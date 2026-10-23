@@ -181,10 +181,11 @@ chat" when a setting changes. (2) A tool block opened by a click handler that ca
 replaces the node between mousedown and mouseup and no `click` fires (`todo` #8; now the
 browser does the toggling and the `toggle` listener only records `t.open = d.open`). (3) Once
 the answer is drawn as parts there is **no whole-bubble assignment left to clean up after
-anything that painted one**: the `Writing` placeholder would have sat above the answer for the
-rest of the turn. The parts path now clears it on the transition (`if (bubble._ph) {
-bubble.innerHTML = ""; ... }`) and the test asserts the transition assigns the bubble exactly
-twice - placeholder, then clear. Related: in `updateAssistant` the open/close rules must run
+anything that paints into that bubble**: a `Writing` placeholder written on one frame sat above
+the answer for the rest of the turn, and the fix at the time was to clear it explicitly on the
+transition. That placeholder is now gone altogether (`todo` #34: no placeholder, no caret, and
+the bubble is `hidden` until there is real output), but the trap stands for anything else that
+paints into the bubble - clear it explicitly, or hide the element. Related: in `updateAssistant` the open/close rules must run
 **before** the thinking body is filled, or an auto-opened block renders open and empty - the
 `toggle` listener skips the fill for an open we asked for ourselves (`det._auto`).
 

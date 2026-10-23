@@ -1006,21 +1006,15 @@ function renderBubble(el, m, streaming) {
   const bubble = el.querySelector(".st-bubble");
   if (m.error) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
-    bubble.firstChild.textContent = m.error;
-    bubble._parts = null; bubble._ph = "";
+    bubble.querySelector(".msg-error").textContent = m.error;      // not firstChild: it is the div we just wrote
+    bubble._parts = null;
     return;
   }
-  if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    const ph = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
-    if (bubble._ph !== ph) { bubble.innerHTML = ph; bubble._ph = ph; bubble._parts = null; }
-    return;
-  }
-  if (bubble._ph) {          // the placeholder ("Writing") has to go: nothing below replaces the whole bubble
-    bubble.innerHTML = ""; bubble._ph = ""; bubble._parts = null;
-  }
+  // todo #34: there is no placeholder and no caret any more.  Until the model has produced something real the
+  // bubble itself is hidden (see updateAssistant), so this path only ever draws actual output.
   const plain = !msgMd(m);
   if (bubble._plain !== undefined && bubble._plain !== plain) {   // this message's md button was clicked: redraw
-    bubble.innerHTML = ""; bubble._parts = null; bubble._ph = "";
+    bubble.innerHTML = ""; bubble._parts = null;
   }
   bubble._plain = plain;
   const want = bubbleParts(m), have = bubble._parts || [];
@@ -1031,8 +1025,7 @@ function renderBubble(el, m, streaming) {
   have.length = i;
   for (; i < want.length; i++) have.push(makePart(bubble, want[i], m));
   for (let i = 0; i < have.length; i++) updatePart(bubble, m, have[i], want[i]);
-  bubble._parts = have; bubble._ph = "";
-  if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
+  bubble._parts = have;
 }
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
@@ -1069,6 +1062,14 @@ function updateAssistant(el, m, streaming) {
   renderBubble(el, m, streaming);
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+  // todo #34: nothing that only pretends to be output.  Until the model has produced something real - an answer,
+  // a tool call, an error - there is no bubble on the screen at all, and while only thinking has arrived the meta
+  // row goes with it (its copy button was hidden anyway, and an "md" switch above nothing is noise).  The
+  // thinking block is what shows.  A finished message that delivered nothing keeps its meta row, so a stopped or
+  // empty turn is still visible as one.
+  const hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error;
+  el.querySelector(".st-bubble").hidden = !hasOutput;
+  el.querySelector(".st-msg__meta").hidden = !hasOutput && streaming;
 }
 function renderChat() {
   const chat = $("chat");

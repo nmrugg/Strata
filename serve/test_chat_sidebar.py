@@ -39,6 +39,23 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_nothing_pretends_to_be_output(self):
+        # todo #34: no "Writing" placeholder, no fake caret, and no answer bubble until there is real output.
+        # (The word "Writing" survives in one place on purpose: TOOL_STATE's label for a tool call that is being
+        # written, which IS real output.)
+        self.assertNotIn('<span class="muted cursor">Writing</span>', self.js)
+        self.assertNotIn('<span class="cursor">', self.js)
+        self.assertNotIn("const ph =", self.js)                          # the placeholder branch is gone
+        self.assertNotIn('classList.add("cursor")', self.js)             # and the caret with it
+        self.assertIn("bubble.querySelector(\".msg-error\").textContent", self.js)   # not firstChild: it is null in a stub
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        self.assertNotIn(".cursor::after", css)
+        self.assertIn("@keyframes blink", css)                           # the Running/Writing tool badge blinks
+        upd = self.body("updateAssistant")
+        self.assertIn("const hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error;", upd)
+        self.assertIn('el.querySelector(".st-bubble").hidden = !hasOutput;', upd)
+        self.assertIn('el.querySelector(".st-msg__meta").hidden = !hasOutput && streaming;', upd)
+
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #36: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
         self.assertIn("function closeDrawer()", self.js)

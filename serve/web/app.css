@@ -73,8 +73,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-msg__meta .st-btn--md[aria-checked="true"] { background: var(--st-surface-2); }
 /* an answer drawn as plain text: one element, the model's own line breaks kept */
 .st-bubble .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
-.cursor::after { content: ""; display: inline-block; width: 8px; height: 1.1em; margin-left: 2px; vertical-align: -3px;
-                 border-radius: 2px; background: var(--st-accent); animation: blink 1s steps(2) infinite; }
+/* todo #34: the fake caret rule is gone - the page no longer draws anything that pretends to be output while
+   only thinking has arrived, and that caret also stayed at the end of a finished answer.  The blink keyframes
+   stay: the Running/Writing badge on a tool block uses them (below). */
 @keyframes blink { 50% { opacity: 0; } }
 .msg-error { color: var(--st-danger-text); background: var(--st-danger-tint); border-radius: var(--st-r-md); padding: 10px 14px;
              font-size: var(--st-fs-md); }

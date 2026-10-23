@@ -64,8 +64,12 @@ function makeEl() {
   Object.defineProperty(el, "innerHTML", {get: () => el._html || "",
     set: (v) => { el._sets = (el._sets || 0) + 1; el._html = v; el.children = []; }});   // _sets counts whole-subtree replaces
   // a real classList has contains(), and the page's toggle listener uses it to tell a thinking block from a tool
-  // block; without it every toggle the test fires would throw
+  // block; without it every toggle the test fires would throw.  add() and remove() move className for real, so a
+  // test can see a class the page put there (the caret case) instead of passing on a stub that ignored it
   el.classList.contains = (c) => el.className.split(/\s+/).includes(c);
+  el.classList.add = (c) => { const set = new Set((el.className || "").split(/\s+/).filter(Boolean)); set.add(c);
+                              el.className = [...set].join(" "); };
+  el.classList.remove = (c) => { el.className = (el.className || "").split(/\s+/).filter((x) => x && x !== c).join(" "); };
   return el;
 }
 
@@ -698,24 +702,41 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(pel0.textContent, pm2.text, "its text is the whole answer so far");
   done.push("md: defaults per author, and a per-message switch that keeps its choice with the chat");
 
-  // 28. the "Writing" placeholder goes away when the answer starts.  With the parts path nothing replaces the
-  // whole bubble, so the transition has to drop the placeholder itself - otherwise it sits above the answer for
-  // the rest of the turn.  The stub keeps the placeholder as the bubble's _html, so what is checked here is that
-  // the transition assigned the bubble once more, to clear it, and that only the answer's part is left.
-  const pz = run({}, {});
+  // 28. nothing that only pretends to be output (todo #34): no "Writing", no caret, and no answer bubble at
+  // all until the model has produced something real.  The thinking block is what shows while it thinks.
+  const cz = run({}, {});
   await wait();
-  const pmsg = {role: "assistant", text: "", reasoning: "thinking first", time: Date.now()};
-  const pels = pz.s.msgEl(pmsg, 0);
-  const pbul = pels.querySelector(".st-bubble");
-  pz.s.updateAssistant(pels, pmsg, true);
-  assert.ok((pbul._html || "").includes("Writing"), "shown while only thinking has arrived");
-  assert.strictEqual(pbul._sets, 1, "one assignment: the placeholder itself");
-  pmsg.text = "the answer begins";
-  pz.s.updateAssistant(pels, pmsg, true);
-  assert.strictEqual(pbul._sets, 2, "the transition cleared the bubble once more");
-  assert.strictEqual(pbul.children.length, 1, "and only the answer's block is in it");
-  assert.ok((pbul.children[0]._html || "").includes("the answer begins"), "which is the answer");
-  done.push("placeholder: 'Writing' is dropped when the first answer text arrives");
+  const cmsg = {role: "assistant", text: "", reasoning: "thinking first", time: Date.now()};
+  const cels = cz.s.msgEl(cmsg, 0);
+  cz.s.updateAssistant(cels, cmsg, true);          // the streaming paint, the way send()'s frame loop does it
+  const cbul = cels.querySelector(".st-bubble");
+  assert.strictEqual(cbul.hidden, true, "no bubble while only thinking has arrived");
+  assert.strictEqual(cels.querySelector(".st-msg__meta").hidden, true, "and no meta row while it is still thinking");
+  assert.strictEqual(cbul._sets, undefined, "nothing was ever written into the bubble: no placeholder");
+  assert.ok(!cbul.className.includes("cursor"), "and no caret class on it");
+  assert.strictEqual(cels.querySelector("details.think").hidden, false, "the thinking block is what is visible");
+  cmsg.text = "the answer begins";
+  cz.s.updateAssistant(cels, cmsg, true);
+  assert.strictEqual(cbul.hidden, false, "the bubble appears with the first real text");
+  assert.strictEqual(cels.querySelector(".st-msg__meta").hidden, false, "and the meta row with it");
+  assert.ok((cbul.children[0]._html || "").includes("the answer begins"), "drawn once, as a part");
+  assert.strictEqual(cbul._sets, undefined, "and still no whole-bubble assignment anywhere in the turn");
+  // a tool call is real output too: the bubble shows for it, before any text arrives
+  const tcall = {role: "assistant", text: "", reasoning: "", time: Date.now(),
+                 tools: [{id: "c1", name: "x", state: "writing", at: 0, rat: 0}]};
+  assert.strictEqual(cz.s.msgEl(tcall, 0).querySelector(".st-bubble").hidden, false, "a call being written is output");
+  // a finished turn that delivered nothing keeps its meta row, so it is still visible as a turn
+  const eom = {role: "assistant", text: "", reasoning: "thought a while", time: Date.now(), stopped: true};
+  const eoel = cz.s.msgEl(eom, 0);
+  assert.strictEqual(eoel.querySelector(".st-bubble").hidden, true, "no empty box for it");
+  assert.strictEqual(eoel.querySelector(".st-msg__meta").hidden, false, "but the row stays");
+  assert.strictEqual(eoel.querySelector(".meta-text").textContent, "Stopped", "and says what happened");
+  // an error is output: the bubble shows it
+  const em = {role: "assistant", text: "", error: "the request failed", time: Date.now()};
+  const ebul = cz.s.msgEl(em, 0).querySelector(".st-bubble");
+  assert.strictEqual(ebul.hidden, false, "an error is shown");
+  assert.strictEqual(ebul.querySelector(".msg-error").textContent, "the request failed", "as its own element");
+  done.push("no fake output: no Writing, no caret, no bubble until text, a tool call or an error");
 
   // 29. the settings drawer warns before it throws away changes (todo #36).  Only Apply writes, so closing on
   // the X, the scrim or Escape used to discard whatever the switches had been moved to, silently.
