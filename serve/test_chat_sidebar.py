@@ -60,6 +60,10 @@ class ChatSidebar(unittest.TestCase):
         css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
         self.assertIn(".st-bubble .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }", css)
         self.assertIn('.st-msg__meta .st-btn--md[aria-checked="true"]', css)
+        # "on" is the same ink as the rest of that meta line, with a chip behind it - not the accent
+        on_rule = re.search(r'\.st-msg__meta \.st-btn--md\[aria-checked="true"\] \{([^}]*)\}', css).group(1)
+        self.assertNotIn("accent", on_rule)
+        self.assertIn("background", on_rule)
         self.assertIn("margin-left: auto", css)                    # the md switch, at the right end of the row
         # a user bubble is painted on the accent with --st-accent-ink text (components.css:66), so the markdown
         # styles written for the answer's --st-surface bubble go unreadable there: code.inline measured

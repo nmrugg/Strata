@@ -68,7 +68,9 @@ main { flex: 1; min-height: 0; display: flex; }
    (components.css:64), so there it stays the rightmost item either way */
 .st-msg__meta .st-btn--md { width: auto; min-width: 30px; height: 22px; padding: 0 7px; border-radius: 6px;
                             margin-left: auto; font: 600 var(--st-fs-xs) var(--st-font-mono); color: var(--st-ink-muted); }
-.st-msg__meta .st-btn--md[aria-checked="true"] { color: var(--st-accent); background: var(--st-surface-2); }
+/* on = the same ink as the rest of that line (You · 02:57 PM, Stopped · 14 tool calls), with a chip behind it;
+   the accent as text was too loud, and on a light chip it was the only green on the row */
+.st-msg__meta .st-btn--md[aria-checked="true"] { background: var(--st-surface-2); }
 /* an answer drawn as plain text: one element, the model's own line breaks kept */
 .st-bubble .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 .cursor::after { content: ""; display: inline-block; width: 8px; height: 1.1em; margin-left: 2px; vertical-align: -3px;
