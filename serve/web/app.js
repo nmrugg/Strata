@@ -1010,10 +1010,19 @@ function assistantMessages(m, keepThinking) {
   return out;
 }
 
+// closing the tab or reloading mid-request ends the request: the server sees the disconnect and stops the
+// model, so nothing you were waiting for is kept.  While one is running the browser is asked to confirm first.
+// The listener exists only while a request is running - a permanent one is what makes a browser refuse to
+// keep the page in its back/forward cache.
+function warnOnLeave(e) {
+  e.preventDefault();
+}
 function setBusy(on) {
   $("stop-btn").hidden = !on;
   $("send-btn").disabled = on;
   $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
+  if (on) window.addEventListener("beforeunload", warnOnLeave);
+  else window.removeEventListener("beforeunload", warnOnLeave);
 }
 
 async function send() {

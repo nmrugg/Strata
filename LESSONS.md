@@ -105,6 +105,26 @@ Anchor patterns, and prefer `/metrics` counters (`totals.empty_turns`,
 reporting `0`. Absent means zero, not broken — but it reads like a missing feature and cost
 a detour.
 
+**The web app's harness had never run `send()`.** `serve/test_chat_sidebar.js`
+drives the real `serve/web/app.js` against a stub DOM, but that stub had no `innerHeight`
+and no `lastElementChild`, so the first attempt to call `send()` from it died at
+`app.js:1138` (`autosize` reads a bare `innerHeight`); the next line it would have died on
+is `app.js:1041` (`$("chat").lastElementChild`, also absent from the stub). Both are in the
+stub now, `send()` is exported to the harness, and its `fetch` can be replaced with a stream
+that stops when the test says so - so stream-path changes can be tested instead of
+eyeballed. The one place `busy` (`app.js:563`) reaches the UI is `setBusy()`
+(`app.js:1021`), so anything that means "while a request is running" belongs there: that is
+where the leave warning went, and `app.js` went from 0 to 1 `beforeunload` registrations,
+attached in `setBusy(true)` and undone in `setBusy(false)` (a permanent one costs the
+browser's back/forward cache).
+
+**A web-app change needs no restart.** `serve/server.py:5054-5068` reads every
+`/web/...` file (`app.js`, `app.css`) from disk on each request and sends
+`Cache-Control: no-cache`, so the new script is live on the next page load. `index.html` is
+served at `/` and is also read per request (`server.py:5119`) but carries **no**
+`Cache-Control`, so a plain reload can show a stale page - hard-refresh it. Only `serve/*.py`
+and the config need the human to restart (and you never do it yourself - see Existential).
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right
@@ -145,6 +165,14 @@ for both positions.** A parser fix that changed the default path violated the re
 had to be re-gated. The repo already has the pattern: `false | true | "calls"` mirrors
 `reasoning_loop_recovery: false | "stop" | "recover"`, and a tri-state avoids new flag
 sprawl. Also validate the *absent* case — `cfg.get(k)` returning `None` is not `False`.
+
+**No legacy browser fallbacks.** On 2026-10-23 the human deleted the second half of the
+leave warning - `e.returnValue = ""` alongside `e.preventDefault()` - with the words "they
+are not being supported" (commit 894329fc; `warnOnLeave` is now three lines,
+`serve/web/app.js:1017-1019`). The harness assertion that checked the older form had to be
+deleted with it, and it failed loudly first (`AssertionError: the older form the page sets
+is there too - null !== ''`), which is the right order: the test was wrong, the code was
+deliberate. Write for current browsers only.
 
 **Do not edit the human's config without asking.** It silently changes behaviour on the
 next restart, and it can turn a fix off. A config key that is documented as off-by-default

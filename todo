@@ -6,8 +6,11 @@ Checked against the tree on 2026-10-23 (engine 0.1.43.1).
 
 ## 1. Trivial - config, or a few lines of UI (under an hour each)
 
-1.  Warn on closing the browser while a request is running. [ui]
-    Nothing today: app.js has no beforeunload handler. Add one keyed off the busy flag.
+1.  Warn on closing the browser while a request is running. [ui] DONE 2026-10-23
+    Done in 7a6e63ac ("ask when leaving while thinking"): warnOnLeave added at
+    serve/web/app.js:1017-1019, wired to the busy flag at 1024-1025. The legacy
+    e.returnValue fallback was removed deliberately - see LESSONS.md, "No legacy
+    browser fallbacks" (repo precedent commit 894329fc).
 2.  Play a sound on start up. [py] [ui]
     The server already prints a start narration; a beep is a print in the web page once
     /health turns ok. Browsers block autoplay before first interaction, so it needs a

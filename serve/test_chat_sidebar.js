@@ -19,6 +19,7 @@ function makeEl() {
     scrollHeight: 0, scrollTop: 0, clientHeight: 0,
     addEventListener(t, f) { (this._l = this._l || {})[t] = f; },
     appendChild(c) { this.children.push(c); c._parent = this; return c; },
+    get lastElementChild() { return this.children.length ? this.children[this.children.length - 1] : null; },
     querySelectorAll(sel) { return this.children.filter((c) => c.className.includes(sel.slice(1))); },
     // the page reads a node it built with innerHTML; the stub hands back a place to write into
     querySelector(sel) {
@@ -114,20 +115,24 @@ function run(hooks, stored, seed) {
                     createElement: () => makeEl(), documentElement: {dataset: {}},
                     addEventListener() {}, querySelectorAll: () => []};
   const idb = makeIdb(hooks, seed);
+  // window listeners are recorded so a test can ask "is anything holding the page open right now, and what
+  // does it do to the event" - the page's own leave warning is added and removed with the busy flag
+  const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
+               removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); }};
   const env = {
     document, localStorage: {getItem: (k) => (k in stored ? stored[k] : null), setItem: (k, v) => { stored[k] = v; }},
     indexedDB: idb, location: {hash: "", pathname: "/", origin: "http://127.0.0.1"},
     history: {replaceState() {}}, matchMedia: () => ({matches: false, addEventListener() {}}),
-    fetch: async () => ({ok: true, json: async () => ({}), text: async () => ""}),
+    fetch: hooks.fetch || (async () => ({ok: true, json: async () => ({}), text: async () => ""})),
     setTimeout: () => 0, requestAnimationFrame: () => 0, navigator: {clipboard: {writeText: async () => {}}},
-    innerWidth: 1200, window: {addEventListener() {}}, queueMicrotask,
+    innerWidth: 1200, innerHeight: 800, window: win, queueMicrotask,
   };
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
-    "deleteChat, renameChat, saveChat, renderSidebar, setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
-  return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls};
+    "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, get busy() { return busy; }, setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+  return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win};
 }
 
 const wait = () => new Promise((r) => setTimeout(r, 30));
@@ -396,6 +401,40 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   await wait();
   assert.strictEqual(click.records["a"].title, "half-typed name", "and the rename still finishes after the click");
   done.push("rename: a click inside the field leaves the rename open");
+
+  // 21. closing the browser while a request is running asks first.  Driven through send() with a stream that
+  // stops after one chunk, so it is the real path: a request puts the listener on, finishing takes it off, and
+  // an idle page has none at all (a permanent one is what makes a browser refuse to keep the page in its
+  // back/forward cache).
+  let release;
+  const leave = run({fetch: async () => ({ok: true, json: async () => ({}), body: {getReader: () => ({
+    n: 0,
+    read() {
+      if (!this.n++) return Promise.resolve({done: false, value: new TextEncoder()
+        .encode("data: " + JSON.stringify({choices: [{delta: {content: "hi"}}]}) + "\n\n")});
+      return new Promise((res) => { release = () => res({done: true}); });
+    }})}})}, {});
+  await wait();
+  const holds = () => (leave.win._l.beforeunload || []);
+  const closeTheTab = () => { const e = {preventDefault() { e.canceled = true; }};
+                              holds().forEach((f) => f(e)); return e; };
+  assert.strictEqual(holds().length, 0, "an idle page does not hold the tab shut");
+  assert.ok(!closeTheTab().canceled, "so closing it is not questioned");
+  leave.s.el("input").value = "a question";
+  const settled = leave.s.send();
+  await wait();
+  assert.ok(release, "the fake stream is waiting on its second read");
+  assert.ok(leave.s.busy, "the request is in flight");
+  assert.strictEqual(holds().length, 1, "while it runs the page holds the tab");
+  assert.ok(closeTheTab().canceled, "closing now asks first");
+  release();
+  await settled;
+  assert.strictEqual(leave.s.busy, null, "the request finished");
+  assert.strictEqual(leave.s.messages[1].text, "hi", "and the answer is on the screen");
+  assert.strictEqual(holds().length, 0, "when it ends the hold is gone");
+  leave.s.setBusy(false);
+  assert.strictEqual(holds().length, 0, "ending twice does not throw and does not double-remove");
+  done.push("leave warning: on while a request runs, off when it ends, none on an idle page");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
