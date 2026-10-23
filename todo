@@ -109,6 +109,13 @@ Checked against the tree on 2026-10-23 (engine 0.1.43.1).
       3. The switch itself. 18 GiB is ~6 s of I/O on the single FIFO slot, so opening a
          pinned chat while another generates needs a queue or a second engine (see the
          parallel and replicas items).
+    SPECIFIED: docs/CONVERSATION_PINNING.md (2026-10-23) - what exists, the measured
+    cost per token (19,560 bytes from the park log), the four phases, the limits that
+    will bite, and the decision being asked for. Start there, not here.
+    Read it before writing code. Phase 0 in that spec is a measurement with the
+    existing manual save/restore, and it answers the question everything else depends
+    on: does a restored conversation actually get matched by the client's next prompt.
+
     DO NOT START WITH CODE. Answer the design question first: for chats near 1M tokens is
     "always cached" a disk promise (~6 s to resume, ~18 GiB of free disk per chat) or a RAM
     promise (impossible at that size here)? That answer drives all three steps, and it
