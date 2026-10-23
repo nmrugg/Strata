@@ -37,6 +37,10 @@ function makeEl() {
       // second one - which is what lets a test assert that a thinking block or a tool block survived a repaint
       const root = /class="([^"]*)"/.exec(html);
       if (root) { n.className = root[1].trim(); n._parentMade = root[1].split(/\s+/); }
+      // a bare boolean attribute in the inserted markup is part of the element the page made: without this a
+      // shell that starts hidden looks visible to the tests, and "the container vanished" tests green
+      const openTag = /^<[a-z][\w-]*([^>]*)>/i.exec(html);
+      if (openTag && /[\s](hidden)(?=[\s>]|$)/.test(openTag[1])) n.hidden = true;
       if (where === "beforeend") { this._ins = (this._ins || 0) + 1; this.children.push(n); n._parent = this; }
       else if (where === "afterend") {
         const p = this._parent; if (!p) throw new Error("insertAdjacentHTML afterend with no parent");
@@ -963,6 +967,12 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
                      "and it fills with only that run's slice, not the whole reasoning");
   const grps = gb._parts.filter((p) => p.kind === "group");
   assert.strictEqual(grps.length, 2, "two containers, one per round");
+  // the bug this test first missed: the container shell carried hidden and nothing cleared it, so every tool
+  // call in a grouped turn was display:none.  Visible, closed, and holding its call - that is the shape.
+  assert.strictEqual(grps[0].el.hidden, false, "a container with calls in it is visible");
+  assert.strictEqual(grps[0].el.open, false, "and closed once the turn is over");
+  assert.strictEqual(grps[0].body.children.length, 1, "the call is inside it, not gone");
+  assert.ok((grps[0].body.children[0].className || "").includes("tool-call"), "which is the tool block");
   assert.strictEqual(grps[0].body.children.length, 1, "the first holds its one call");
   assert.strictEqual(grps[1].body.children.length, 1, "the second holds its one call");
   const titles = grps.map((p) => p.el.querySelector(".work-title").textContent);

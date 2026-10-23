@@ -1063,7 +1063,7 @@ function addBlocks(host, p, blks) {
 const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summary>${icon("thinking", "st-icon st-icon--sm")}` +
   `<span class="think-title"></span>${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
   `<div class="st-collapse__body thinking"></div></details>`;
-const WORK_SHELL = `<details class="st-collapse work" data-work hidden><summary>${icon("tool", "st-icon st-icon--sm")}` +
+const WORK_SHELL = `<details class="st-collapse work" data-work><summary>${icon("tool", "st-icon st-icon--sm")}` +
   `<span class="work-title"></span>${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
   `<div class="st-work__body"></div></details>`;
 // what a container is holding, from what is in it: no counts while it is still working, because "3 steps"
@@ -1106,6 +1106,7 @@ function syncWork(det, m, w, streaming) {            // det IS the details, as i
       `${ms ? ` \u00b7 ${fmt(ms / 1000, 1)} s` : ""}`;
   const wantOpen = streaming === true;
   if (det.dataset.touched !== "1" && det.open !== wantOpen) { det._auto = true; det.open = wantOpen; }
+  det.hidden = w.children.length === 0;                // an empty container shows nothing; a real one always does
 }
 function renderBubble(el, m, streaming) {
   const bubble = el.querySelector(".st-bubble");
