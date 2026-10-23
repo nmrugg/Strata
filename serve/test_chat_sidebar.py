@@ -70,9 +70,9 @@ class ChatSidebar(unittest.TestCase):
         # the thinking body is its own scroll container (.st-collapse__body.thinking, max-height 420px in
         # app.css).  The chat already follows the answer only when you are at the bottom of it; the block had
         # nothing, so new thinking ran out of sight below the fold.
-        upd = self.body("updateAssistant")
-        self.assertIn("const follow = streaming && nearEnd(body, 48);", upd)
-        self.assertIn("if (follow) body.scrollTop = body.scrollHeight;", upd)
+        think = self.body("syncThink")
+        self.assertIn("const follow = streaming && p.i === p.runs - 1 && nearEnd(body, 48);", think)
+        self.assertIn("if (follow) body.scrollTop = body.scrollHeight;", think)
         self.assertIn('function nearBottom() { return nearEnd($("chat-scroll"), 120); }', self.js)   # one helper
 
     def test_the_chat_list_name_uses_the_whole_row_until_you_hover(self):
@@ -102,8 +102,12 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("@keyframes blink", css)                           # the Running/Writing tool badge blinks
         upd = self.body("updateAssistant")
         self.assertIn("const hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error;", upd)
-        self.assertIn('el.querySelector(".st-bubble").hidden = !hasOutput;', upd)
+        self.assertIn("bubble.hidden = !hasOutput && !m.reasoning;", upd)
         self.assertIn('el.querySelector(".st-msg__meta").hidden = !hasOutput && streaming;', upd)
+        # thinking lives inside the bubble now (todo #12), so a thinking-only message keeps the element and
+        # drops its chrome instead of hiding it - hiding the bubble would hide the thinking with it
+        self.assertIn('bubble.classList.add("thinking-only")', upd)
+        self.assertIn(".st-bubble.thinking-only { background: none; border: 0; padding: 0; }", css)
 
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #36: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
@@ -188,9 +192,9 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="s-openthink"', self.html)
         self.assertIn('"s-openthink"', self.js)
         self.assertIn("openthink: false", self.js)                          # off by default
-        upd = self.body("updateAssistant")
-        self.assertIn("settings.openthink && !det.dataset.touched", upd)     # a click the user made still wins
-        self.assertIn("!settings.openthink", upd)                            # off: it closes when the answer starts
+        think = self.body("syncThink")
+        self.assertIn("settings.openthink === true", think)                  # the switch, per block
+        self.assertIn('if (det.dataset.touched !== "1" && det.open !== wantOpen)', think)  # a click wins
 
     def test_it_is_opt_in_and_off_is_the_page_from_the_last_release(self):
         self.assertIn('store.get("history", false)', self.js)             # off by default

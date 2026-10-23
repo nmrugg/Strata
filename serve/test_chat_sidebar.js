@@ -29,20 +29,37 @@ function makeEl() {
     // code under test depends on element identity and on what sits next to what
     insertAdjacentHTML(where, html) {
       const n = makeEl(); n._html = html;
+      const tag = /^<([a-z][\w-]*)/i.exec(html);              // a real parse gives the element its tag, and the
+      if (tag) n.tagName = tag[1].toUpperCase();              // page's listeners test on it (tagName !== DETAILS)
+      // the page inserts exactly one element per markdown block, so one call makes one child: faithful where
+      // the code under test depends on element identity and on what sits next to what.  The root element's own
+      // classes are registered so querySelector finds the node the page just made instead of inventing a
+      // second one - which is what lets a test assert that a thinking block or a tool block survived a repaint
+      const root = /class="([^"]*)"/.exec(html);
+      if (root) { n.className = root[1].trim(); n._parentMade = root[1].split(/\s+/); }
       if (where === "beforeend") { this._ins = (this._ins || 0) + 1; this.children.push(n); n._parent = this; }
       else if (where === "afterend") {
         const p = this._parent; if (!p) throw new Error("insertAdjacentHTML afterend with no parent");
         p._ins = (p._ins || 0) + 1;
         p.children.splice(p.children.indexOf(this) + 1, 0, n); n._parent = p;
       } else throw new Error("insertAdjacentHTML: this page never uses " + where);
+      (n._parent._made = n._parent._made || {});
+      for (const c of (n._parentMade || [])) if (!(c in n._parent._made)) n._parent._made[c] = n;
       return n;
     },
     querySelectorAll(sel) { return this.children.filter((c) => c.className.includes(sel.slice(1))); },
-    // the page reads a node it built with innerHTML; the stub hands back a place to write into
+    // the page reads a node it built with innerHTML; the stub hands back a place to write into.  The LAST token
+    // is what the page's selectors target (".st-collapse think" asks for the think element, not the collapse),
+    // and the same selector asked for twice must give the same node or identity cannot be tested at all
     querySelector(sel) {
-      const found = this.children.find((c) => c.className.split(" ").includes(sel.slice(1)));
-      if (found) return found;
-      const n = makeEl(); n.className = sel.slice(1); n._parent = this; this.children.push(n); return n;
+      const attr = /^\[([\w-]+)\]$/.exec(sel);
+      const key = attr ? attr[1] : sel.trim().split(/\s+/).pop().replace(/^\./, "");
+      const made = this._made = this._made || {};
+      if (made[key]) return made[key];
+      const found = this.children.find((c) => c.className.split(/\s+/).includes(key) || key in c.attrs);
+      if (found) { made[key] = found; return found; }
+      const n = makeEl(); n.className = key; n._parent = this; this.children.push(n); made[key] = n;
+      return n;
     },
     setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
     focus() {}, select() {},
@@ -61,8 +78,15 @@ function makeEl() {
       return null;
     },
   };
+  // a real <details> fires a toggle event when its open state changes, including when script changes it, and
+  // that is how the page's own _auto flag is consumed before the reader's next click
+  Object.defineProperty(el, "open", {get: () => !!el._open, set: (v) => {
+    if (!!v === !!el._open) return;
+    el._open = !!v;
+    for (let p = el._parent; p; p = p._parent) if (p._l && p._l.toggle) p._l.toggle({target: el});
+  }});
   Object.defineProperty(el, "innerHTML", {get: () => el._html || "",
-    set: (v) => { el._sets = (el._sets || 0) + 1; el._html = v; el.children = []; }});   // _sets counts whole-subtree replaces
+    set: (v) => { el._sets = (el._sets || 0) + 1; el._html = v; el.children = []; el._made = {}; }});   // _sets counts whole-subtree replaces
   // a real classList has contains(), and the page's toggle listener uses it to tell a thinking block from a tool
   // block; without it every toggle the test fires would throw.  add() and remove() move className for real, so a
   // test can see a class the page put there (the caret case) instead of passing on a stub that ignored it
@@ -160,7 +184,7 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, apiMessages, get busy() { return busy; }, get chatId() { return chatId; }, " +
+    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
@@ -474,14 +498,14 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   const th = run({}, {});
   await wait();
   const thinkMsg = (m) => th.s.msgEl(m, 0);      // msgEl renders an assistant message exactly as renderChat does
-  const detOf = (el) => el.querySelector("details.think");
+  const detOf = (el, n = 0) => el.querySelector(".st-bubble")._blocks[n].el;   // thinking is a part of the bubble now
   assert.strictEqual(th.s.settings.openthink, false, "off is the default");
   let done1 = thinkMsg({role: "assistant", text: "the answer", reasoning: "why it answered", time: Date.now()});
   assert.notStrictEqual(detOf(done1).open, true, "off: the thinking of a finished answer stays closed");
   th.s.setSettings({openthink: true});
   done1 = thinkMsg({role: "assistant", text: "the answer", reasoning: "why it answered", time: Date.now()});
   assert.strictEqual(detOf(done1).open, true, "on: it is open, answer already written");
-  assert.strictEqual(done1.querySelector(".thinking").textContent, "why it answered", "and its text is filled in");
+  assert.strictEqual(detOf(done1).querySelector(".thinking").textContent, "why it answered", "and its text is filled in");
   const live = {role: "assistant", text: "", reasoning: "still going", time: Date.now()};
   const liveEl = th.s.msgEl(live, 0);
   th.s.updateAssistant(liveEl, live, true);
@@ -572,7 +596,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   // web/sprite.svg, and re-making them 60 times a second is what shows on screen.
   const rp = run({}, {});
   await wait();
-  const rm = {role: "assistant", text: "para one\n\npara two", reasoning: "thinking", time: Date.now(), tools: []};
+  const rm = {role: "assistant", text: "para one\n\npara two", reasoning: "", time: Date.now(), tools: []};
   const rel = rp.s.msgEl(rm, 0);
   const bubble = rel.querySelector(".st-bubble");
   assert.strictEqual(bubble._sets, undefined, "the bubble was never innerHTML-assigned, only filled with parts");
@@ -585,25 +609,36 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(bubble._ins, ins0 + 10, "and it inserts exactly one element per frame: the block that grew");
   assert.strictEqual(bubble.children[0], first, "the settled block is the same element, not a copy of it");
   assert.notStrictEqual(bubble.children[1], last0, "the growing block was replaced");
-  // thinking frames with the answer unchanged: nothing in the bubble is touched at all
+  // thinking frames with the answer unchanged: nothing in the bubble is touched.  The thinking block has to
+  // exist first - with todo #12 a new run is itself a part, so the frame that creates one does add an element
+  rm.reasoning = "primed";
+  rp.s.updateAssistant(rel, rm, true);
   const before = bubble.children.slice(), insA = bubble._ins;
   for (let i = 0; i < 10; i++) { rm.reasoning += " hmm"; rp.s.updateAssistant(rel, rm, true); }
   assert.deepStrictEqual(bubble.children, before, "a thinking frame touches no element of the answer");
   assert.strictEqual(bubble._ins, insA, "and inserts nothing");
   assert.strictEqual(bubble._sets, undefined, "and assigns no innerHTML");
-  // a tool call arrives: one new element, then its text is updated with the element staying put
+  // a tool call arrives: the round's text moves into the container, which is the one rebuild this layout
+  // costs - once per round, at the moment the call appears, never per frame.  From then in, everything inside
+  // keeps its element.
   rm.tools.push({id: "c1", name: "easyCMP__fs_read", server: "easyCMP", tool: "fs_read", state: "writing",
                  at: rm.text.length, rat: 0});
   rp.s.updateAssistant(rel, rm, true);
-  const det = bubble.children[bubble.children.length - 1];
+  const grp = bubble.children.find((c) => (c._html || "").includes("st-work"));
+  assert.ok((grp._html || "").includes("st-work"), "a container now holds the round");
+  assert.notStrictEqual(bubble.children[0], first, "the text was re-parented into it: that is the one rebuild");
+  const inGrp = grp.querySelector(".st-work__body");
+  const held = inGrp.children.slice();
+  const det = inGrp.children[inGrp.children.length - 1];
   const nameSpan = det.querySelector(".tool-call__name");
-  assert.strictEqual(bubble.children[0], first, "the answer's blocks survived the tool block arriving");
   const insB = bubble._ins;
+  const n0 = inGrp.children.length;
   for (let i = 0; i < 10; i++) { rm.reasoning += " hmm"; rp.s.updateAssistant(rel, rm, true); }
-  assert.strictEqual(bubble.children[bubble.children.length - 1], det, "the tool block is still the same element");
+  assert.strictEqual(inGrp.children.length, n0, "thinking frames add nothing inside the container");
+  assert.strictEqual(inGrp.children[0], held[0], "and change nothing that is in it");
+  assert.strictEqual(bubble._ins, insB, "and insert nothing anywhere");
+  assert.strictEqual(inGrp.children[inGrp.children.length - 1], det, "the tool block is still the same element");
   assert.strictEqual(det.querySelector(".tool-call__name"), nameSpan, "and so is the span inside its summary");
-  assert.strictEqual(bubble._ins, insB, "nothing was inserted while the model thought after the call");
-  assert.strictEqual(bubble._sets, undefined, "and the bubble was never rebuilt");
   Object.assign(rm.tools[0], {state: "running", arguments: {path: "a.txt"}, round: 1, open: true});
   rp.s.updateAssistant(rel, rm, true);
   assert.strictEqual(det.querySelector(".st-badge").textContent, "Running", "the badge follows the state");
@@ -710,23 +745,25 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   const cels = cz.s.msgEl(cmsg, 0);
   cz.s.updateAssistant(cels, cmsg, true);          // the streaming paint, the way send()'s frame loop does it
   const cbul = cels.querySelector(".st-bubble");
-  assert.strictEqual(cbul.hidden, true, "no bubble while only thinking has arrived");
+  assert.ok(cbul.className.includes("thinking-only"), "thinking-only: the element exists (the thinking lives in it now)");
+  assert.strictEqual(cbul.hidden, false, "...but it is not hidden, it has no chrome instead (app.css)");
   assert.strictEqual(cels.querySelector(".st-msg__meta").hidden, true, "and no meta row while it is still thinking");
   assert.strictEqual(cbul._sets, undefined, "nothing was ever written into the bubble: no placeholder");
   assert.ok(!cbul.className.includes("cursor"), "and no caret class on it");
-  assert.strictEqual(cels.querySelector("details.think").hidden, false, "the thinking block is what is visible");
+  assert.strictEqual(detOf(cels).hidden, false, "the thinking block is what is visible");
   cmsg.text = "the answer begins";
   cz.s.updateAssistant(cels, cmsg, true);
-  assert.strictEqual(cbul.hidden, false, "the bubble appears with the first real text");
+  assert.strictEqual(cbul.hidden, false, "the bubble is a real box once there is text");
+  assert.ok(!cbul.className.includes("thinking-only"), "and its chrome is back");
   assert.strictEqual(cels.querySelector(".st-msg__meta").hidden, false, "and the meta row with it");
-  assert.ok((cbul.children[0]._html || "").includes("the answer begins"), "drawn once, as a part");
+  assert.ok(cbul.children.some((c) => (c._html || "").includes("the answer begins")), "drawn once, as a part");
   assert.strictEqual(cbul._sets, undefined, "and still no whole-bubble assignment anywhere in the turn");
   // a tool call is real output too: the bubble shows for it, before any text arrives
   const tcall = {role: "assistant", text: "", reasoning: "", time: Date.now(),
                  tools: [{id: "c1", name: "x", state: "writing", at: 0, rat: 0}]};
   assert.strictEqual(cz.s.msgEl(tcall, 0).querySelector(".st-bubble").hidden, false, "a call being written is output");
   // a finished turn that delivered nothing keeps its meta row, so it is still visible as a turn
-  const eom = {role: "assistant", text: "", reasoning: "thought a while", time: Date.now(), stopped: true};
+  const eom = {role: "assistant", text: "", reasoning: "", time: Date.now(), stopped: true};
   const eoel = cz.s.msgEl(eom, 0);
   assert.strictEqual(eoel.querySelector(".st-bubble").hidden, true, "no empty box for it");
   assert.strictEqual(eoel.querySelector(".st-msg__meta").hidden, false, "but the row stays");
@@ -799,7 +836,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   await wait();
   const smsg = {role: "assistant", text: "", reasoning: "one", time: Date.now()};
   const sels = sc.s.msgEl(smsg, 0);
-  const sbody = sels.querySelector(".thinking");
+  const sbody = detOf(sels).querySelector(".thinking");
   sbody.clientHeight = 420;
   sbody.scrollHeight = 420; sbody.scrollTop = 0;
   smsg.reasoning = "line of thinking\n".repeat(40);
@@ -819,7 +856,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   o.s.setSettings({openthink: true});
   const om = {role: "assistant", text: "the answer", reasoning: "what it thought", time: Date.now()};
   const oel = o.s.msgEl(om, 0);
-  const ob = oel.querySelector(".thinking");
+  const ob = detOf(oel).querySelector(".thinking");
   ob.clientHeight = 20; ob.scrollHeight = 900; ob.scrollTop = 500;
   o.s.updateAssistant(oel, om, false);
   assert.strictEqual(ob.textContent, "what it thought", "a finished block is filled in");
@@ -898,6 +935,54 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   await wait();
   assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "an emptied draft clears the marker");
   done.push("chat list: a conversation with unsent text is marked with an asterisk");
+
+  // 33. the grouping the human asked for (todo #12): thinking is always top level, and the container for a
+  // round's text and calls starts right after it.  Two rounds, each with its own thinking, each with its own box.
+  const gr = run({}, {});
+  await wait();
+  const gm = {role: "assistant", text: "", reasoning: "first thought", time: Date.now(),
+              tools: [{id: "c1", name: "easyCMP__fs_read", state: "done", at: 0, rat: 13, ms: 400, result: "r1", round: 1}]};
+  const gel = gr.s.msgEl(gm, 0);
+  gr.s.el("chat").appendChild(gel);                          // the toggle listener sits on #chat, in the chain
+  gr.s.messages.length = 0; gr.s.messages.push(gm);          // the listener looks the message up by index
+  const gb = gel.querySelector(".st-bubble");
+  gr.s.updateAssistant(gel, gm, true);
+  gm.reasoning += "\n\nsecond thought";
+  gm.tools.push({id: "c2", name: "easyCMP__run_cmd", state: "done", at: 0, rat: 29, ms: 900, result: "r2", round: 2});
+  gm.text = "here is the answer";
+  gr.s.updateAssistant(gel, gm, false);
+  const kinds = gb._parts.map((p) => p.kind);
+  assert.deepStrictEqual(kinds, ["think", "group", "think", "group", "text"],
+                         "think, its work, think, its work, then the answer outside");
+  assert.strictEqual(gb._blocks.length, 2, "two thinking blocks, both at the top level");
+  assert.strictEqual(gb._blocks[0].el.querySelector(".thinking").textContent, "first thought",
+                     "the run that streamed kept its text");
+  assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "", "the run that never streamed is empty");
+  gb._blocks[1].el.open = true;                          // a real details fires the toggle event itself
+  assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "\n\nsecond thought",
+                     "and it fills with only that run's slice, not the whole reasoning");
+  const grps = gb._parts.filter((p) => p.kind === "group");
+  assert.strictEqual(grps.length, 2, "two containers, one per round");
+  assert.strictEqual(grps[0].body.children.length, 1, "the first holds its one call");
+  assert.strictEqual(grps[1].body.children.length, 1, "the second holds its one call");
+  const titles = grps.map((p) => p.el.querySelector(".work-title").textContent);
+  assert.deepStrictEqual(titles, ["worked · 1 step · 0.4 s", "worked · 1 step · 0.9 s"], "each says what it held");
+  const last = gb._parts[gb._parts.length - 1];
+  assert.strictEqual(last.kind, "text", "the answer is a top-level part, not inside a container");
+  assert.ok((last.els[0]._html || "").includes("here is the answer"), "and it is drawn");
+  // the tripwire: the grouping is display only.  What goes back to the server must be byte for byte what it was
+  // before, or the engine's prompt prefix breaks at the first tool round and the chat re-reads everything after
+  // it (serve/server.py:4470-4481, #2100)
+  assert.strictEqual(JSON.stringify(gr.s.assistantMessages(gm, true)), JSON.stringify([
+    {role: "assistant", content: "", tool_calls: [{id: "c1", type: "function",
+        function: {name: "easyCMP__fs_read", arguments: "{}"}}], reasoning_content: "first thought"},
+    {role: "tool", tool_call_id: "c1", content: "r1"},
+    {role: "assistant", content: "", tool_calls: [{id: "c2", type: "function",
+        function: {name: "easyCMP__run_cmd", arguments: "{}"}}], reasoning_content: "second thought"},
+    {role: "tool", tool_call_id: "c2", content: "r2"},
+    {role: "assistant", content: "here is the answer"}]), "the replay is unchanged by the layout");
+  assert.strictEqual(gm.reasoning, "first thought\n\nsecond thought", "and nothing rewrote the reasoning string");
+  done.push("grouping: think, its work, think, its work, answer - thinking always at the top level");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
