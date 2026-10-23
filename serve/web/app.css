@@ -42,12 +42,35 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-bubble hr { border: 0; border-top: 1px solid var(--st-line); margin: var(--st-s-4) 0; }
 .st-bubble table { border-collapse: collapse; margin: 0 0 var(--st-s-3); font-size: var(--st-fs-md); }
 .st-bubble th, .st-bubble td { border: 1px solid var(--st-line); padding: 6px 10px; text-align: left; }
+/* A user bubble is painted on the accent (components.css:66), not on --st-surface, so every markdown element
+   above has to re-derive from the bubble's own ink.  Measured on the defaults: code.inline on a user bubble was
+   background #1d2226 with inherited text #052e20 in dark (black on black) and #f7f7f7 with #ffffff in light
+   (white on white); a link was --st-accent-text green on the accent's own green.  Fenced blocks are fine - .st-code
+   carries its own dark palette in both themes (tokens.css:50,81). */
+.st-msg--user .st-bubble h3, .st-msg--user .st-bubble h4 { color: var(--st-accent-ink); }
+.st-msg--user .st-bubble code.inline { background: color-mix(in srgb, var(--st-accent-ink) 14%, transparent);
+                                        border-color: color-mix(in srgb, var(--st-accent-ink) 34%, transparent);
+                                        color: inherit; }
+.st-msg--user .st-bubble blockquote { color: inherit; opacity: .85;
+                                      border-left-color: color-mix(in srgb, var(--st-accent-ink) 40%, transparent); }
+.st-msg--user .st-bubble hr { border-top-color: color-mix(in srgb, var(--st-accent-ink) 40%, transparent); }
+.st-msg--user .st-bubble th, .st-msg--user .st-bubble td {
+                                        border-color: color-mix(in srgb, var(--st-accent-ink) 34%, transparent); }
+.st-msg--user .st-bubble a { color: var(--st-accent-ink); text-decoration: underline; }
 .msg-images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: flex-end; }
 .msg-images img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
 .st-msg .st-collapse { width: 100%; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
 .st-msg__meta .st-btn--icon .st-icon { width: 16px; height: 16px; }
+/* the per-message "md" switch in a message's meta row: a text button, since the sprite has no markdown glyph.
+   margin-left:auto puts it at the right end of the row; a user row is already content-width and right-aligned
+   (components.css:64), so there it stays the rightmost item either way */
+.st-msg__meta .st-btn--md { width: auto; min-width: 30px; height: 22px; padding: 0 7px; border-radius: 6px;
+                            margin-left: auto; font: 600 var(--st-fs-xs) var(--st-font-mono); color: var(--st-ink-muted); }
+.st-msg__meta .st-btn--md[aria-checked="true"] { color: var(--st-accent); background: var(--st-surface-2); }
+/* an answer drawn as plain text: one element, the model's own line breaks kept */
+.st-bubble .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 .cursor::after { content: ""; display: inline-block; width: 8px; height: 1.1em; margin-left: 2px; vertical-align: -3px;
                  border-radius: 2px; background: var(--st-accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }

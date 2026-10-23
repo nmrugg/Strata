@@ -563,7 +563,7 @@ function markdownBlocks(text) {
 function markdown(text) { return markdownBlocks(text).join(""); }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, openthink: false, opentools: false, esp: true, mcp: true, mcpthink: false};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, openthink: false, opentools: false, mdmine: false, mdtheirs: true, esp: true, mcp: true, mcpthink: false};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
@@ -810,6 +810,13 @@ function setHistory(on, save, fromScreen) {
 }
 $("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true, true);
 
+// markdown for one message: its own choice (the "md" button in its meta row) wins; otherwise the default for its
+// author - mine off (the page draws exactly what you typed, as it always did), the model's on (also as before).
+// The choice is stored on the message (m.md), so it is kept with the chat and survives a reload.
+const msgMd = (m) => (m.md === undefined ? (m.role === "user" ? settings.mdmine === true : settings.mdtheirs !== false) : !!m.md);
+const mdBtn = (m) => `<button class="st-btn st-btn--md" data-md-toggle role="switch" aria-checked="${msgMd(m)}"` +
+  ` title="Render this message as markdown (${msgMd(m) ? "on" : "off"})">md</button>`;
+
 function msgEl(m, i) {
   const el = document.createElement("div");
   el.className = `st-msg st-msg--${m.role}`;
@@ -838,17 +845,22 @@ function msgEl(m, i) {
     }
     const b = document.createElement("div");
     b.className = "st-bubble";
-    b.textContent = m.text;
+    // off (the default for my own messages): exactly the characters typed.  on: the answers' renderer, which
+    // escapes first (inline() calls esc() before any formatting, codeBlock() escapes the code, and only http(s)
+    // targets become anchors), so nothing typed can become markup.  Only the display changes: the prompt is
+    // still built from m.text by userText()/apiMessages(), byte for byte.
+    if (msgMd(m)) b.innerHTML = markdown(m.text || ""); else b.textContent = m.text;
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.textContent = `You · ${timeStr(m.time)}`;
+    meta.innerHTML = `<span class="meta-text"></span>${mdBtn(m)}`;
+    meta.querySelector(".meta-text").textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button>${mdBtn(m)}</div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -958,11 +970,20 @@ function addBlocks(bubble, p, blks) {
 function makePart(bubble, w, m) {
   const p = {...w, els: [], _to: w.to};
   if (w.kind === "tool") { bubble.insertAdjacentHTML("beforeend", toolHtml(m.tools[w.k], w.k)); p.el = bubble.lastElementChild; }
-  else addBlocks(bubble, p, markdownBlocks(m.text.slice(w.from, w.to)));
+  else if (bubble._plain) {                     // plain text: one element, updated by textContent
+    bubble.insertAdjacentHTML("beforeend", `<div class="md-plain"></div>`);
+    p.els = [bubble.lastElementChild]; p.n = 1; p.plain = true;
+  } else addBlocks(bubble, p, markdownBlocks(m.text.slice(w.from, w.to)));
   return p;
 }
 function updatePart(bubble, m, p, w) {
   if (p.kind === "tool") { toolSync(p.el, m.tools[p.k]); return; }
+  if (p.plain) {
+    const t = m.text.slice(p.from, w.to);
+    p._to = w.to;
+    if (p.els[0].textContent !== t) p.els[0].textContent = t;    // the raw characters, newlines and all
+    return;
+  }
   if (w.to === p._to) return;                              // nothing new written here: leave its elements alone
   const blks = markdownBlocks(m.text.slice(p.from, w.to));
   p._to = w.to;
@@ -994,6 +1015,14 @@ function renderBubble(el, m, streaming) {
     if (bubble._ph !== ph) { bubble.innerHTML = ph; bubble._ph = ph; bubble._parts = null; }
     return;
   }
+  if (bubble._ph) {          // the placeholder ("Writing") has to go: nothing below replaces the whole bubble
+    bubble.innerHTML = ""; bubble._ph = ""; bubble._parts = null;
+  }
+  const plain = !msgMd(m);
+  if (bubble._plain !== undefined && bubble._plain !== plain) {   // this message's md button was clicked: redraw
+    bubble.innerHTML = ""; bubble._parts = null; bubble._ph = "";
+  }
+  bubble._plain = plain;
   const want = bubbleParts(m), have = bubble._parts || [];
   let i = 0;
   while (i < want.length && i < have.length && want[i].kind === have[i].kind &&
@@ -1057,6 +1086,20 @@ $("chat").addEventListener("click", (e) => {
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+  const mb = e.target.closest("[data-md-toggle]");
+  if (mb) {
+    const el = mb.closest(".st-msg"), m = messages[+el.dataset.i];
+    if (!m) return;
+    m.md = !msgMd(m);                                   // this message now has a choice of its own
+    mb.setAttribute("aria-checked", String(m.md));
+    mb.title = `Render this message as markdown (${m.md ? "on" : "off"})`;
+    if (m.role === "user") {
+      const b = el.querySelector(".st-bubble");
+      if (m.md) b.innerHTML = markdown(m.text || ""); else b.textContent = m.text;
+    } else renderBubble(el, m, !!busy && busy.msg === m);   // the parts machinery redraws it, mode and all
+    if (!busy) saveChat();                              // the choice belongs to the chat, not to this page load
+    return;
+  }
   // tool blocks are not opened here: a click handler that prevented the default and asked for a rebuild lost the
   // click whenever the rebuild replaced the node between mousedown and mouseup, which is most of the time while
   // the answer streams.  The browser opens them; the toggle listener below remembers it.
@@ -1382,6 +1425,8 @@ function loadDrawer(s = settings) {
   $("s-show").setAttribute("aria-checked", String(!!s.show));
   $("s-openthink").setAttribute("aria-checked", String(s.openthink === true));
   $("s-opentools").setAttribute("aria-checked", String(s.opentools === true));
+  $("s-mdmine").setAttribute("aria-checked", String(s.mdmine === true));
+  $("s-mdtheirs").setAttribute("aria-checked", String(s.mdtheirs !== false));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
@@ -1436,6 +1481,8 @@ for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
 $("s-openthink").onclick = () => $("s-openthink").setAttribute("aria-checked", String($("s-openthink").getAttribute("aria-checked") !== "true"));
 $("s-opentools").onclick = () => $("s-opentools").setAttribute("aria-checked", String($("s-opentools").getAttribute("aria-checked") !== "true"));
+$("s-mdmine").onclick = () => $("s-mdmine").setAttribute("aria-checked", String($("s-mdmine").getAttribute("aria-checked") !== "true"));
+$("s-mdtheirs").onclick = () => $("s-mdtheirs").setAttribute("aria-checked", String($("s-mdtheirs").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
 // #2100: flipping this changes how a tool turn is rebuilt, so the next request in every chat that used tools stops
@@ -1452,15 +1499,23 @@ $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($(
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
+  const mdWas = settings.mdmine, thWas = settings.mdtheirs;
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               show: $("s-show").getAttribute("aria-checked") === "true",
               openthink: $("s-openthink").getAttribute("aria-checked") === "true",
               opentools: $("s-opentools").getAttribute("aria-checked") === "true",
+              mdmine: $("s-mdmine").getAttribute("aria-checked") === "true",
+              mdtheirs: $("s-mdtheirs").getAttribute("aria-checked") === "true",
               esp: $("s-esp").getAttribute("aria-checked") === "true",
               mcp: $("s-mcp").getAttribute("aria-checked") === "true",
               mcpthink: $("s-mcpthink").getAttribute("aria-checked") === "true"};
   store.set("sampling", settings);
+  // these two switches are about how the messages on the screen are drawn, so redraw them - but never while an
+  // answer is streaming: send() paints into the element it captured (app.js's
+  // `const el = $("chat").lastElementChild`), and renderChat() would detach it
+  // (LESSONS.md, "Three traps in that same render path")
+  if ((settings.mdmine !== mdWas || settings.mdtheirs !== thWas) && !busy) renderChat();
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
   if (share || sharedOn) {

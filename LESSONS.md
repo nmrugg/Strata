@@ -172,17 +172,21 @@ thinking body was already text-only (`body.textContent`), which is why it never 
 Still not measured: what the browser spends on those assignments - there is no browser on
 this box for it. The visible proof is the human's own eyes.
 
-**Two traps in that same render path, both hit on 2026-10-23.** (1) `send()` captures
+**Three traps in that same render path, all hit on 2026-10-23.** (1) `send()` captures
 `el = $("chat").lastElementChild` (`app.js:1059`) and `paint()` writes into that captured node
 (`app.js:1081`), so **any `renderChat()` while a request is running detaches the element the
 stream is painting into** and the answer silently stops appearing - do not "re-render the
 chat" when a setting changes. (2) A tool block opened by a click handler that called
 `preventDefault()` and then asked for a rebuild lost most of its clicks, because the rebuild
 replaces the node between mousedown and mouseup and no `click` fires (`todo` #8; now the
-browser does the toggling and the `toggle` listener only records `t.open = d.open`). Related:
-in `updateAssistant` the open/close rules must run **before** the thinking body is filled, or
-an auto-opened block renders open and empty - the `toggle` listener skips the fill for an open
-we asked for ourselves (`det._auto`).
+browser does the toggling and the `toggle` listener only records `t.open = d.open`). (3) Once
+the answer is drawn as parts there is **no whole-bubble assignment left to clean up after
+anything that painted one**: the `Writing` placeholder would have sat above the answer for the
+rest of the turn. The parts path now clears it on the transition (`if (bubble._ph) {
+bubble.innerHTML = ""; ... }`) and the test asserts the transition assigns the bubble exactly
+twice - placeholder, then clear. Related: in `updateAssistant` the open/close rules must run
+**before** the thinking body is filled, or an auto-opened block renders open and empty - the
+`toggle` listener skips the fill for an open we asked for ourselves (`det._auto`).
 
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and

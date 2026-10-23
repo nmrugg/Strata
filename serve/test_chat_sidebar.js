@@ -153,7 +153,7 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, get busy() { return busy; }, " +
+    "bubbleParts, toolSync, toolOpen, apiMessages, get busy() { return busy; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win};
@@ -613,6 +613,105 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(box._ins || 0, boxIns, "and nothing new was inserted into it");
   assert.strictEqual(bubble._sets, undefined, "still no whole-bubble assignment in the whole stream");
   done.push("flash: the answer is updated in place - settled blocks and tool icons keep their identity");
+
+  // 26. my own messages as markdown (todo #5 and #6).  Off is the page from before: the exact characters typed,
+  // nothing parsed.  On uses the answers' renderer, which escapes first - so what matters here is that nothing
+  // typed can turn into markup, and that the prompt still carries the raw text either way.
+  const u = run({}, {});
+  await wait();
+  assert.strictEqual(u.s.settings.mdmine, false, "off is the default");
+  const md = "**bold** and `code`\n\n- one\n- two\n\n```\nplain <code>\n```";
+  const raw = "a <img src=x onerror=alert(1)> tag and [a link](javascript:alert(1))";
+  const bubbleOf = (el) => el.children.find((c) => c.className === "st-bubble");
+  let ub = bubbleOf(u.s.msgEl({role: "user", text: md, time: Date.now()}, 0));
+  assert.strictEqual(ub.textContent, md, "off: the bubble holds exactly what was typed");
+  assert.ok(!("_html" in b), "off: nothing was parsed as html");
+  u.s.setSettings({mdmine: true});
+  ub = bubbleOf(u.s.msgEl({role: "user", text: md, time: Date.now()}, 0));
+  assert.ok(ub._html.includes("<strong>bold</strong>"), "on: bold became markup");
+  assert.ok(ub._html.includes('<code class="inline">code</code>'), "on: inline code");
+  assert.ok(ub._html.includes("<ul><li>one</li><li>two</li></ul>"), "on: a list");
+  assert.ok(ub._html.includes("<pre><code>plain &lt;code&gt;</code></pre>"), "on: a fence, its own < escaped");
+  ub = bubbleOf(u.s.msgEl({role: "user", text: raw, time: Date.now()}, 0));
+  assert.ok(ub._html.includes("&lt;img src=x onerror=alert(1)&gt;"), "a tag you typed stays text");
+  assert.ok(!ub._html.includes("<img"), "and no img element appears");
+  assert.ok(!ub._html.includes("<a href=\"javascript:"), "and a javascript: target never becomes a link");
+  u.s.messages.length = 0;
+  u.s.messages.push({role: "user", text: raw, time: Date.now()});
+  assert.strictEqual(u.s.apiMessages()[0].content, raw, "the prompt still carries exactly what was typed");
+  done.push("my messages: markdown renders them when the switch is on, and nothing typed becomes markup");
+
+  // 27. the defaults per author, and the "md" button in a message's own meta row (todo #5 and #6 as the human
+  // asked for them): the drawer sets the default for each side, the button overrides that one message, and the
+  // choice is kept on the message so it survives a reload.
+  const dd = run({}, {});
+  await wait();
+  assert.strictEqual(dd.s.settings.mdmine, false, "mine: off by default");
+  assert.strictEqual(dd.s.settings.mdtheirs, true, "the model's: on by default, as the page always drew them");
+  const mdText = "**bold** line\nplain second line";
+  const um = {role: "user", text: "**bold**", time: Date.now()};
+  const am = {role: "assistant", text: mdText, reasoning: "", time: Date.now()};
+  dd.s.messages.length = 0;
+  dd.s.messages.push(um, am);
+  const uel = dd.s.msgEl(um, 0), ael = dd.s.msgEl(am, 1);
+  const ab = ael.querySelector(".st-bubble");
+  assert.ok((ab.children[0]._html || "").includes("<strong>bold</strong>"), "the answer is markdown by default");
+  // my message, through its own button
+  const ubtn = makeEl();
+  ubtn.attrs["data-md-toggle"] = ""; ubtn.attrs["aria-checked"] = "false";
+  uel.appendChild(ubtn);
+  dd.s.el("chat")._l["click"]({target: ubtn});
+  assert.strictEqual(um.md, true, "the message now has a choice of its own");
+  assert.strictEqual(ubtn.attrs["aria-checked"], "true", "and the switch shows that choice");
+  assert.ok(uel.querySelector(".st-bubble")._html.includes("<strong>bold</strong>"), "my message became markdown");
+  // the answer, through its own button: plain text, one element, the model's line break kept
+  const abtn = makeEl();
+  abtn.attrs["data-md-toggle"] = ""; abtn.attrs["aria-checked"] = "true";
+  ael.appendChild(abtn);
+  dd.s.el("chat")._l["click"]({target: abtn});
+  assert.strictEqual(am.md, false, "the answer's own choice is off");
+  assert.strictEqual(ab.children.length, 1, "one element for the whole text part");
+  assert.ok(ab.children[0]._html.includes("md-plain"), "the plain element");
+  assert.strictEqual(ab.children[0].textContent, mdText, "the characters it wrote, newline and all");
+  assert.strictEqual(ab.children[0].children.length, 0, "and nothing inside it");
+  // the default off for the model's messages, with no per-message choice
+  const pp = run({}, {});
+  await wait();
+  pp.s.setSettings({mdtheirs: false});
+  const pm = {role: "assistant", text: mdText, reasoning: "", time: Date.now()};
+  const pb = pp.s.msgEl(pm, 0).querySelector(".st-bubble");
+  assert.strictEqual(pb.children.length, 1, "off: one element for the whole answer");
+  assert.strictEqual(pb.children[0].textContent, mdText, "raw, exactly as it wrote it");
+  // and a plain answer still updates in place while it streams: one element, textContent only
+  const pm2 = {role: "assistant", text: "one line", reasoning: "", time: Date.now()};
+  const pel2 = pp.s.msgEl(pm2, 0);
+  const pb2 = pel2.querySelector(".st-bubble");
+  const pel0 = pb2.children[0], pins0 = pb2._ins || 0, psets0 = pb2._sets;
+  for (let i = 0; i < 8; i++) { pm2.text += " more"; pp.s.updateAssistant(pel2, pm2, true); }
+  assert.strictEqual(pb2.children[0], pel0, "the plain element is the same one through 8 updates");
+  assert.strictEqual(pb2._ins || 0, pins0, "no element inserted");
+  assert.strictEqual(pb2._sets, psets0, "no innerHTML assigned");
+  assert.strictEqual(pel0.textContent, pm2.text, "its text is the whole answer so far");
+  done.push("md: defaults per author, and a per-message switch that keeps its choice with the chat");
+
+  // 28. the "Writing" placeholder goes away when the answer starts.  With the parts path nothing replaces the
+  // whole bubble, so the transition has to drop the placeholder itself - otherwise it sits above the answer for
+  // the rest of the turn.  The stub keeps the placeholder as the bubble's _html, so what is checked here is that
+  // the transition assigned the bubble once more, to clear it, and that only the answer's part is left.
+  const pz = run({}, {});
+  await wait();
+  const pmsg = {role: "assistant", text: "", reasoning: "thinking first", time: Date.now()};
+  const pels = pz.s.msgEl(pmsg, 0);
+  const pbul = pels.querySelector(".st-bubble");
+  pz.s.updateAssistant(pels, pmsg, true);
+  assert.ok((pbul._html || "").includes("Writing"), "shown while only thinking has arrived");
+  assert.strictEqual(pbul._sets, 1, "one assignment: the placeholder itself");
+  pmsg.text = "the answer begins";
+  pz.s.updateAssistant(pels, pmsg, true);
+  assert.strictEqual(pbul._sets, 2, "the transition cleared the bubble once more");
+  assert.strictEqual(pbul.children.length, 1, "and only the answer's block is in it");
+  assert.ok((pbul.children[0]._html || "").includes("the answer begins"), "which is the answer");
+  done.push("placeholder: 'Writing' is dropped when the first answer text arrives");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

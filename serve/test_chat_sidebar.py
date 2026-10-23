@@ -39,6 +39,37 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_markdown_for_each_author_with_a_per_message_switch(self):
+        # todo #5 and #6: the drawer sets the default for each author (mine off, the model's on, as the page
+        # always drew them) and every message carries an "md" button in its meta row that overrides that one.
+        # Off is the page from before: the exact characters, and the prompt is untouched either way.
+        for el in ("s-mdmine", "s-mdtheirs"):
+            self.assertIn(f'id="{el}"', self.html)
+            self.assertIn(f'"{el}"', self.js)
+        self.assertIn("mdmine: false, mdtheirs: true", self.js)
+        self.assertIn('if (msgMd(m)) b.innerHTML = markdown(m.text || ""); else b.textContent = m.text;',
+                      self.body("msgEl"))
+        self.assertIn("data-md-toggle", self.js)                       # the button, and the handler for it
+        self.assertIn("m.md = !msgMd(m);", self.js)                    # the message keeps its own choice
+        self.assertIn("if (!busy) saveChat();", self.js)               # and it is written out with the chat
+        self.assertNotIn("mdmine", self.body("apiMessages"))           # what is sent is what was typed
+        self.assertNotIn("mdmine", self.body("userText"))
+        # the redraw on Apply must refuse to run while an answer streams: send() paints into the element it
+        # captured, and renderChat() would detach it
+        self.assertIn("if ((settings.mdmine !== mdWas || settings.mdtheirs !== thWas) && !busy) renderChat();", self.js)
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".st-bubble .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }", css)
+        self.assertIn('.st-msg__meta .st-btn--md[aria-checked="true"]', css)
+        self.assertIn("margin-left: auto", css)                    # the md switch, at the right end of the row
+        # a user bubble is painted on the accent with --st-accent-ink text (components.css:66), so the markdown
+        # styles written for the answer's --st-surface bubble go unreadable there: code.inline measured
+        # #1d2226-on-#052e20 in dark (black on black) and #f7f7f7-on-#ffffff in light (white on white), and a
+        # link was accent green on the accent's own green.  Every one of them needs a user-bubble variant.
+        for sel in (".st-msg--user .st-bubble code.inline", ".st-msg--user .st-bubble a",
+                    ".st-msg--user .st-bubble blockquote", ".st-msg--user .st-bubble th",
+                    ".st-msg--user .st-bubble hr", ".st-msg--user .st-bubble h3"):
+            self.assertIn(sel, css)
+
     def test_the_answer_is_updated_in_place_and_not_rebuilt(self):
         # todo #7: the flash was the whole answer being assigned to the bubble on every frame, which threw away
         # and re-made every element in it - each tool block's two sprite icons above all (todo #8's clicks, and
