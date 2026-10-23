@@ -1535,7 +1535,7 @@ $("s-apply").onclick = async () => {
   // these two switches are about how the messages on the screen are drawn, so redraw them - but never while an
   // answer is streaming: send() paints into the element it captured (app.js's
   // `const el = $("chat").lastElementChild`), and renderChat() would detach it
-  // (LESSONS.md, "Three traps in that same render path")
+  // (LESSONS.md, "Four traps in that same render path")
   if ((settings.mdmine !== mdWas || settings.mdtheirs !== thWas) && !busy) renderChat();
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);

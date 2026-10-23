@@ -172,7 +172,7 @@ thinking body was already text-only (`body.textContent`), which is why it never 
 Still not measured: what the browser spends on those assignments - there is no browser on
 this box for it. The visible proof is the human's own eyes.
 
-**Three traps in that same render path, all hit on 2026-10-23.** (1) `send()` captures
+**Four traps in that same render path, all hit on 2026-10-23.** (1) `send()` captures
 `el = $("chat").lastElementChild` (`app.js:1059`) and `paint()` writes into that captured node
 (`app.js:1081`), so **any `renderChat()` while a request is running detaches the element the
 stream is painting into** and the answer silently stops appearing - do not "re-render the
@@ -185,7 +185,12 @@ anything that paints into that bubble**: a `Writing` placeholder written on one 
 the answer for the rest of the turn, and the fix at the time was to clear it explicitly on the
 transition. That placeholder is now gone altogether (`todo` #34: no placeholder, no caret, and
 the bubble is `hidden` until there is real output), but the trap stands for anything else that
-paints into the bubble - clear it explicitly, or hide the element. Related: in `updateAssistant` the open/close rules must run
+paints into the bubble - clear it explicitly, or hide the element. (4) A follow-if-at-the-bottom
+check has to measure **before** the content grows: the new text is exactly what pushes the
+bottom out of range, so testing the gap after `textContent = ...` silently stops the following
+on any chunk larger than the slack. The thinking body uses 48 px of slack where the chat uses
+120 px, because that box is only 420 px tall (`.st-collapse__body.thinking`, `app.css`) - 120 px
+there would mean "scrolled up a quarter of the box and still dragged". Related: in `updateAssistant` the open/close rules must run
 **before** the thinking body is filled, or an auto-opened block renders open and empty - the
 `toggle` listener skips the fill for an open we asked for ourselves (`det._auto`).
 
