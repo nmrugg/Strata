@@ -1017,9 +1017,10 @@ function flatParts(m) {
   if (text.length > lastAt) out.push({kind: "text", from: lastAt, to: text.length});
   return out;
 }
-// the layout the human asked for: a thinking block is always top level, and the container holding that
-// round's text and calls starts right after it.  Run i comes before round i, and a run with no round of its
-// own comes before the answer - so a message with no tool calls at all is still thinking, then the answer.
+// the layout: thinking and text are always top level, in the order they happened, and only the calls are
+// folded into a container.  The human's reason, after trying it nested: text written between calls is part of
+// the answer - hiding it behind a "worked · 1 step" click means reading the same words twice (once folded,
+// once in the copy) and clicking twice to see one round.  So a round reads: think, text, [its calls].
 function bubbleParts(m) {
   const cuts = roundCuts(m), tools = m.tools || [], runs = thinkRuns(m), flat = flatParts(m);
   const out = [];
@@ -1028,20 +1029,13 @@ function bubbleParts(m) {
   for (let i = 0; i < cuts.length; i++) {
     const stop = i + 1 < cuts.length ? cuts[i + 1].first : tools.length;      // this round's tool range
     if (i < runs.length) out.push(thinkPart(i));
-    const children = [];
-    while (fi < flat.length) {
-      const p = flat[fi];
-      if (p.kind === "tool" && p.k >= stop) break;                            // the next round begins here
-      if (p.kind === "text") {                                               // text belongs to the round it leads to
-        const next = flat.slice(fi).find((x) => x.kind === "tool");
-        if (!next || next.k >= stop) break;                                  // no call of this round after it: the answer
-      }
-      children.push(p); fi++;
-    }
-    if (children.length) out.push({kind: "group", i, children});
+    while (fi < flat.length && flat[fi].kind === "text") out.push(flat[fi++]);  // what it said on the way
+    const calls = [];
+    while (fi < flat.length && flat[fi].kind === "tool" && flat[fi].k < stop) calls.push(flat[fi++]);
+    if (calls.length) out.push({kind: "group", i, children: calls});
   }
-  if (runs.length > cuts.length) out.push(thinkPart(cuts.length));            // thinking before the answer
-  for (; fi < flat.length; fi++) out.push(flat[fi]);                          // the answer itself, outside
+  if (runs.length > cuts.length) out.push(thinkPart(cuts.length));             // thinking before the answer
+  for (; fi < flat.length; fi++) out.push(flat[fi]);                          // and the answer itself
   return out;
 }
 function dropPart(p) {

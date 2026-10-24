@@ -468,3 +468,19 @@ is section 8, items 34-36.
     accent marker wins where a chat has both - "go read this" outranks "you left text here" - and the draft is
     still visible the moment the chat is opened.
 
+38.  Copy the whole turn - thinking and tool calls included - from the copy button. [ui] TRIVIAL
+    Today `[data-msg-copy]` copies `messages[i].text` only (serve/web/app.js, the click listener on #chat): the
+    answer's text, including the narration between calls, which is part of m.text. The want, from the human:
+    hold a modifier to get more. Suggested shape - plain click = the answer text (unchanged), Shift+click =
+    answer + the thinking runs, Ctrl+Shift+click = answer + thinking + each call's arguments and the result as
+    the model read it.
+    What already exists to reuse: the Markdown export builds exactly that structure per message (a `## model`
+    heading, a `<details>` for the thinking, and one block per call with its arguments and result) in
+    `$("export-btn").onclick`, and the thinking runs are derivable from `at`/`rat` the same way `thinkRuns()`
+    does it now. The pieces are there; it is a matter of factoring that builder out and feeding it one message
+    instead of the chat.
+    Care: a tool result can be 20,000 characters (the reason an open block's body is built lazily), so
+    "copy everything" should say how big it is in the toast, and the modifier must not fight the browser's own
+    Shift-click behaviour on a button (it does not, but the toggle listener tests `tagName`, so keep the two
+    handlers separate).
+

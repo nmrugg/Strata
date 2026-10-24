@@ -622,15 +622,16 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.deepStrictEqual(bubble.children, before, "a thinking frame touches no element of the answer");
   assert.strictEqual(bubble._ins, insA, "and inserts nothing");
   assert.strictEqual(bubble._sets, undefined, "and assigns no innerHTML");
-  // a tool call arrives: the round's text moves into the container, which is the one rebuild this layout
-  // costs - once per round, at the moment the call appears, never per frame.  From then in, everything inside
-  // keeps its element.
+  // a tool call arrives: the calls move into a container.  The text does not - it stays where it was drawn,
+  // which is why the settled block keeps its element here (it used to be re-parented, and that cost one rebuild
+  // per round; folding only the calls removed it)
+  const textEl = bubble.children.find((c) => (c._html || "").includes("<p>"));   // the settled paragraph, as it is now
   rm.tools.push({id: "c1", name: "easyCMP__fs_read", server: "easyCMP", tool: "fs_read", state: "writing",
                  at: rm.text.length, rat: 0});
   rp.s.updateAssistant(rel, rm, true);
   const grp = bubble.children.find((c) => (c._html || "").includes("st-work"));
-  assert.ok((grp._html || "").includes("st-work"), "a container now holds the round");
-  assert.notStrictEqual(bubble.children[0], first, "the text was re-parented into it: that is the one rebuild");
+  assert.ok(grp, "a container now holds the calls");
+  assert.ok(bubble.children.includes(textEl), "the settled text kept its element: only the calls moved");
   const inGrp = grp.querySelector(".st-work__body");
   const held = inGrp.children.slice();
   const det = inGrp.children[inGrp.children.length - 1];
@@ -940,59 +941,60 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "an emptied draft clears the marker");
   done.push("chat list: a conversation with unsent text is marked with an asterisk");
 
-  // 33. the grouping the human asked for (todo #12): thinking is always top level, and the container for a
-  // round's text and calls starts right after it.  Two rounds, each with its own thinking, each with its own box.
+  // 33. the grouping, after the human's correction: thinking and text are top level in the order they
+  // happened, and only the calls are folded into a container.  Text between calls is part of the answer.
   const gr = run({}, {});
   await wait();
-  const gm = {role: "assistant", text: "", reasoning: "first thought", time: Date.now(),
-              tools: [{id: "c1", name: "easyCMP__fs_read", state: "done", at: 0, rat: 13, ms: 400, result: "r1", round: 1}]};
+  const gm = {role: "assistant", text: "I'll read the file first.Now let me run it.here is the answer",
+              reasoning: "first thought", time: Date.now(),
+              tools: [{id: "c1", name: "easyCMP__fs_read", state: "done", at: 25, rat: 13, ms: 400,
+                       result: "r1", round: 1}]};
   const gel = gr.s.msgEl(gm, 0);
-  gr.s.el("chat").appendChild(gel);                          // the toggle listener sits on #chat, in the chain
-  gr.s.messages.length = 0; gr.s.messages.push(gm);          // the listener looks the message up by index
+  gr.s.el("chat").appendChild(gel);                            // the toggle listener sits on #chat
+  gr.s.messages.length = 0; gr.s.messages.push(gm);            // the listener looks the message up by index
   const gb = gel.querySelector(".st-bubble");
   gr.s.updateAssistant(gel, gm, true);
   gm.reasoning += "\n\nsecond thought";
-  gm.tools.push({id: "c2", name: "easyCMP__run_cmd", state: "done", at: 0, rat: 29, ms: 900, result: "r2", round: 2});
-  gm.text = "here is the answer";
+  gm.tools.push({id: "c2", name: "easyCMP__run_cmd", state: "done", at: 43, rat: 29, ms: 900,
+                 result: "r2", round: 2});
   gr.s.updateAssistant(gel, gm, false);
-  const kinds = gb._parts.map((p) => p.kind);
-  assert.deepStrictEqual(kinds, ["think", "group", "think", "group", "text"],
-                         "think, its work, think, its work, then the answer outside");
-  assert.strictEqual(gb._blocks.length, 2, "two thinking blocks, both at the top level");
+  assert.deepStrictEqual(gb._parts.map((p) => p.kind),
+                         ["think", "text", "group", "think", "text", "group", "text"],
+                         "think, what it said, its calls folded; think, what it said, its calls folded; answer");
+  assert.strictEqual(gb._parts.filter((p) => p.kind === "text").length, 3,
+                     "all three runs of text are visible, none behind a click");
+  assert.strictEqual(gb._blocks.length, 2, "two thinking blocks, both top level");
+  const grps = gb._parts.filter((p) => p.kind === "group");
+  assert.strictEqual(grps.length, 2, "two containers, one per round");
+  assert.strictEqual(grps[0].children.length, 1, "a container holds only the calls");
+  assert.strictEqual(grps[0].body.children.length, 1, "and they are in it");
+  // the bug this test first missed: the container shell carried hidden and nothing cleared it, so every tool
+  // call in a grouped turn was display:none
+  assert.strictEqual(grps[0].el.hidden, false, "a container with calls in it is visible");
+  assert.strictEqual(grps[0].el.open, false, "and closed once the turn is over");
+  assert.ok((grps[0].body.children[0].className || "").includes("tool-call"), "which is the tool block");
+  const titles = grps.map((p) => p.el.querySelector(".work-title").textContent);
+  assert.deepStrictEqual(titles, ["worked \u00b7 1 step \u00b7 0.4 s", "worked \u00b7 1 step \u00b7 0.9 s"],
+                         "each says what it held");
   assert.strictEqual(gb._blocks[0].el.querySelector(".thinking").textContent, "first thought",
                      "the run that streamed kept its text");
   assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "", "the run that never streamed is empty");
-  gb._blocks[1].el.open = true;                          // a real details fires the toggle event itself
+  gb._blocks[1].el.open = true;                                // a real details fires the toggle event itself
   assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "\n\nsecond thought",
                      "and it fills with only that run's slice, not the whole reasoning");
-  const grps = gb._parts.filter((p) => p.kind === "group");
-  assert.strictEqual(grps.length, 2, "two containers, one per round");
-  // the bug this test first missed: the container shell carried hidden and nothing cleared it, so every tool
-  // call in a grouped turn was display:none.  Visible, closed, and holding its call - that is the shape.
-  assert.strictEqual(grps[0].el.hidden, false, "a container with calls in it is visible");
-  assert.strictEqual(grps[0].el.open, false, "and closed once the turn is over");
-  assert.strictEqual(grps[0].body.children.length, 1, "the call is inside it, not gone");
-  assert.ok((grps[0].body.children[0].className || "").includes("tool-call"), "which is the tool block");
-  assert.strictEqual(grps[0].body.children.length, 1, "the first holds its one call");
-  assert.strictEqual(grps[1].body.children.length, 1, "the second holds its one call");
-  const titles = grps.map((p) => p.el.querySelector(".work-title").textContent);
-  assert.deepStrictEqual(titles, ["worked · 1 step · 0.4 s", "worked · 1 step · 0.9 s"], "each says what it held");
-  const last = gb._parts[gb._parts.length - 1];
-  assert.strictEqual(last.kind, "text", "the answer is a top-level part, not inside a container");
-  assert.ok((last.els[0]._html || "").includes("here is the answer"), "and it is drawn");
-  // the tripwire: the grouping is display only.  What goes back to the server must be byte for byte what it was
-  // before, or the engine's prompt prefix breaks at the first tool round and the chat re-reads everything after
+  // the tripwire: the grouping is display only.  What goes back to the server must be byte for byte what it
+  // was, or the engine's prompt prefix breaks at the first tool round and the chat re-reads everything after
   // it (serve/server.py:4470-4481, #2100)
   assert.strictEqual(JSON.stringify(gr.s.assistantMessages(gm, true)), JSON.stringify([
-    {role: "assistant", content: "", tool_calls: [{id: "c1", type: "function",
+    {role: "assistant", content: "I'll read the file first.", tool_calls: [{id: "c1", type: "function",
         function: {name: "easyCMP__fs_read", arguments: "{}"}}], reasoning_content: "first thought"},
     {role: "tool", tool_call_id: "c1", content: "r1"},
-    {role: "assistant", content: "", tool_calls: [{id: "c2", type: "function",
+    {role: "assistant", content: "Now let me run it.", tool_calls: [{id: "c2", type: "function",
         function: {name: "easyCMP__run_cmd", arguments: "{}"}}], reasoning_content: "second thought"},
     {role: "tool", tool_call_id: "c2", content: "r2"},
     {role: "assistant", content: "here is the answer"}]), "the replay is unchanged by the layout");
   assert.strictEqual(gm.reasoning, "first thought\n\nsecond thought", "and nothing rewrote the reasoning string");
-  done.push("grouping: think, its work, think, its work, answer - thinking always at the top level");
+  done.push("grouping: think, text, [calls], think, text, [calls], answer - text is never folded away");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

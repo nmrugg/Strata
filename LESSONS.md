@@ -225,10 +225,12 @@ an empty string, not a deleted key.
 element for `.st-collapse think` - its own class - which is `null` in a browser and would have
 thrown on the next line; the stub auto-creates a node, so it looked like a test problem instead.
 A part's own element must be used directly, and only its descendants queried.
-(2) The layout costs exactly one rebuild per round: while a round has no call yet, its text is a
-top-level part, and the moment the call appears that text moves into the new container and is
-re-created. Once per round, never per frame - and the test says so out loud rather than
-pretending identity is perfect.
+(2) A container that swallows the model's narration costs more than it saves. The first version folded a
+round's text **and** its calls together, and the human's objection was concrete: the text is part of the
+answer, it was hidden behind a click, and the copy button still copied it - so the same words existed twice,
+one invisible. It also cost exactly one rebuild per round, because text that had been drawn at the top level
+had to move into the new container when the first call appeared. Folding **only the calls** fixed both: text
+and thinking stay top level in the order they happened, and a settled part never moves.
 (3) Before changing how a turn is *displayed*, write the replay tripwire first: assert
 `assistantMessages()` output is byte-identical. The same offsets (`at`, `rat`) feed both the
 layout and what goes back to the server, and a one-character difference there breaks the
