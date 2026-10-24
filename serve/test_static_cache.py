@@ -112,6 +112,47 @@ class StaticValidators(Server):
         self.assertEqual(get(self.conn, "/web/nope.js")[0], 404)
 
 
+class SpriteInlined(Server):
+    """The icon symbols are inlined into the pages that reference them, so a <use href="#i-name"> is
+    same-document and the browser never fetches sprite.svg - which it used to re-resolve as new icons appeared
+    while output streamed."""
+
+    def test_the_page_carries_the_symbols_and_no_reference_to_the_file(self):
+        code, _, body = get(self.conn, "/")
+        html = body.decode()
+        self.assertEqual(code, 200)
+        self.assertIn('<symbol id="i-chat"', html)
+        self.assertIn('<use href="#i-chat"/>', html)
+        self.assertNotIn("web/sprite.svg", html)
+        self.assertIn('style="display:none"', html)
+
+    def test_the_provenance_manifest_is_not_inlined(self):
+        # the file also carries a 7,843-byte C2PA manifest about the file itself; the page gets the 33 symbols
+        # and none of that
+        code, _, body = get(self.conn, "/")
+        html = body.decode()
+        self.assertNotIn("c2pa:manifest", html)
+        self.assertEqual(html.count("<symbol "), 33)
+        self.assertLess(len(html.encode()), 40000, "the page stayed a sane size")
+
+    def test_the_symbols_come_before_the_first_use(self):
+        code, _, body = get(self.conn, "/")
+        html = body.decode()
+        self.assertLess(html.index('<symbol id="i-chat"'), html.index('<use href="#i-chat"/>'))
+
+    def test_a_page_that_uses_no_symbols_is_left_alone(self):
+        self.svc.api_monitor = True
+        code, _, body = get(self.conn, "/api-monitor")
+        self.assertEqual(code, 200)
+        self.assertNotIn("<symbol ", body.decode())
+
+    def test_the_sprite_file_is_still_served(self):
+        code, h, body = get(self.conn, "/web/sprite.svg")
+        self.assertEqual(code, 200)
+        self.assertIn(b"<symbol", body)
+        self.assertIn(b"c2pa:manifest", body)          # the file keeps its provenance; only the page drops it
+
+
 class MetricsStillUncached(Server):
     """The point of the change is the bytes that are NOT worth caching: /metrics is live state, so it keeps no
     validator and answers in full every time - which is why it should be asked for less often, not cheaper."""

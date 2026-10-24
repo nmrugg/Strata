@@ -3,7 +3,10 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const SPRITE = "web/sprite.svg";
+// the sprite symbols are inlined into the page by the server (serve/server.py, _page_bytes), so a reference is
+// same-document and the file is never requested - it used to be re-fetched as new icons appeared while output
+// streamed.  Empty on purpose: the "#" in icon() is the whole path.
+const SPRITE = "";
 const icon = (name, cls = "st-icon") => `<svg class="${cls}" aria-hidden="true"><use href="${SPRITE}#i-${name}"/></svg>`;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d}));

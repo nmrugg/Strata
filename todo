@@ -543,3 +543,19 @@ numbers below are already taken.
     Message ids and merge-on-conflict stay with item 33; server-side conversation identity stays with item
     16, whose design decision is still unmade. Anything that touches the prompt path is out of scope: a
     checkpoint mismatch costs a re-read of minutes, and that incident already happened once.
+
+42.  The icon sprite is inlined into the pages that use it. [py] [ui] DONE 2026-10-24
+    The validator (item 39) made each sprite revalidation cheap, but the revalidation was still happening: a
+    browser resolves <use href="web/sprite.svg#i-name"> by fetching that file, and it re-resolves it as new
+    icons are created while output streams. Same-document references never touch the network at all.
+    Shipped: serve/server.py's _page_bytes inserts the sprite's symbols right after the opening body tag of any
+    page that contains <use href="#i-, and index.html's 13 references and app.js's SPRITE constant now use
+    "#i-name". Only the 21,269 bytes of symbols are inlined - the file also carries a 7,843-byte C2PA provenance
+    manifest, which is about the file and has no business in every page; the file on disk keeps its manifest and
+    the /web/sprite.svg route still serves it unchanged. monitor.html references no symbols today, so it is left
+    exactly as it is.
+    The page's ETag now covers the page AND the sprite (both mtimes and sizes), so editing the sprite changes the
+    page's validator and the next reload picks it up with no restart.
+    Tests: serve/test_static_cache.py's SpriteInlined class - symbols present and before the first use, no
+    reference to the file, no manifest, exactly 33 symbols, the page still a sane size, a symbol-free page left
+    alone, and the sprite file itself still served with its provenance intact.
