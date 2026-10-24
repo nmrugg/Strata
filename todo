@@ -276,29 +276,43 @@ NEED RENUMBERING
     item in this tier.
 
 
-72.  reasoning_loop_recovery "recover" fires and then the turn freezes at the same token count. [py] [eng] MEDIUM
-    Written up in strata-slow-death.txt at the repo root (untracked; it is full of literal control tags, so
-    read it but never quote from it - that is how two turns died today). The shape, twice in one run:
-    "repeated reasoning detected at 2560 tokens (coverage=0.555); resuming the same output with the
-    low-effort instruction (reasoning_loop_recovery)", after which the thinking counter sits at exactly 2560
-    for minutes while the reported rate decays 88.5 -> 77.8 -> ... -> 29.3 tok/s. The turn neither advances
-    nor ends, and the client eventually gives up. This is the SLOW death: a different death from the
-    forged-boundary one (item 83) and from the no-op one (item 73).
-    It DOES fire on this box: the web app sends reasoning_effort "high", the template maps high to xhigh
-    (serve/chat_template.jinja:59-61) and xhigh is the default, so the sentence the splice looks for is
-    present - which is why the log shows the rescue running and then the freeze following it.
-    WHY XHIGH SPECIFICALLY, and why not always: focused_recovery_prompt (serve/server.py:193) splices token
-    ids. It finds the whole-token subsequence HIGH_EFFORT (server.py:157, = EFFORT_TEXT["xhigh"]) inside the
-    first system message, swaps it for LOW_EFFORT (server.py:158), and appends every id generated so far. It
-    splices ids rather than re-rendering because the prompt is never decoded and encoded again, so a literal
-    tag or vision marker inside it stays what it was (#537, #554). It looks for xhigh because that is the
-    template's default sentence and the point of the recovery is to LOWER effort mid-turn; it has no idea
-    what level the request asked for. When the request said low or medium the xhigh sequence is not there and
-    it returns None - that is item 73, not this one. So "why not always" means: key the splice on the
-    request's own level. EFFORT_TEXT is already keyed by level (server.py:134), so that change is small.
-    TWO MEASUREMENTS OWED before fixing the freeze: why the counter stops advancing at all, and why the
-    reported rate halves while it does not. The decay alone hints at re-decoding the same window; that is a
-    guess and needs the engine side of the exchange to confirm. No engine rebuild was attempted here.
+72.  The slow death: "recover" restarts the request, and the log cannot show what it is doing. [py] MEDIUM
+    Written up in strata-slow-death.txt at the repo root (untracked; dense with literal control tags, so read
+    it and never quote from it - quoting one killed two turns today). NOTE: that file is issue #2906 and its
+    own analysis is about the NO-OP (item 73). The logs pasted at the top of it are a DIFFERENT failure, and
+    the file never explains them. Do not read its conclusion as the answer to this item.
+
+    What the logs show: "repeated reasoning detected at 2560 tokens (coverage=0.555); resuming the same
+    output with the low-effort instruction", after which the line
+    "thinking: 2560 of max ... tokens, 85.1 tok/s, 238 s" repeats with the count FROZEN at 2560 for at least
+    60 s, and the client gives up. Measured from those lines: the rate is 2560/elapsed - 2560/29 = 88.3
+    against a logged 88.5, and 2560/88 = 29.1 against a logged 29.3 - so not one new token appeared in that
+    window. It fires on this box: the app sends high, chat_template.jinja:59-61 maps high to xhigh, and the
+    recovery is guarded by "if recover_prompt is not None" at server.py:4134 and the print at 4150 sits
+    inside it, so the splice worked.
+
+    WHY THE LOG CANNOT SEE IT, and this is the part worth fixing first. server.py:3838-3849 has two
+    branches: with no token produced yet it prints "reading the prompt: X of Y tokens" from
+    engine.progress, otherwise it prints "{phase}: {generated} of max ...". Nothing resets first_token or
+    generated when the recovery loop restarts (server.py:4001 re-issues engine.generate(prompt, max_new - n)
+    with the spliced prompt, and n is deliberately kept), so the frozen line is the SECOND branch showing a
+    stale count. The prefill progress that would have named the problem is suppressed.
+
+    THE STRONG HYPOTHESIS, unproven: the splice rewrites an early token of the prompt (xhigh -> low inside
+    the first system turn), and prompt reuse is exact token-prefix matching, so the whole ~378k-token
+    conversation has to be read again - about 190 s at the ~2,000 tok/s measured on this box, and the same
+    file's log shows that prefill taking 208 s. The client's timeout lands inside that window. One status
+    fix proves or kills it: reset first_token (and the phase counters) for the recovery pass so the next
+    attempt prints "reading the prompt" again.
+
+    IF THAT IS RIGHT, the real fix is not to edit the prompt in place. Append the low-effort instruction as
+    a trailing turn instead and the prefix, the checkpoint and the cache all survive - the repo already has
+    that shape for effort_position "end" (EFFORT_TURN, server.py:133, with --tail-role-token and the
+    version guard at server.py:2335-2354). Also check ENGINE_SILENCE_S = 300.0 (server.py:213): a genuinely
+    silent engine should have been ended and the request failed with a nameable error, so if the watchdog
+    never fired, the engine was not silent - it was busy re-reading, which again points at the prefix.
+    TWO MEASUREMENTS OWED: whether the recovery pass really re-prefills (engine.progress after the splice),
+    and why the reported rate halves while the count sits still. No engine rebuild attempted here.
 73.  "recover" is a silent no-op for a request that asks low or medium effort. [py] TRIVIAL fix, one decision
     focused_recovery_prompt (serve/server.py:193) looks only for the xhigh sentence. A request that asked low
     or medium carries that level's sentence instead, so the token subsequence is absent, the function returns
