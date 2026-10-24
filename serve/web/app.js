@@ -185,33 +185,27 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) poll
 
 // Hovering the Monitor tab fetches the full answer before the click, so its cards paint at once instead of
 // appearing a second later. Only Monitor needs this: Chat and About already poll their own tiers, so their
-// data is at most one interval old when you land on them, and Monitor is the one tab that gets nothing while
-// you are elsewhere. Three guards keep it from becoming a request storm:
-//   - 250ms of intent: a mouse sweeping past the tab bar never fires at all
-//   - a 10s freshness window: hovering again and again is free while the last full answer is recent
-//   - one at a time: a prefetch already in flight is not joined by a second
-// It does not touch the poll scheduler, so it cannot fork a second chain (the bug item 40 had to fix).
-const HOVER_INTENT_MS = 250, FULL_FRESH_MS = 10000;
-let lastFullAt = 0, hoverTimer = null, prefetching = false;
+// data is at most one interval old when you land on them.
+// The guard is a throttle, not a debounce: at most one hover fetch per second, so a mouse crossing the tab
+// bar cannot stack requests, and the first hover fires at once rather than after a delay. It runs outside
+// the poll scheduler, so it cannot fork a second chain (the bug item 40 had to fix).
+const HOVER_THROTTLE_MS = 1000;
+let lastHoverFetch = 0;
 function prefetchFull() {
-  if (prefetching || tab === "monitor") return Promise.resolve(false);
-  if (Date.now() - lastFullAt < FULL_FRESH_MS) return Promise.resolve(false);
-  prefetching = true;
-  return fetch("metrics", {headers: headers()})
+  fetch("metrics", {headers: headers()})
     .then((r) => (r.ok ? r.json() : null))
-    .then((m) => { if (m) { lastMetrics = m; lastFullAt = Date.now(); } return !!m; })
-    .catch(() => false)                            // a failed prefetch is not a failure of anything
-    .finally(() => { prefetching = false; });
+    .then((m) => { if (m) lastMetrics = m; })
+    .catch(() => {});                          // a failed prefetch is not a failure of anything
 }
 function hoverTab(name) {
-  clearTimeout(hoverTimer);                        // one intent timer, whichever tab it was armed for
-  if (name !== "monitor") return;                  // the other tabs already poll what they need
-  hoverTimer = setTimeout(prefetchFull, HOVER_INTENT_MS);
+  if (name !== "monitor" || tab === "monitor") return;
+  const now = Date.now();
+  if (now - lastHoverFetch <= HOVER_THROTTLE_MS) return;
+  lastHoverFetch = now;
+  prefetchFull();
 }
-function leaveTab() { clearTimeout(hoverTimer); }  // changed your mind inside the intent window: nothing sent
 for (const b of document.querySelectorAll(".st-tab")) {
   b.addEventListener("mouseenter", () => hoverTab(b.dataset.tab));
-  b.addEventListener("mouseleave", leaveTab);
 }
 async function poll() {
   try {
@@ -225,9 +219,7 @@ async function poll() {
       // a lite answer has no sparklines, request table or cache in it: paint what it does carry, and merge it
       // into the last full answer so a switch to the Monitor paints at once
       if (m.lite) { lastMetrics = {...(lastMetrics || {}), ...m}; renderLite(m); }
-      else { lastMetrics = m; render(m); lastFullAt = Date.now(); }
-      // lastFullAt counts the ordinary full answers too, not only prefetched ones: while the Monitor tab is
-      // open it polls every second, so hovering it later is free rather than a redundant extra request
+      else { lastMetrics = m; render(m); }
       schedulePoll(pollDelay(m));
       if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();   // server states change rarely: every 10 s
       return;

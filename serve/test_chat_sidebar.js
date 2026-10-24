@@ -197,18 +197,15 @@ function run(hooks, stored, seed) {
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
-    "pollUrl, pollDelay, renderPill, renderLite, hoverTab, leaveTab, prefetchFull, " +
-    "getLastFullAt: () => lastFullAt, setLastFullAt: (t) => { lastFullAt = t; }, " +
+    "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
+    "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
-               fetches, flush: () => { while (raf.length) raf.shift()(); },
-               // fire the pending timeout armed with this delay (the hover intent timer), ignoring the rest
-               fire: (ms) => { const t = timers.find((x) => x.f && x.ms === ms); if (!t) return false; const f = t.f; t.f = null; f(); return true; },
-               pending: (ms) => timers.some((x) => x.f && (ms === undefined || x.ms === ms))};
+               fetches, flush: () => { while (raf.length) raf.shift()(); }};
   return api;
 }
 
@@ -1288,47 +1285,41 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(pl2.s.el("pill-text").textContent, "Idle", "and it follows the state");
   done.push("polling: ?lite=1 off the Monitor, 15 s when idle, a minute when the window is hidden");
 
-  // 43. hovering the Monitor tab prefetches the full answer, so the cards paint at once on the click - and the
-  // three guards that stop a mouse sweep from becoming a request storm.
+  // 44. hovering the Monitor tab prefetches its answer, guarded by a 1 s throttle so a mouse crossing the
+  // tab bar cannot stack requests. It is a throttle, not a debounce: the first hover fires at once.
   const hv = run({}, {});
   await wait();
   hv.fetches.length = 0;
   hv.s.hoverTab("monitor");
-  assert.deepStrictEqual(hv.fetches, [], "hovering alone sends nothing: the intent window has to pass first");
-  assert.ok(hv.pending(250), "an intent timer is armed for 250 ms");
-  hv.s.leaveTab();                                   // moved off inside the window
-  hv.fire(250);
-  assert.deepStrictEqual(hv.fetches, [], "leaving inside the window cancels it: a sweep past the tabs is free");
-  hv.s.hoverTab("monitor");
-  assert.ok(hv.fire(250), "the intent timer fires");
   await wait();
-  assert.deepStrictEqual(hv.fetches, ["metrics"], "and exactly one full answer is fetched");
+  assert.deepStrictEqual(hv.fetches, ["metrics"], "the first hover fetches at once - no waiting to be useful");
   hv.s.hoverTab("monitor");
-  hv.fire(250); await wait();
-  assert.strictEqual(hv.fetches.length, 1, "hovering again within the freshness window costs nothing");
-  hv.s.setLastFullAt(0);                             // pretend the last full answer is old
   hv.s.hoverTab("monitor");
-  hv.fire(250); await wait();
-  assert.strictEqual(hv.fetches.length, 2, "once it is stale again, a hover fetches once more");
-  hv.s.setTab("monitor");                            // already there: the poll loop covers it, no extra request
-  hv.s.setLastFullAt(0);
-  hv.s.hoverTab("about");
-  hv.fire(250); await wait();
-  assert.strictEqual(hv.fetches.length, 2, "hovering another tab while on the Monitor sends nothing");
-  // hovering About prefetches nothing: that tab already polls its own tier, so its data is at most one
-  // interval old when you land on it. Only Monitor gets nothing while you are elsewhere.
+  await wait();
+  assert.strictEqual(hv.fetches.length, 1, "hovering again inside the throttle window costs nothing");
+  hv.s.setLastHoverFetch(0);                       // pretend the last hover fetch is old
+  hv.s.hoverTab("monitor");
+  await wait();
+  assert.strictEqual(hv.fetches.length, 2, "once the window passes, a hover fetches once more");
+  const hv3 = run({}, {});
+  await wait();
+  hv3.s.setTab("monitor");
+  hv3.fetches.length = 0;
+  hv3.s.hoverTab("monitor");
+  await wait();
+  assert.deepStrictEqual(hv3.fetches, [], "already on the Monitor: its own 1 s poll covers it");
   const hv2 = run({}, {});
   await wait();
   hv2.s.setTab("chat");
   hv2.fetches.length = 0;
   hv2.s.hoverTab("about");
-  hv2.fire(250); await wait();
-  assert.deepStrictEqual(hv2.fetches, [], "hovering About sends no prefetch: it already polls lite+hw");
+  await wait();
+  assert.deepStrictEqual(hv2.fetches, [], "hovering About sends nothing: it already polls lite+hw");
   assert.strictEqual(hv2.s.pollUrl(), "metrics?lite=1", "and the Chat tab still asks its own tier");
   assert.strictEqual(hv2.s.pollDelay({live: {state: "idle"}}), 15000, "Chat backs off; Monitor keeps 1 s");
   hv2.s.setTab("monitor");
   assert.strictEqual(hv2.s.pollDelay({live: {state: "idle"}}), 1000, "the Monitor's own cadence is unchanged");
-  done.push("hover: the Monitor prefetches once, after 250ms of intent, and not again while the answer is fresh");
+  done.push("hover: the Monitor prefetches at once, throttled to one fetch per second");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
