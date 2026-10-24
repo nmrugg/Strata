@@ -470,18 +470,15 @@ is section 8, items 34-36.
     accent marker wins where a chat has both - "go read this" outranks "you left text here" - and the draft is
     still visible the moment the chat is opened.
 
-38.  Copy the whole turn - thinking and tool calls included - from the copy button. [ui] TRIVIAL
-    Today `[data-msg-copy]` copies `messages[i].text` only (serve/web/app.js, the click listener on #chat): the
-    answer's text, including the narration between calls, which is part of m.text. The want, from the human:
-    hold a modifier to get more. Suggested shape - plain click = the answer text (unchanged), Shift+click =
-    answer + the thinking runs, Ctrl+Shift+click = answer + thinking + each call's arguments and the result as
-    the model read it.
-    What already exists to reuse, and it is now most of the work: `turnMarkdown(m)` (added with the export
-    fix) builds a whole turn in screen order - thinking per run, text, each call with its arguments and the
-    result as the model read it - via `bubbleParts()`. "Copy everything" is that string handed to the
-    clipboard instead of to a file; "copy answer + thinking" is the same walk with the tool parts skipped.
-    Care: a tool result can be 20,000 characters (the reason an open block's body is built lazily), so
-    "copy everything" should say how big it is in the toast, and the modifier must not fight the browser's own
-    Shift-click behaviour on a button (it does not, but the toggle listener tests `tagName`, so keep the two
-    handlers separate).
+38.  Copy the whole turn - thinking and tool calls included - from the copy button. [ui] DONE
+    2026-10-23 in 54698d98, exactly as suggested: plain click = the answer (unchanged), Shift+click = the
+    answer and the thinking runs, Ctrl/Cmd+Shift+click = everything, each call's arguments and the result as
+    the model read it. It walks `bubbleParts()` like the screen and the export do, so the three views of a
+    turn cannot disagree; level 2 labels the parts ("Thinking:", "Tool server / name · 0.4 s (ok)") because a
+    clipboard dump that mixes thinking, prose and tool output needs signposts, and the toast says how many
+    characters went onto the clipboard. The button's tooltip explains the modifiers.
+    (Was:) Today `[data-msg-copy]` copies `messages[i].text` only (serve/web/app.js, the click listener on
+    #chat): the answer's text, including the narration between calls, which is part of m.text.
+    Note for whoever builds on it: `turnText(m, level)` and `turnMarkdown(m)` are the two walks, and both go
+    through `bubbleParts()` - if you want a fourth size or a different format, change the walk, not the caller.
 
