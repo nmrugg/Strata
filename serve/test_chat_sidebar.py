@@ -39,6 +39,14 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
+    def test_a_tool_call_shows_what_the_model_is_typing(self):
+        # todo #11: the page asks for a call's argument pieces as they are written and shows them in the block,
+        # instead of a static "(being written)".  serve/test_mcp.py pins the server half.
+        self.assertIn("body.strata_mcp_args = true;", self.js)
+        self.assertIn('x.event === "args"', self.js)
+        self.assertIn('delete t.argsText;', self.js)          # the finished arguments replace the streamed text
+        self.assertIn("(t.arguments != null ? JSON.stringify(t.arguments, null, 2) : (t.argsText || \"\"))", self.js)
+
     def test_a_chat_row_marks_what_is_happening_in_it(self):
         # one state slot per row, before the name: run (a turn answering there now), new (a reply that landed
         # while you were elsewhere), draft (text you typed and never sent). One at a time, that priority.

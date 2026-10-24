@@ -307,6 +307,25 @@ class ToolLoop(unittest.TestCase):
     def chunks(text):
         return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
 
+    def test_argument_pieces_stream_when_the_client_asks(self):
+        # todo #11: the page asks for a call's JSON as it is written, so it can show what the model is typing
+        # instead of a static "(being written)".  It only happens for a request that asks - the test above
+        # asserts the plain start/call/result sequence for one that does not.
+        self.start(call_script("fake__echo", text="hello from the tool"), "</think>\n\nThe tool said hello.")
+        code, text = self.post({"strata_mcp": True, "strata_mcp_args": True})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        kinds = [m["event"] for m in mcp]
+        self.assertEqual(kinds[0], "start")                      # the block appears before its JSON does
+        self.assertIn("args", kinds)
+        self.assertGreater(len([k for k in kinds if k == "args"]), 1, "pieces, not one lump at the end")
+        self.assertEqual(kinds[-2:], ["call", "result"])         # the finished call still arrives whole
+        pieces = "".join(m["text"] for m in mcp if m["event"] == "args")
+        call = next(m for m in mcp if m["event"] == "call")
+        self.assertEqual(json.loads(pieces), call["arguments"], "the pieces reassemble into the call's arguments")
+        self.assertTrue(all(m["id"] == call["id"] for m in mcp if m["event"] == "args"),
+                        "and they belong to that call")
+
     def test_tool_call_then_answer(self):
         self.start(call_script("fake__echo", text="hello from the tool"), "</think>\n\nThe tool said hello.")
         code, text = self.post({"strata_mcp": True})

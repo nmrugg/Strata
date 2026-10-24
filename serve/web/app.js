@@ -919,9 +919,12 @@ const toolOpen = (t) => t.open === undefined ? settings.opentools === true : !!t
 // listener below), exactly as the thinking body is filled when it opens.
 // the strings a tool block shows, in one place: toolHtml() writes them once when the block is made and
 // toolSync() compares against them afterwards, so the two can never drift apart
-const toolArgs = (t) => (t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2)) || "(being written)";
-const toolPreview = (t) => (t.result != null ? t.result : (t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2))
-                                            .replace(/\s+/g, " ")).slice(0, 200);
+// the arguments as the reader should see them: a finished call's, pretty-printed; while the model is still
+// writing one, the raw JSON arriving piece by piece (todo #11) instead of a static "(being written)"
+const toolArgsText = (t) => (t.arguments != null ? JSON.stringify(t.arguments, null, 2) : (t.argsText || ""));
+const toolArgs = (t) => toolArgsText(t) || "(being written)";
+// a finished call previews the result the model saw; one still being written previews the JSON arriving now
+const toolPreview = (t) => (t.result != null ? t.result : toolArgsText(t)).replace(/\s+/g, " ").slice(0, 200);
 const toolMs = (t) => (t.ms != null && t.state !== "skipped" ? `${fmt(t.ms / 1000, 1)} s` : "");
 const toolResultLabel = (t) => (t.result == null ? "" : `${t.ok ? "Result" : "Error"}` +
                                `${t.chars ? ` · ${fmt(t.chars)} characters` : ""}${t.truncated ? ", cut for the model" : ""}`);
@@ -950,7 +953,14 @@ function toolHtml(t, k) {
 function syncToolBody(box, t) {
   if (!box._built) { box.innerHTML = toolBodyHtml(t); box._built = true; box._hasResult = t.result != null; return; }
   const args = box.querySelector(".tool-call__pre-args");
-  if (args.textContent !== toolArgs(t)) args.textContent = toolArgs(t);
+  const wantArgs = toolArgs(t);
+  // a call being written streams its JSON: follow it the way the thinking follows, only if the reader is at the
+  // bottom of that box already (todo #11)
+  const follow = t.state === "writing" && nearEnd(args, 48);
+  if (args.textContent !== wantArgs) {
+    args.textContent = wantArgs;
+    if (follow) args.scrollTop = args.scrollHeight;
+  }
   if (t.result == null) return;
   if (!box._hasResult) {                                  // the result arrived after the block was first opened
     box.insertAdjacentHTML("beforeend", `<div class="tool-call__label tool-call__label-result"></div>` +
@@ -1179,6 +1189,9 @@ function onTool(m, x) {
   if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
   if (x.event === "call") {
     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
+    delete t.argsText;                    // the finished arguments replace the pieces that streamed in
+  } else if (x.event === "args") {
+    t.argsText = (t.argsText || "") + (x.text || "");     // todo #11: the call's JSON arriving piece by piece
   } else if (x.event === "result") {
     Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
@@ -1377,6 +1390,7 @@ async function send() {
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) {          // this server may run MCP tools for it
     body.strata_mcp = true;
+    body.strata_mcp_args = true;               // todo #11: show the call's JSON as it is written, not "(being written)"
     // #2100: the same choice assistantMessages() renders with, so the two rebuilds of a tool turn agree
     body.strata_mcp_thinking = settings.mcpthink === true;
   }

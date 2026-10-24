@@ -3401,6 +3401,13 @@ class Service:
         v = req.get("strata_mcp_thinking")
         return self.mcp_keep_round_thinking if v is None else bool(v)
 
+    def mcp_stream_args(self, req: dict) -> bool:
+        """todo #11: does this client want the argument pieces of an MCP call as it is written?  Off unless the
+        request asks, so every other client's stream is byte for byte what it was.  The pieces are the raw JSON
+        text of the call, in the order the parser cut it - the client shows them until the finished arguments
+        arrive, which is what replaces the "(being written)" placeholder."""
+        return bool(req.get("strata_mcp_args"))
+
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
         the hardware (with a minute of history per series)."""
@@ -4387,7 +4394,7 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names, keep_thinking=False):
+                 mcp_names, keep_thinking=False, stream_args=False):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
@@ -4412,7 +4419,12 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                         yield "mcp", {"event": "start", "id": ev.call.id, "name": ev.call.name}
                     elif ev.kind == "tool_call":
                         calls.append(ev.call)
-                    continue                             # its argument pieces are not streamed to the client
+                    elif stream_args and ev.kind == "tool_args":
+                        # todo #11: the call's raw JSON as it is written, so the page can show what the model is
+                        # typing instead of "(being written)".  Only for requests that asked (strata_mcp_args);
+                        # the pieces still do not go into the OpenAI-style deltas, which would duplicate them.
+                        yield "mcp", {"event": "args", "id": ev.call.id, "text": ev.text}
+                    continue                             # the argument pieces stay off the ordinary stream
                 if ev.kind == "tool_call":
                     own_calls += 1
                 elif ev.kind == "content":
@@ -5578,7 +5590,8 @@ def make_handler(svc: Service):
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
-                               {t["name"] for t in extra}, svc.mcp_keep_thinking(req)) if use_mcp else None
+                               {t["name"] for t in extra}, svc.mcp_keep_thinking(req),
+                               svc.mcp_stream_args(req)) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)

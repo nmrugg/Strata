@@ -191,7 +191,7 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
+    "bubbleParts, toolSync, toolOpen, onTool, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
@@ -1181,6 +1181,36 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(stateOf("A"), "", "opening it clears the mark");
   assert.strictEqual(mk39.s.chats.find((c) => c.id === "A").unread, false, "on the object too");
   done.push("chat list: a spinner for the conversation that is answering, a dot for one with a reply you have not read");
+
+  // 40. a call being written shows the JSON arriving, instead of a static "(being written)" (todo #11).  The
+  // server sends the pieces only because the page asked (strata_mcp_args); here they are fed in as events.
+  const aw = run({}, {});
+  await wait();
+  aw.s.setSettings({opentools: true});                       // the body is only built while the block is open
+  const wm = {role: "assistant", text: "", reasoning: "", time: Date.now(), tools: []};
+  const wel = aw.s.msgEl(wm, 0);
+  aw.s.onTool(wm, {event: "start", id: "c1", name: "easyCMP__fs_write"});
+  aw.s.updateAssistant(wel, wm, true);
+  const det40 = wel.querySelector(".st-bubble")._parts.find((p) => p.kind === "tool").el;
+  const box40 = det40.querySelector(".st-collapse__body");   // the page reaches the pres through this, and the
+  const pre40 = box40.querySelector(".tool-call__pre-args");  // stub only matches direct children
+  assert.ok(box40._html.includes("(being written)"), "the body is built saying so, until JSON starts arriving");
+  aw.s.onTool(wm, {event: "args", id: "c1", text: '{"path": "/tmp/x"'});
+  aw.s.updateAssistant(wel, wm, true);
+  assert.strictEqual(pre40.textContent, '{"path": "/tmp/x"', "the JSON as it arrives, unbalanced and all");
+  assert.ok(det40.querySelector(".tool-call__preview").textContent.includes('/tmp/x'),
+            "and the collapsed summary shows it too, so you can watch without opening the block");
+  aw.s.onTool(wm, {event: "args", id: "c1", text: ', "text": "hi"}'});
+  aw.s.updateAssistant(wel, wm, true);
+  assert.strictEqual(pre40.textContent, '{"path": "/tmp/x", "text": "hi"}', "pieces accumulate");
+  aw.s.onTool(wm, {event: "call", id: "c1", name: "easyCMP__fs_write", server: "easyCMP", tool: "fs_write",
+                   arguments: {path: "/tmp/x", text: "hi"}, round: 1});
+  aw.s.updateAssistant(wel, wm, true);
+  assert.strictEqual(pre40.textContent, JSON.stringify({path: "/tmp/x", text: "hi"}, null, 2),
+                     "the finished call replaces the raw pieces, pretty-printed");
+  assert.strictEqual(wm.tools[0].argsText, undefined, "and the streamed text is dropped, not kept beside it");
+  assert.strictEqual(wm.tools[0].state, "running", "the block moves on to running");
+  done.push("tool calls: the JSON the model is typing streams into the block instead of \"(being written)\"");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
