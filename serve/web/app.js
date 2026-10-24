@@ -1214,7 +1214,7 @@ $("chat").addEventListener("click", (e) => {
     // plain click = the answer (as it always was); Shift = the answer and the thinking; Ctrl/Cmd+Shift =
     // everything, the tool calls and their results included
     const level = (e.ctrlKey || e.metaKey) && e.shiftKey ? 2 : (e.shiftKey ? 1 : 0);
-    const txt = level ? turnText(m, level) : (m.text || "");
+    const txt = level ? turnMarkdown(m, level) : (m.text || "");
     // a tool result can be 20,000 characters, so say how much actually went onto the clipboard
     copyText(txt, mc, ["Copy the answer", "Copied the answer and the thinking",
                        `Copied everything (${fmt(txt.length)} characters, tool calls included)`][level]);
@@ -1471,41 +1471,29 @@ function toolMarkdown(t) {
   return `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${ms}${t.ok ? "" : " (error)"}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`;
 }
-function turnMarkdown(m) {
+// One walk, one format, three sizes.  The export takes everything (level 2, the default) and so does
+// Ctrl+Shift+copy; Shift+copy takes the thinking and the text but not the calls; a plain copy stays the bare
+// answer, which the caller passes straight from m.text.  Keeping a single builder is the point - the screen,
+// the saved file and the clipboard cannot then disagree, and the clipboard gets the same <details> blocks the
+// file has.  The order comes from bubbleParts(), the same parts the bubble draws.
+function turnMarkdown(m, level = 2) {
   const out = [];
   for (const p of bubbleParts(m)) {
     if (p.kind === "think") {
+      if (level < 1) continue;
       const t = (m.reasoning || "").slice(p.from, p.to).trim();
       if (t) out.push(`<details><summary>${p.secs != null ? `Thought for ${fmt(p.secs, 1)} s` : "Thoughts"}</summary>\n\n${t}\n\n</details>\n\n`);
     } else if (p.kind === "text") {
       const t = (m.text || "").slice(p.from, p.to).trim();
       if (t) out.push(`${t}\n\n`);
-    } else if (m.tools[p.k].result != null) out.push(toolMarkdown(m.tools[p.k]));   // a call that never finished is not in the record
-  }
-  if (m.error) out.push(`> ${m.error}\n\n`);              // an error is part of the turn, not a footnote
-  return out.join("");
-}
-// the clipboard in three sizes, from the same walk as the screen and the export: the answer, the answer with
-// the thinking, and everything including what the tools returned.  Keeping one walk means the three views of
-// a turn cannot disagree with each other or with the saved file.
-function turnText(m, level) {                       // 0 = answer, 1 = + thinking, 2 = + tool calls
-  const out = [];
-  for (const p of bubbleParts(m)) {
-    if (p.kind === "text") { const t = (m.text || "").slice(p.from, p.to).trim(); if (t) out.push(t); }
-    else if (p.kind === "think" && level >= 1) {
-      const t = (m.reasoning || "").slice(p.from, p.to).trim();
-      if (t) out.push(level >= 2 ? `Thinking:\n${t}` : t);
-    } else if (p.kind === "tool" && level >= 2) {
-      const t = m.tools[p.k];
-      if (t.result != null) {
-        const ms = t.ms != null && t.state !== "skipped" ? ` · ${fmt(t.ms / 1000, 1)} s` : "";
-        out.push(`Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${ms} (${t.ok ? "ok" : "error"})\n${t.result}`);
-      }
+    } else if (level >= 2 && m.tools[p.k].result != null) {
+      out.push(toolMarkdown(m.tools[p.k]));          // a call that never finished is not in the record
     }
   }
-  if (m.error) out.push(`Error: ${m.error}`);
-  return out.join("\n\n");
+  if (m.error && level >= 1) out.push(`> ${m.error}\n\n`);   // an error is part of the turn, not a footnote
+  return out.join("");
 }
+
 // a file named for the conversation, not just for the day: a folder full of strata-chat-*.md says nothing.
 // A title can carry anything the model or the user typed, so drop what a filesystem refuses, trim the tail
 // Windows dislikes (dots and spaces), and cap the length.

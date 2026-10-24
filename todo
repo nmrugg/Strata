@@ -474,11 +474,13 @@ is section 8, items 34-36.
     2026-10-23 in 54698d98, exactly as suggested: plain click = the answer (unchanged), Shift+click = the
     answer and the thinking runs, Ctrl/Cmd+Shift+click = everything, each call's arguments and the result as
     the model read it. It walks `bubbleParts()` like the screen and the export do, so the three views of a
-    turn cannot disagree; level 2 labels the parts ("Thinking:", "Tool server / name · 0.4 s (ok)") because a
-    clipboard dump that mixes thinking, prose and tool output needs signposts, and the toast says how many
-    characters went onto the clipboard. The button's tooltip explains the modifiers.
+    turn cannot disagree; the clipboard takes the same `<details>` blocks the saved file has (the human asked
+    for that deliberately - one builder, `turnMarkdown(m, level)`, and the old separate `turnText` formatter was
+    deleted), and the toast says how many characters went onto the clipboard. The button's tooltip explains the
+    modifiers.
     (Was:) Today `[data-msg-copy]` copies `messages[i].text` only (serve/web/app.js, the click listener on
     #chat): the answer's text, including the narration between calls, which is part of m.text.
-    Note for whoever builds on it: `turnText(m, level)` and `turnMarkdown(m)` are the two walks, and both go
-    through `bubbleParts()` - if you want a fourth size or a different format, change the walk, not the caller.
+    Note for whoever builds on it: `turnMarkdown(m, level)` is the one walk (levels 1 and 2; a plain copy is
+    `m.text` straight from the caller), and it goes through `bubbleParts()` like the bubble does - if you want a
+    fourth size or a different format, change that function, not the callers.
 

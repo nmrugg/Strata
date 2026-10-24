@@ -188,7 +188,7 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, turnMarkdown, turnText, safeFileName, " +
+    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
@@ -1038,7 +1038,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   // an unfinished call stays out of the record, as it always was, and an error is part of the turn
   const half = {role: "assistant", text: "did what it could", reasoning: "", time: Date.now(),
                 tools: [{id: "c9", name: "x", state: "writing", at: 0, rat: 0}], error: "the request failed"};
-  const hmd = ex.s.turnMarkdown(half);
+  const hmd = ex.s.turnMarkdown(half, 2);
   assert.ok(!hmd.includes("Tool x"), "a call that never finished is not written up");
   assert.ok(hmd.includes("> the request failed"), "and the error is in the turn");
   done.push("export: the saved Markdown walks the same parts as the screen - think, text, call, think, text, call, answer");
@@ -1049,11 +1049,14 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   const cm = {role: "assistant", text: "the answer", reasoning: "a thought", time: Date.now(),
               tools: [{id: "c1", name: "easyCMP__fs_read", server: "easyCMP", tool: "fs_read", state: "done",
                        at: 10, rat: 9, ms: 400, ok: true, result: "what it read", round: 1}]};
-  assert.strictEqual(cp.s.turnText(cm, 0), "the answer", "plain: the answer only");
-  assert.strictEqual(cp.s.turnText(cm, 1), "a thought\n\nthe answer", "Shift: with the thinking, in order");
-  assert.strictEqual(cp.s.turnText(cm, 2),
-                     "Thinking:\na thought\n\nthe answer\n\nTool easyCMP / fs_read · 0.4 s (ok)\nwhat it read",
-                     "Ctrl+Shift: everything, labelled, including what the tool returned");
+  // the clipboard takes the same shape the saved file has: thinking as a <details> block, then the text,
+  // then (at the top level only) the call exactly as toolMarkdown writes it
+  const think1 = "<details><summary>Thoughts</summary>\n\na thought\n\n</details>\n\nthe answer\n\n";
+  const tool1 = "<details><summary>Tool easyCMP / fs_read \u00b7 0.4 s</summary>\n\n```json\n{}\n```\n\n```\nwhat it read\n```\n\n</details>\n\n";
+  assert.strictEqual(cp.s.turnMarkdown(cm, 1), think1, "Shift: the thinking as a details block, then the text");
+  assert.strictEqual(cp.s.turnMarkdown(cm, 2), think1 + tool1, "Ctrl+Shift: byte for byte what the export writes");
+  assert.strictEqual(cp.s.turnMarkdown(cm), cp.s.turnMarkdown(cm, 2), "and the export's default level is everything");
+
   const cel = cp.s.msgEl(cm, 0);
   cp.s.el("chat").appendChild(cel);
   cp.s.messages.length = 0; cp.s.messages.push(cm);
@@ -1062,8 +1065,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   cp.s.el("chat")._l["click"]({target: cbtn});
   cp.s.el("chat")._l["click"]({target: cbtn, shiftKey: true});
   cp.s.el("chat")._l["click"]({target: cbtn, shiftKey: true, ctrlKey: true});
-  assert.deepStrictEqual(cp.copied, ["the answer", "a thought\n\nthe answer",
-                                     "Thinking:\na thought\n\nthe answer\n\nTool easyCMP / fs_read · 0.4 s (ok)\nwhat it read"],
+  assert.deepStrictEqual(cp.copied, ["the answer", think1, think1 + tool1],
                          "the modifiers pick the size, and a plain click is unchanged");
   await wait();                                       // copyText awaits the clipboard, so the toasts are a tick later
   assert.strictEqual(cp.s.el("toasts").children.length, 3, "and each copy said something");
