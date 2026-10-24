@@ -699,19 +699,19 @@ function groupName(t) {
 }
 function chatItem(c) {
   const t = chatTitle(c);
-  // one state marker per row, in priority order: a turn answering right now, else a reply you have not seen,
-  // else text you typed and never sent. One slot, one marker at a time - a row with three of them is noise, and
-  // "go read this" outranks "you left text here" (the draft is visible the moment the chat opens anyway).
-  const running = !!busy && busy.chatId === c.id;
+  // a turn answering in a conversation you are NOT looking at.  On the one you are in, the streaming answer is
+  // itself the indicator, so a spinner there would be noise (the human's ask)
+  const running = !!busy && busy.chatId === c.id && c.id !== chatId;
   const drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
-  const state = running ? "run" : c.unread ? "new" : drafted ? "draft" : "";
-  const tip = running ? "answering" : c.unread ? "unread reply" : drafted ? "has draft" : "";
+  // run and new sit in the row's left gutter, absolutely placed, so they cost no title width at all; a draft is
+  // an asterisk on the name itself, because it belongs to the text rather than to what is happening to the
+  // conversation.  A reply you have not read outranks a draft in the gutter: go read beats go type.
+  const state = running ? "run" : c.unread ? "new" : "";
+  const tip = running ? "answering" : c.unread ? "unread reply" : "";
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
-  // the slot is only emitted when there is something to show: a row with no marker keeps its full title width,
-  // and only the one that is answering (or unread, or drafted) gives up ~14px - the same shape as the
-  // edit/delete buttons, which only take room when that row is hovered
-  row.innerHTML = `<button class="chat-item__title" data-open-chat title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}">${esc(t)}</button>` +
+  row.innerHTML = `<button class="chat-item__title${drafted ? " draft" : ""}" data-open-chat` +
+    ` title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}${drafted ? " (has draft)" : ""}">${esc(t)}</button>` +
     (state ? `<span class="chat-item__state ${state}" title="${esc(tip)}" aria-hidden="true"></span>` : "") +
     `<span class="chat-item__actions">` +
     `<button class="st-btn st-btn--icon" data-rename aria-label="Rename this chat" title="Rename">${icon("edit")}</button>` +

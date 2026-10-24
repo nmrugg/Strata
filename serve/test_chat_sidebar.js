@@ -924,13 +924,13 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
                   b: {id: "b", title: "chat b", time: Date.now(), messages: [msg("second")]}});
   await wait();
   const rowHtml = (id) => mk.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
-  assert.ok(!rowHtml("a").includes('class="chat-item__state draft"'), "nothing marked yet");
+  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "nothing marked yet");
   mk.s.el("input").value = "typing in a";
   mk.s.el("input")._l["input"]();
   mk.s.openChat("b");
   await wait();
-  assert.ok(rowHtml("a").includes('class="chat-item__state draft"'), "chat a is marked: it has unsent text");
-  assert.ok(!rowHtml("b").includes('class="chat-item__state draft"'), "chat b is not");
+  assert.ok(rowHtml("a").includes('class="chat-item__title draft"'), "chat a is marked: it has unsent text");
+  assert.ok(!rowHtml("b").includes('class="chat-item__title draft"'), "chat b is not");
   assert.ok(rowHtml("a").includes("(has draft)"), "and the tooltip says why");
   mk.s.openChat("a");
   await wait();
@@ -939,7 +939,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   mk.s.el("input")._l["input"]();
   mk.s.openChat("b");
   await wait();
-  assert.ok(!rowHtml("a").includes('class="chat-item__state draft"'), "an emptied draft clears the marker");
+  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "an emptied draft clears the marker");
   done.push("chat list: a conversation with unsent text is marked with an asterisk");
 
   // 33. the final layout, after two tries at nesting: everything top level, in the order it happened.
@@ -1156,17 +1156,19 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
     const m = /class="chat-item__state ?([\w-]*)"/.exec(html);
     return m ? m[1] : "";
   };
-  assert.strictEqual(stateOf("A"), "", "nothing running, nothing unread, no draft: no marker");
+  assert.strictEqual(stateOf("A"), "", "nothing running, nothing unread: no gutter marker");
   assert.ok(!mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === "A")._html.includes("chat-item__state"),
-            "and no slot at all: that row keeps its full title width (the human's reason for moving it right)");
+            "and no span at all when there is nothing to show");
   const f39 = (o) => "data: " + JSON.stringify(o) + "\n\n";
   q39.push(f39({choices: [{delta: {content: "half"}}]}), f39({choices: [{delta: {content: " the rest"}}]}));
   mk39.s.el("input").value = "go";
   const run39 = mk39.s.send();
   await wait();
-  assert.strictEqual(stateOf("A"), "run", "the answering conversation shows the spinner");
-  assert.strictEqual(stateOf("B"), "", "and the other row does not");
+  assert.strictEqual(stateOf("A"), "", "no spinner on the conversation you are already looking at");
+  assert.strictEqual(stateOf("B"), "", "and none on the other one either");
   mk39.s.openChat("B"); await wait();
+  assert.strictEqual(stateOf("A"), "run", "leaving it makes the spinner appear in A's gutter");
+  assert.strictEqual(stateOf("B"), "", "the conversation now on screen stays unmarked");
   ctl39.step(); await wait();                          // "half" lands while B is on screen
   ctl39.step(); await wait();                          // "the rest"
   ctl39.step(); await wait();                          // the stream ends here

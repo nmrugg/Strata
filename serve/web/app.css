@@ -128,23 +128,22 @@ main { flex: 1; min-height: 0; display: flex; }
 .sidebar-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .sidebar-group { margin: 0; padding: var(--st-s-3) 8px var(--st-s-1); font-size: var(--st-fs-xs);
                  font-weight: var(--st-fw-bold); letter-spacing: .04em; text-transform: uppercase; color: var(--st-ink-muted); }
-.chat-item { display: flex; align-items: center; gap: 2px; border-radius: var(--st-r-md); }
+.chat-item { display: flex; align-items: center; gap: 2px; border-radius: var(--st-r-md);
+             position: relative; padding-left: 12px; }   /* a small gutter: the state markers live in it */
 .chat-item.on { background: var(--st-surface-2); }
 .chat-item__title { flex: 1; min-width: 0; border: 0; background: transparent; cursor: pointer; text-align: left;
                     padding: 8px; color: var(--st-ink-soft); font: 500 var(--st-fs-sm)/1.35 var(--st-font);
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item:hover .chat-item__title { color: var(--st-ink); }
-/* One state marker per row, at the right, and app.js only emits the slot when there is something to show - so a
-   row with no marker keeps its full title width and only the one that is answering (or unread, or drafted) gives
-   up about 14px. That is the same shape as the edit/delete buttons, which only take room on that one hovered
-   row; a fixed slot on the left cost every title in the list.
-   Three states, one at a time, in priority order (chatItem in app.js):
-     run   - a turn answering in that conversation right now        (accent green, spinning)
-     new   - a reply that landed while you were somewhere else      (info blue)
-     draft - text you typed there and never sent                    (the row's own ink: quiet)
-   Green means happening, blue means happened, go read it. */
-.chat-item__state { flex: none; width: 12px; height: 12px; margin-right: 2px; position: relative; }
-.chat-item__state.draft::before { content: "*"; font-weight: 700; line-height: 12px; }
+/* The row has a 12px gutter on the left (padding-left on .chat-item).  The two "what is happening" markers sit in
+   it, absolutely placed, so they cost no title width on any row - the gutter is shared and uniform, and half the
+   size of the fixed slot that came before it.  app.js only emits the span when there is a marker at all.
+     run   - a turn answering in a conversation you are NOT looking at   (accent green, spinning)
+     new   - a reply that landed while you were somewhere else           (info blue)
+   A draft is not in the gutter: it is an asterisk on the name, because it belongs to the text rather than to
+   what is happening to the conversation.  Green means happening, blue means happened, go read it. */
+.chat-item__state { position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; }
+.chat-item__title.draft::before { content: "*"; margin-right: 4px; }   /* the row's own ink, never a colour */
 .chat-item__state.new::before { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--st-info); }
 .chat-item__state.run::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
                                  border: 2px solid var(--st-line); border-top-color: var(--st-accent);

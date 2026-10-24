@@ -43,9 +43,12 @@ class ChatSidebar(unittest.TestCase):
         # one state slot per row, before the name: run (a turn answering there now), new (a reply that landed
         # while you were elsewhere), draft (text you typed and never sent). One at a time, that priority.
         css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
-        draft_rule = re.search(r"\.chat-item__state\.draft::before \{([^}]*)\}", css).group(1)
+        draft_rule = re.search(r"\.chat-item__title\.draft::before \{([^}]*)\}", css).group(1)
         self.assertIn('content: "*"', draft_rule)
         self.assertNotIn("color", draft_rule)             # the row's own ink; colour means something else here
+        # run/new live in a 12px gutter on the row, absolutely placed: they cost no title width on any row
+        self.assertIn("position: relative; padding-left: 12px;", css)
+        self.assertIn(".chat-item__state { position: absolute; left: 0;", css)
         self.assertIn(".chat-item__state.run::before", css)
         # the slot is only emitted when there is a marker, so an ordinary row keeps its full title width
         self.assertIn('(state ? `<span class="chat-item__state ${state}"', self.body("chatItem"))
@@ -55,8 +58,8 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("background: var(--st-info)", css)                  # happened: blue, go read it
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)     # the spinner does not have to spin
         item = self.body("chatItem")
-        self.assertIn("busy.chatId === c.id", item)                       # the spinner follows the turn's chat
-        self.assertIn('running ? "run" : c.unread ? "new" : drafted ? "draft" : ""', item)
+        self.assertIn("busy.chatId === c.id && c.id !== chatId", item)  # never on the chat you are looking at
+        self.assertIn('running ? "run" : c.unread ? "new" : ""', item)   # a draft is on the name, not the gutter
         self.assertIn("if (historyOn) renderSidebar();", self.body("setBusy"))   # the list follows turn start/end
         self.assertIn("turn.chat.unread = true;", self.body("send"))
         self.assertIn("c.unread = false;", self.body("showChat"))
