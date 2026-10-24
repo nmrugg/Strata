@@ -34,11 +34,21 @@ is section 8, items 34-36.
     What is missing is entirely in the page: one busy flag, one send button disabled
     (app.js:1015), one stream reader. Needs per-request state (controller, target message,
     chat id) so two streams can be tracked and painted into the right chat.
-11.  Show what the model is typing inside a tool call instead of "(being written)". [py] [ui]
-    Half-built already: OutputParser emits tool_start and tool_args pieces (frontend.py:799)
-    and the server turns stream_tools on (server.py:3838). But run_with_mcp deliberately
-    drops the argument pieces ("its argument pieces are not streamed to the client",
-    server.py:4376). Forwarding them plus a small UI change is the whole job.
+11.  Show what the model is typing inside a tool call instead of "(being written)". [py] [ui] DONE 2026-10-23
+    Shipped in 43fb9845. The half-built plumbing the entry described was exactly right: the parser already
+    emits tool_start and tool_args pieces, and the MCP loop threw the pieces away with a bare `continue`
+    ("its argument pieces are not streamed to the client").
+    Server: run_with_mcp takes stream_args and, only then, yields {"event": "args", "id", "text"} per piece.
+    The flag comes from the request (Service.mcp_stream_args, mirroring mcp_keep_thinking), so a client that
+    does not ask gets byte-identical chunks - test_mcp's existing test still asserts start/call/result
+    exactly. The pieces never enter the OpenAI-style deltas either, so nothing is duplicated.
+    Page: sends strata_mcp_args, accumulates the pieces on the tool (t.argsText), and shows them in the
+    arguments pre and in the collapsed summary line as they arrive - so you can watch a big call being
+    written without opening it. The args box follows the bottom the same way the thinking does, only if the
+    reader was already there. When the finished call lands, arguments wins and argsText is dropped, so the
+    record does not carry both.
+    test_mcp asserts the pieces reassemble into the finished arguments and belong to that call.
+
 12.  New thinking blocks after each tool call instead of one bubble at the top. [ui] DONE
     2026-10-23, final shape in the commit after 956a9631 - it was [ui] only, not [py] [ui]: the
     round boundaries were already in the data (`at` and `rat` on each tool), and `assistantMessages()`
