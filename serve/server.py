@@ -5034,28 +5034,35 @@ def make_handler(svc: Service):
         SPRITE = ROOT / "serve" / "web" / "sprite.svg"
 
         @classmethod
-        def _sprite_symbols(cls) -> str:
+        def _sprite_symbols(cls) -> str | None:
+            if not cls.SPRITE.is_file():
+                return None
             raw = cls.SPRITE.read_text(encoding="utf-8")
-            i, j = raw.index("<symbol"), raw.rindex("</symbol>") + len("</symbol>")
+            try:
+                i, j = raw.index("<symbol"), raw.rindex("</symbol>") + len("</symbol>")
+            except ValueError:
+                return None
             return f'<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">{raw[i:j]}</svg>'
 
         @classmethod
         def _page_bytes(cls, f: Path) -> bytes:
             """A page with the symbols after its opening body tag, so they exist before the first <use> is
-            rendered.  A page that references no symbol (monitor.html today) is left exactly as it is."""
+            rendered.  A page that references no symbol (monitor.html today) is left exactly as it is, and a
+            missing or unreadable sprite degrades to the page without them instead of failing the request."""
             html = f.read_text(encoding="utf-8")
             if '<use href="#i-' not in html:
                 return html.encode()
+            symbols = cls._sprite_symbols()
             m = re.search(r"<body[^>]*>", html)
-            if not m:
+            if symbols is None or not m:
                 return html.encode()
-            return (html[:m.end()] + cls._sprite_symbols() + html[m.end():]).encode()
+            return (html[:m.end()] + symbols + html[m.end():]).encode()
 
         @classmethod
         def _static_file(cls, f: Path, build=None):
             st = f.stat()
-            sst = cls.SPRITE.stat()
-            tag = f'W/"{st.st_mtime_ns:x}-{st.st_size:x}' + (f'-s{sst.st_mtime_ns:x}-{sst.st_size:x}"' if build else '"')
+            sst = cls.SPRITE.stat() if build and cls.SPRITE.is_file() else None
+            tag = f'W/"{st.st_mtime_ns:x}-{st.st_size:x}' + (f'-s{sst.st_mtime_ns:x}-{sst.st_size:x}"' if sst else '"')
             key = str(f)
             hit = cls._static_cache.get(key)
             if hit is not None and hit[0] == tag:

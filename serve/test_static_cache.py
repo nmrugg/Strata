@@ -127,13 +127,14 @@ class SpriteInlined(Server):
         self.assertIn('style="display:none"', html)
 
     def test_the_provenance_manifest_is_not_inlined(self):
-        # the file also carries a 7,843-byte C2PA manifest about the file itself; the page gets the 33 symbols
-        # and none of that
+        # the page gets the symbols and nothing else from the file.  The manifest was deleted from the source,
+        # but this stays: if provenance comes back to the file, it belongs to the file and not to every page
         code, _, body = get(self.conn, "/")
         html = body.decode()
         self.assertNotIn("c2pa:manifest", html)
+        self.assertNotIn("<metadata", html)
         self.assertEqual(html.count("<symbol "), 33)
-        self.assertLess(len(html.encode()), 40000, "the page stayed a sane size")
+        self.assertLess(len(html.encode()), 42000, "the page stayed a sane size")
 
     def test_the_symbols_come_before_the_first_use(self):
         code, _, body = get(self.conn, "/")
@@ -146,11 +147,27 @@ class SpriteInlined(Server):
         self.assertEqual(code, 200)
         self.assertNotIn("<symbol ", body.decode())
 
-    def test_the_sprite_file_is_still_served(self):
-        code, h, body = get(self.conn, "/web/sprite.svg")
+    def test_a_missing_sprite_degrades_instead_of_failing_the_request(self):
+        # the file is now the source of the inlined symbols, so a missing one must not take the page down
+        handler = self.httpd.RequestHandlerClass
+        real = handler.SPRITE
+        handler.SPRITE = WEB / "no_such_sprite.svg"
+        try:
+            code, _, body = get(self.conn, "/")
+            self.assertEqual(code, 200)
+            self.assertNotIn(b"<symbol ", body)
+            code2, _, _ = get(self.conn, "/web/app.js")
+            self.assertEqual(code2, 200)                       # other assets never needed it
+        finally:
+            handler.SPRITE = real
+
+    def test_the_sprite_file_is_still_served_whole(self):
+        # it is no longer fetched by the app, but it is the source of the symbols and still a real file at a
+        # real URL: the route must not strip anything from it
+        code, _, body = get(self.conn, "/web/sprite.svg")
         self.assertEqual(code, 200)
-        self.assertIn(b"<symbol", body)
-        self.assertIn(b"c2pa:manifest", body)          # the file keeps its provenance; only the page drops it
+        self.assertEqual(body, (WEB / "sprite.svg").read_bytes())
+        self.assertIn(b"<symbol id=\"i-chat\"", body)
 
 
 class MetricsStillUncached(Server):

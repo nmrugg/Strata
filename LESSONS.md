@@ -279,6 +279,15 @@ with one `step()` too few), node's event loop empties, the process exits **0**, 
 no test count. `node exit=0` alone is not evidence. Count the `ok -` lines, or compare the total against the
 number of cases you expect, before believing a green harness run.
 
+**A web-app file that needs a matching server change breaks the running app the moment you save it.**
+`serve/web/*` is read from disk per request, so it is live before any restart. Inlining the sprite meant
+`index.html` referencing `href="#i-chat"` while the **running** server (an older commit) never injected the
+symbols - every icon in the app went blank the instant the file was written, and it stayed blank until a
+restart. The commit was correct; the ordering was the trap. Either land the two halves and restart in the same
+breath, or make the client tolerant (e.g. app.js detecting that the symbols are absent and falling back to the
+file URL). Related: the sprite is now a build input, not a fetched asset - deleting it takes the icons out of
+every page (with `serve/server.py`'s guard the page still serves, symbols simply missing).
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right
