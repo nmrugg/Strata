@@ -60,17 +60,14 @@ main { flex: 1; min-height: 0; display: flex; }
 .msg-images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: flex-end; }
 .msg-images img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
 .st-msg .st-collapse { width: 100%; }
-/* the thinking blocks and the work containers are parts of the bubble now (todo #12), so they need the width
-   the old sibling rule used to give the single thinking block */
-.st-bubble .st-collapse { width: 100%; }
+/* the thinking blocks are parts of the bubble now (todo #12), so they need the width the old sibling rule
+   gave them - and their own margin: as a sibling of the bubble the block got the message row's flex gap of
+   6px (components.css:63), and inside the bubble nothing was spacing it from the text that follows.
+   .st-bubble > :first-child / :last-child above trim it at the ends of the bubble. */
+.st-bubble .st-collapse.think { width: 100%; margin: var(--st-s-3) 0; }
 /* a message that is only thinking has no box around it (todo #34): the element has to exist, because the
    thinking lives in it now, but its chrome must not */
 .st-bubble.thinking-only { background: none; border: 0; padding: 0; }
-/* one round's work folded under the thinking that produced it: the text the model wrote on the way to a call,
-   and the calls themselves.  Open while the model works in it, closed when the turn ends. */
-.st-work { margin: var(--st-s-3) 0; }
-.st-work > summary { min-width: 0; padding: 8px 12px; font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
-.st-work__body { padding: 0 12px 10px; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
 .st-msg__meta .st-btn--icon .st-icon { width: 16px; height: 16px; }

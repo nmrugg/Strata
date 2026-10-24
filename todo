@@ -46,17 +46,19 @@ is section 8, items 34-36.
     drops the argument pieces ("its argument pieces are not streamed to the client",
     server.py:4376). Forwarding them plus a small UI change is the whole job.
 12.  New thinking blocks after each tool call instead of one bubble at the top. [ui] DONE
-    2026-10-23 in 21170891 - it was [ui] only, not [py] [ui]: the round boundaries were already
-    in the data (`at` and `rat` on each tool), and `assistantMessages()` already sliced the
-    reasoning per round for the replay. What shipped is the human's own rule: a thinking block
-    is always top level, and the container for that round's text and calls starts right after
-    it, so a multi-round turn reads think / work / think / work / answer. Containers are open
-    while the model works and closed when the turn ends, and never closed under a reader who
-    opened one. (Was:) The web app keeps one reasoning string per message (m.reasoning) and
-    rounds are already split by t.rat (the thinking length when a call started), so the
-    segmentation data is there. Needs the message model to hold a list of thinking runs.
-    It did NOT need a list of runs - deriving them from at/rat at render time is enough, and
-    storing a second copy of the reasoning is the wrong shape (see LESSONS.md, replay tripwire).
+    2026-10-23, final shape in the commit after 956a9631 - it was [ui] only, not [py] [ui]: the
+    round boundaries were already in the data (`at` and `rat` on each tool), and `assistantMessages()`
+    already sliced the reasoning per round for the replay. What shipped: the reasoning is drawn as one
+    thinking block per round, in the order it happened - think, text, call, think, text, call, answer -
+    all top level inside the bubble.
+    Two nesting attempts were built and removed. (1) A container per round holding that round's text and
+    calls: the human's objection was that narration between calls is part of the answer, it was hidden
+    behind a click while the copy button still copied it, and it cost one rebuild per round because the
+    text had to move into the container. (2) A container holding only the calls: still one click too
+    many to read a call. Both are gone; `WORK_SHELL`, `syncWork` and the `.st-work` CSS were deleted
+    rather than left behind a flag.
+    It did NOT need a list of thinking runs in the message model - deriving them from at/rat at render
+    time is enough, and storing a second copy of the reasoning is the wrong shape (see LESSONS.md).
 13.  Import and export conversations. [ui] [py]
     Export exists but only as human-readable Markdown (app.js:1145). Needs a machine format.
     llama.cpp's chat format is JSONL with a "messages" array - a reader for that is small.

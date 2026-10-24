@@ -236,7 +236,10 @@ round's text **and** its calls together, and the human's objection was concrete:
 answer, it was hidden behind a click, and the copy button still copied it - so the same words existed twice,
 one invisible. It also cost exactly one rebuild per round, because text that had been drawn at the top level
 had to move into the new container when the first call appeared. Folding **only the calls** fixed both: text
-and thinking stay top level in the order they happened, and a settled part never moves.
+and thinking stay top level in the order they happened, and a settled part never moves. Both containers were
+ultimately removed (2026-10-23): even a calls-only box was one click too many to read a call, so the shipped
+layout is think / text / call / think / text / call / answer, all top level. The lesson stands for anything
+that folds away something the reader wants in line.
 (3) Before changing how a turn is *displayed*, write the replay tripwire first: assert
 `assistantMessages()` output is byte-identical. The same offsets (`at`, `rat`) feed both the
 layout and what goes back to the server, and a one-character difference there breaks the

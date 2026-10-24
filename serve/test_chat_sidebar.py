@@ -108,6 +108,10 @@ class ChatSidebar(unittest.TestCase):
         # drops its chrome instead of hiding it - hiding the bubble would hide the thinking with it
         self.assertIn('bubble.classList.add("thinking-only")', upd)
         self.assertIn(".st-bubble.thinking-only { background: none; border: 0; padding: 0; }", css)
+        # a thinking block inside the bubble needs its own margin: as a sibling it got the message row's 6px
+        # flex gap, and inside the bubble nothing spaced it from the text under it (the human's spacing report)
+        self.assertIn(".st-bubble .st-collapse.think { width: 100%; margin: var(--st-s-3) 0; }", css)
+        self.assertNotIn(".st-work", css)                              # the container is gone, and so is its CSS
 
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #36: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence

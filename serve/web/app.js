@@ -1017,10 +1017,10 @@ function flatParts(m) {
   if (text.length > lastAt) out.push({kind: "text", from: lastAt, to: text.length});
   return out;
 }
-// the layout: thinking and text are always top level, in the order they happened, and only the calls are
-// folded into a container.  The human's reason, after trying it nested: text written between calls is part of
-// the answer - hiding it behind a "worked · 1 step" click means reading the same words twice (once folded,
-// once in the copy) and clicking twice to see one round.  So a round reads: think, text, [its calls].
+// the layout, final after two tries at nesting: everything is top level, in the order it happened - thinking
+// run, the text that round wrote, its calls, the next thinking run, and so on, with the answer last.  The
+// human's verdict on both nested versions: the container added a click to reach the calls and swallowed the
+// narration.  Per-round thinking blocks stayed; the box did not.
 function bubbleParts(m) {
   const cuts = roundCuts(m), tools = m.tools || [], runs = thinkRuns(m), flat = flatParts(m);
   const out = [];
@@ -1029,19 +1029,19 @@ function bubbleParts(m) {
   for (let i = 0; i < cuts.length; i++) {
     const stop = i + 1 < cuts.length ? cuts[i + 1].first : tools.length;      // this round's tool range
     if (i < runs.length) out.push(thinkPart(i));
-    while (fi < flat.length && flat[fi].kind === "text") out.push(flat[fi++]);  // what it said on the way
-    const calls = [];
-    while (fi < flat.length && flat[fi].kind === "tool" && flat[fi].k < stop) calls.push(flat[fi++]);
-    if (calls.length) out.push({kind: "group", i, children: calls});
+    while (fi < flat.length) {
+      const q = flat[fi];
+      if (q.kind === "tool") { if (q.k >= stop) break; out.push(q); fi++; continue; }
+      const next = flat.slice(fi).find((x) => x.kind === "tool");   // the call this text leads up to
+      if (!next || next.k >= stop) break;                           // it leads a later round, or none: leave it
+      out.push(q); fi++;
+    }
   }
-  if (runs.length > cuts.length) out.push(thinkPart(cuts.length));             // thinking before the answer
+  if (runs.length > cuts.length) out.push(thinkPart(cuts.length));            // thinking before the answer
   for (; fi < flat.length; fi++) out.push(flat[fi]);                          // and the answer itself
   return out;
 }
-function dropPart(p) {
-  if (p.kind === "group") (p.have || []).forEach(dropPart);
-  (p.els || [p.el]).forEach((e) => e && e.remove());
-}
+const dropPart = (p) => (p.els || [p.el]).forEach((e) => e && e.remove());
 function addBlocks(host, p, blks) {
   for (const b of blks) { host.insertAdjacentHTML("beforeend", b); p.els.push(host.lastElementChild); }
   p.n = blks.length; p.last = blks[blks.length - 1] || "";
@@ -1057,17 +1057,6 @@ function addBlocks(host, p, blks) {
 const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summary>${icon("thinking", "st-icon st-icon--sm")}` +
   `<span class="think-title"></span>${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
   `<div class="st-collapse__body thinking"></div></details>`;
-const WORK_SHELL = `<details class="st-collapse work" data-work><summary>${icon("tool", "st-icon st-icon--sm")}` +
-  `<span class="work-title"></span>${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
-  `<div class="st-work__body"></div></details>`;
-// what a container is holding, from what is in it: no counts while it is still working, because "3 steps"
-// next to a call that has not run yet is a number that keeps changing under the reader's eyes
-function workTitle(t) {
-  const steps = t.children.filter((c) => c.kind === "tool").length;
-  const busy = t.children.some((c) => c.kind === "tool" && (c.state === "writing" || c.state === "running"));
-  const ms = t.children.reduce((a, c) => a + (c.kind === "tool" && c.ms ? c.ms : 0), 0);
-  return busy ? "working" : `worked${steps ? ` · ${steps} step${steps === 1 ? "" : "s"}` : ""}${ms ? ` · ${fmt(ms / 1000, 1)} s` : ""}`;
-}
 // a thinking block follows the rules the single block used to: the last one opens while the model is still
 // thinking (settings.show), "Keep thinking open" opens all of them, and a block the reader opened or closed
 // by hand is never touched again.  The open state is decided before the body is filled: filling first leaves
@@ -1088,20 +1077,6 @@ function syncThink(det, m, p, streaming) {           // det IS the details: quer
   } else body.dataset.pending = "1";
   det.hidden = !text;
 }
-// a container is open while the model is working in it and closed when the turn ends - and never closed out
-// from under a reader who opened one themselves.  The counts wait until the work is done: "3 steps" beside a
-// call that has not run yet is a number that changes under the reader's eyes.
-function syncWork(det, m, w, streaming) {            // det IS the details, as in syncThink
-  const tools = w.children.filter((c) => c.kind === "tool").map((c) => m.tools[c.k]);
-  const busy = tools.some((t) => t.state === "writing" || t.state === "running");
-  const ms = tools.reduce((a, t) => a + (t.ms || 0), 0);
-  det.querySelector(".work-title").textContent = busy ? "working"
-    : `worked${tools.length ? ` \u00b7 ${tools.length} step${tools.length === 1 ? "" : "s"}` : ""}` +
-      `${ms ? ` \u00b7 ${fmt(ms / 1000, 1)} s` : ""}`;
-  const wantOpen = streaming === true;
-  if (det.dataset.touched !== "1" && det.open !== wantOpen) { det._auto = true; det.open = wantOpen; }
-  det.hidden = w.children.length === 0;                // an empty container shows nothing; a real one always does
-}
 function renderBubble(el, m, streaming) {
   const bubble = el.querySelector(".st-bubble");
   if (m.error) {
@@ -1116,22 +1091,16 @@ function renderBubble(el, m, streaming) {
   }
   bubble._plain = plain;
   const want = bubbleParts(m), have = bubble._parts || [];
-  syncLevel(bubble, m, want, have, streaming);
+  syncLevel(bubble, m, want, have);
   bubble._parts = have;
   bubble._blocks = have.filter((p) => p.kind === "think");        // the toggle listener fills a block from here
-  for (let i = 0; i < have.length; i++) {
-    updatePart(bubble, m, have[i], want[i], streaming);
-    if (have[i].kind === "group") {                              // the container's own level, same rule again
-      syncLevel(have[i].body, m, want[i].children, have[i].have, streaming);
-      for (let j = 0; j < have[i].have.length; j++)
-        updatePart(have[i].body, m, have[i].have[j], want[i].children[j], streaming);
-    }
-  }
+  for (let i = 0; i < have.length; i++) updatePart(bubble, m, have[i], want[i], streaming);
 }
-// one level of the tree: parts are only ever added at the end, so a prefix that matches what is already on
-// screen keeps its elements and only the tail is built.  That is safe because a call's place in the text (at)
-// and a thinking run's place in the reasoning (rat) are fixed when they are made, and both strings only grow
-// - so a part that has been drawn never moves and is never re-created.
+// parts are only ever added at the end, so a prefix that matches what is already on screen keeps its elements
+// and only the tail is built.  That is safe because a call's place in the text (at) and a thinking run's place
+// in the reasoning (rat) are fixed when they are made, and both strings only grow - so a part that has been
+// drawn never moves and is never re-created.
+
 function syncLevel(host, m, want, have, streaming) {
   let i = 0;
   while (i < want.length && i < have.length && samePart(want[i], have[i])) i++;
@@ -1148,9 +1117,6 @@ function makePart(host, w, m) {
     host.insertAdjacentHTML("beforeend", THINK_SHELL); p.el = host.lastElementChild;
     p.el.dataset.think = w.i;                          // which run this block is: the toggle listener needs it
     p.body = p.el.querySelector(".st-collapse__body thinking");
-  } else if (w.kind === "group") {
-    host.insertAdjacentHTML("beforeend", WORK_SHELL); p.el = host.lastElementChild;
-    p.body = p.el.querySelector(".st-work__body"); p.have = [];
   } else if (host._plain) {                     // plain text: one element, updated by textContent
     host.insertAdjacentHTML("beforeend", `<div class="md-plain"></div>`);
     p.els = [host.lastElementChild]; p.n = 1; p.plain = true;
@@ -1160,7 +1126,6 @@ function makePart(host, w, m) {
 function updatePart(host, m, p, w, streaming) {
   if (p.kind === "tool") { toolSync(p.el, m.tools[p.k]); return; }
   if (p.kind === "think") { syncThink(p.el, m, p, streaming); return; }
-  if (p.kind === "group") { syncWork(p.el, m, w, streaming); return; }
   if (p.plain) {
     const t = m.text.slice(p.from, w.to);
     p._to = w.to;
@@ -1259,10 +1224,9 @@ $("chat").addEventListener("toggle", (e) => {
     if (d.open) syncToolBody(d.querySelector(".st-collapse__body"), t);   // built only while open: a result can be 20,000 characters
     return;
   }
-  if (!d.classList.contains("think") && !d.classList.contains("work")) return;
+  if (!d.classList.contains("think")) return;
   if (d._auto) { d._auto = false; return; }          // our own open/close, not the user's
   d.dataset.touched = "1";                           // and from here on the page never touches this one again
-  if (d.classList.contains("work")) return;          // a container holds parts that are filled on their own
   const body = d.querySelector(".thinking");
   if (d.open && body.dataset.pending) {              // a block that was closed while it streamed fills on opening
     const el = d.closest(".st-msg"), m = messages[+el.dataset.i];
