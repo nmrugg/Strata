@@ -457,9 +457,12 @@ is section 8, items 34-36.
               when turn.chatId !== chatId, stored on the chat record (cleanChat keeps it, so it survives a
               reload), cleared by showChat.
       draft - text typed and never sent: an asterisk in the row's own ink, deliberately not coloured.
-    Left, not right: the right edge is where the edit/delete buttons appear on hover, so a marker there would
-    collide with them or reflow the name. Green means happening, blue means happened - the two colours the
-    human asked to keep separate. A prefers-reduced-motion rule swaps the spin for a static ring.
+    Right, and only when there is one: the slot is emitted only for a row that actually has a marker, so an
+    ordinary row keeps its full title width and only the answering / unread / drafted one gives up about 14px -
+    the same shape as the edit/delete buttons, which take room only on the hovered row. (The first version put
+    a fixed 12px slot on the left, which cost every title in the list; the human called that.)
+    Green means happening, blue means happened - the two colours the human asked to keep separate. A
+    prefers-reduced-motion rule swaps the spin for a static ring.
     Worth trying someday: the slot could carry a count ("3 unread"), and item 10 (several streams at once)
     makes run/new far more common than one stream at a time allows.
 
