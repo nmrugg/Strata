@@ -166,6 +166,7 @@ function run(hooks, stored, seed) {
   const byId = {};
   const document = {getElementById: (id) => (byId[id] = byId[id] || makeEl()),
                     createElement: () => makeEl(), documentElement: {dataset: {}},
+                    hidden: false,                                    // pollDelay reads it; a test flips it
                     addEventListener() {}, querySelectorAll: () => []};
   const idb = makeIdb(hooks, seed);
   // window listeners are recorded so a test can ask "is anything holding the page open right now, and what
@@ -192,6 +193,7 @@ function run(hooks, stored, seed) {
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
+    "pollUrl, pollDelay, renderPill, setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
@@ -1221,6 +1223,38 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(pl.s.el("pill-text").textContent, "Waiting · easyCMP__run_cmd", "the pill names the tool");
   assert.strictEqual(pl.s.el("pill").dataset.state, "generating", "and stays in the active colour, not idle");
   done.push("pill: a running MCP tool reads Waiting · <tool>, not Idle");
+
+  // 42. the polling itself (todo #40): the Chat tab asks for the lite answer, and the cadence follows what is
+  // actually happening and whether the window is even being looked at.
+  const po = run({}, {});
+  await wait();
+  assert.strictEqual(po.s.pollUrl(), "metrics?lite=1", "the Chat tab asks for the pill and nothing else");
+  po.s.setTab("monitor");
+  assert.strictEqual(po.s.pollUrl(), "metrics", "the Monitor needs the full answer");
+  po.s.setTab("about");
+  assert.strictEqual(po.s.pollUrl(), "metrics", "and so does About (it draws engine facts and the request list)");
+  po.s.setTab("chat");
+  const idle = {live: {state: "idle"}};
+  assert.strictEqual(po.s.pollDelay(idle), 15000, "idle and visible: 15 s, not 1 s");
+  assert.strictEqual(po.s.pollDelay({live: {state: "running-tool", tool: "x"}}), 1000,
+                     "a tool running: back to 1 s, because the pill is the point");
+  assert.strictEqual(po.s.pollDelay({live: {state: "generating", tok_s: 12}}), 1000, "generating: 1 s");
+  assert.strictEqual(po.s.pollDelay(null), 15000, "no answer yet: the slow path");
+  po.s.setHidden(true);
+  assert.strictEqual(po.s.pollDelay({live: {state: "generating", tok_s: 12}}), 60000,
+                     "a hidden window: nothing here is being seen, so a minute");
+  po.s.setHidden(false);
+  po.s.setTab("monitor");
+  assert.strictEqual(po.s.pollDelay(idle), 1000, "the Monitor keeps its own cadence even when idle");
+  po.s.setTab("chat");
+  // a lite answer carries no cards, so the lite path paints the pill on its own
+  const pl2 = run({}, {});
+  await wait();
+  pl2.s.renderPill({live: {state: "running-tool", tool: "easyCMP__run_cmd"}});
+  assert.strictEqual(pl2.s.el("pill-text").textContent, "Waiting · easyCMP__run_cmd", "renderPill needs no cards");
+  pl2.s.renderPill({live: {state: "idle"}});
+  assert.strictEqual(pl2.s.el("pill-text").textContent, "Idle", "and it follows the state");
+  done.push("polling: ?lite=1 off the Monitor, 15 s when idle, a minute when the window is hidden");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

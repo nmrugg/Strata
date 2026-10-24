@@ -84,6 +84,7 @@ function showTab(name) {
   if (tab === "monitor") loadMcp();
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
+  pollNow();                       // the tab we just moved to wants its own kind of answer now (?lite vs full)
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
@@ -155,35 +156,55 @@ function setMetric(key, value, unit, sub) {
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
+// todo #40: /metrics is 7,317 bytes and the Chat tab shows none of it but the header pill, which reads about
+// 256 bytes of it.  So: ask for ?lite=1 off the Monitor and About tabs, and go quiet when nothing is happening
+// or the window is in another tab.  Measured before the change: one full poll a second whatever the tab and
+// whether the page was even visible - about 26 MB an hour per open tab, and the server rebuilt the telemetry
+// snapshot and re-read the engine log to do it.
+const POLL_FULL_MS = 1000, POLL_LIVE_MS = 1000, POLL_IDLE_MS = 15000, POLL_HIDDEN_MS = 60000;
+const ACTIVE_STATES = ["reading", "generating", "running-tool", "queued"];
+function pollUrl() {
+  if (tab === "monitor" || tab === "about") return reqShowAll ? "metrics?requests=all" : "metrics";
+  return "metrics?lite=1";          // the Chat tab: the pill and the projection flag, nothing else
+}
+function pollDelay(m) {
+  if (document.hidden) return POLL_HIDDEN_MS;                    // another window: nothing here is being seen
+  if (tab === "monitor" || tab === "about") return POLL_FULL_MS; // the cards need their own cadence
+  if (busy || (m && ACTIVE_STATES.includes(m.live && m.live.state))) return POLL_LIVE_MS;
+  return POLL_IDLE_MS;                                           // idle: the pill has nothing new to say
+}
+// one scheduler, so a fresh poll can always cancel the pending one: storing the handle is what makes
+// pollNow() mean "now" instead of "and also a second chain from here on"
+let pollTimer = null;
+function schedulePoll(delay) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, delay); }
+function pollNow() { schedulePoll(0); }
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollNow(); });
 async function poll() {
   try {
-    const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
+    const r = await fetch(pollUrl(), {headers: headers()});
     if (r.status === 401) {
       setPill("error", "API key needed");
       if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
     } else if (r.ok) {
-      lastMetrics = await r.json();
+      const m = await r.json();
       metricsFailures = 0;
-      render(lastMetrics);
+      // a lite answer has no cards in it: merge it into the last full one so a tab switch paints at once
+      if (m.lite) { lastMetrics = {...(lastMetrics || {}), ...m}; renderPill(m); }
+      else { lastMetrics = m; render(m); }
+      schedulePoll(pollDelay(m));
+      if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();   // server states change rarely: every 10 s
+      return;
     } else {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch (e) {
     if (++metricsFailures === 3) setPill("error", "Server not reachable");
   }
-  if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
-  setTimeout(poll, 1000);
+  schedulePoll(pollDelay(lastMetrics));
 }
-
-function setPill(state, text) {
-  $("pill").dataset.state = state === "error" ? "queued" : state;
-  $("pill-text").textContent = text;
-}
-
-function render(m) {
-  const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
-  const last = (m.requests || [])[0];
-  // the header pill
+// the header pill on its own, which is all a lite answer carries
+function renderPill(m) {
+  const live = m.live || {};
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
@@ -195,6 +216,17 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
+}
+
+function setPill(state, text) {
+  $("pill").dataset.state = state === "error" ? "queued" : state;
+  $("pill-text").textContent = text;
+}
+
+function render(m) {
+  const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
+  const last = (m.requests || [])[0];
+  renderPill(m);                                    // one place decides what the pill says (also used by ?lite)
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
@@ -1792,4 +1824,4 @@ const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=..
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
-poll();
+// showTab scheduled the first poll (it calls pollNow), so there is no second one here: one scheduler, one chain

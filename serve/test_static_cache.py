@@ -170,6 +170,70 @@ class SpriteInlined(Server):
         self.assertIn(b"<symbol id=\"i-chat\"", body)
 
 
+class LiteMetrics(Server):
+    """todo #40: the Chat tab shows the header pill and nothing else, so it asks ?lite=1. The point is not only
+    the bytes: the full answer snapshots the telemetry and re-reads the engine log (up to a MiB of new lines),
+    which the Chat tab was paying for once a second and never showing."""
+
+    def test_the_full_answer_carries_the_cards(self):
+        code, _, body = get(self.conn, "/metrics")
+        m = json.loads(body)
+        self.assertEqual(code, 200)
+        for key in ("engine", "live", "requests", "conversation_cache", "totals", "hardware",
+                    "hardware_static", "history"):
+            self.assertIn(key, m)
+
+    def test_lite_keeps_the_pill_and_drops_the_rest(self):
+        code, _, body = get(self.conn, "/metrics?lite=1")
+        m = json.loads(body)
+        self.assertEqual(code, 200)
+        self.assertTrue(m["lite"])
+        self.assertIn("state", m["live"])
+        self.assertIn("max_context", m["engine"])      # projectionLoaded() reads engine.cvec
+        for key in ("history", "hardware", "hardware_static", "conversation_cache", "totals", "requests"):
+            self.assertNotIn(key, m)
+        full = len(get(self.conn, "/metrics")[2])
+        # on this box a real /metrics is 7,317 bytes and the lite answer measured 404 - about 18x smaller. The
+        # mock engine has almost no history, so the ratio here is much less; what is asserted is that the lite
+        # answer is smaller and that the card-only keys are gone (checked above by name, which is the real claim).
+        self.assertLess(len(body), full, "the lite answer has to actually be smaller")
+
+    def test_lite_still_reports_a_running_tool(self):
+        # todo #35 and #40 meet here: the pill is the whole reason the Chat tab polls, so a tool must be named
+        # in the lite answer too
+        tok = ByteTokenizer()
+        svc = self.svc
+        with svc.status_lock:
+            svc.mcp_running[object()] = "easyCMP__run_cmd"
+        try:
+            m = json.loads(get(self.conn, "/metrics?lite=1")[2])
+        finally:
+            with svc.status_lock:
+                svc.mcp_running.clear()
+        self.assertEqual(m["live"]["state"], "running-tool")
+        self.assertEqual(m["live"]["tool"], "easyCMP__run_cmd")
+
+    def test_lite_does_not_read_the_engine_log_or_the_telemetry(self):
+        # the work, not just the bytes: a lite call must not touch either
+        calls = []
+        svc = self.svc
+        real_tel, real_log = svc.telemetry.snapshot, svc.conv_log.poll
+        svc.telemetry.snapshot = lambda *a, **k: (calls.append("telemetry"), real_tel())[1]
+        svc.conv_log.poll = lambda *a, **k: (calls.append("conv_log"), real_log(*a, **k))[1]
+        try:
+            get(self.conn, "/metrics?lite=1")
+            self.assertEqual(calls, [], "a lite answer did server work the Chat tab cannot show")
+            get(self.conn, "/metrics")
+            self.assertIn("telemetry", calls)
+            self.assertIn("conv_log", calls)
+        finally:
+            svc.telemetry.snapshot, svc.conv_log.poll = real_tel, real_log
+
+    def test_requests_all_still_works(self):
+        m = json.loads(get(self.conn, "/metrics?requests=all")[2])
+        self.assertIn("requests", m)
+
+
 class MetricsStillUncached(Server):
     """The point of the change is the bytes that are NOT worth caching: /metrics is live state, so it keeps no
     validator and answers in full every time - which is why it should be asked for less often, not cheaper."""

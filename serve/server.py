@@ -3413,9 +3413,14 @@ class Service:
         arrive, which is what replaces the "(being written)" placeholder."""
         return bool(req.get("strata_mcp_args"))
 
-    def metrics(self, all_requests=False) -> dict:
+    def metrics(self, all_requests=False, full=True) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
-        the hardware (with a minute of history per series)."""
+        the hardware (with a minute of history per series).
+
+        `full=False` (the page's `?lite=1`, which the Chat tab asks for) returns only what the header pill reads.
+        That is not just a smaller body: it skips the telemetry snapshot and the engine-log read inside
+        conversation_cache_view, which is up to a MiB of new log lines per call - work the Chat tab was paying
+        for once a second and never showed (todo #40)."""
         with self.status_lock:
             s = dict(self.status)
             tool_running = next(iter(self.mcp_running.values()), None)
@@ -3453,18 +3458,22 @@ class Service:
         if par:                                         # #465: the requests running together, slot by slot
             with self.status_lock:
                 running = len(self.live_reqs)
-            slots = self.engine.slots_view() if hasattr(self.engine, "slots_view") else []
-            # the requests in flight that are not in a slot: the one alone on the solo path, or waiting their turn
-            in_slots = sum(1 for x in slots if x["state"] != "idle")
-            live.update(parallel=par, running=running, slots=slots, outside_slots=max(0, running - in_slots),
-                        waiting=int(getattr(self.engine, "waiting", 0) or 0),
-                        admitting=int(getattr(self.engine, "admitting", 0) or 0))
+            if full:
+                slots = self.engine.slots_view() if hasattr(self.engine, "slots_view") else []
+                # the requests in flight that are not in a slot: the one alone on the solo path, or waiting their turn
+                in_slots = sum(1 for x in slots if x["state"] != "idle")
+                live.update(parallel=par, running=running, slots=slots, outside_slots=max(0, running - in_slots),
+                            waiting=int(getattr(self.engine, "waiting", 0) or 0),
+                            admitting=int(getattr(self.engine, "admitting", 0) or 0))
             if running and state == "idle":
                 live["state"] = "generating"
-        if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
+        if full and hasattr(self.engine, "replica_view"):  # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
+        if not full:
+            # the Chat tab reads live for the pill and engine for the projection flag (app.js's projectionLoaded)
+            return {"live": live, "engine": engine, "time": now, "lite": True}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
@@ -5199,8 +5208,11 @@ def make_handler(svc: Service):
                         self.wfile.write(body)
                     return
                 if self._authorized():
-                    # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
-                    self._json(200, svc.metrics(all_requests="requests=all" in self.path))
+                    # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35);
+                    # `?lite=1` only what the header pill reads (todo #40 - the Chat tab has no cards to fill)
+                    q = parse_qs(urlsplit(self.path).query)
+                    self._json(200, svc.metrics(all_requests="requests=all" in self.path,
+                                                full=q.get("lite", ["0"])[0] not in ("1", "true")))
                 return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():

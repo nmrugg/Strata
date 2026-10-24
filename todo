@@ -509,19 +509,31 @@ numbers below are already taken.
     purpose: a developer editing app.js must see it immediately.
     Tests: serve/test_static_cache.py (11), added to the fast suite list in HANDOFF.md.
 
-40.  Metrics: ask for less, and less often. [py] [ui] OPEN
-    Measured 2026-10-24: /metrics is 7,317 bytes per call, polled once a second unconditionally (poll()
-    reschedules whatever tab is showing and whether the window is visible) - about 26 MB per hour per open
-    tab. In that payload `history` (the sparkline series) is 4,636 bytes, and engine / requests / hardware /
-    conversation_cache are monitor-only; the header pill uses only `live`, about 256 bytes - 3.5% of it.
-    The shape:
-      - a small status endpoint for the pill (state, queued, tok_s, prompt progress), and the full /metrics
-        only while the Monitor tab is visible; `?history=0` to drop the 4.6 KB of series
-      - back off when idle (10-30 s), 1 s while one of our requests is in flight, and pause entirely when the
-        tab is hidden (document.hidden) - the unread marker (item 37) is what tells you something finished
-      - idle has to be a real state first: measured 2026-10-23, during an MCP tool round /metrics answered
-        `live.state=idle` in 3 of 3 samples. Polling less is unsafe until the state machine is honest, so
-        item 35 (a first-class running-tool state) is a prerequisite here, not a nice-to-have.
+40.  Metrics: ask for less, and less often. [py] [ui] DONE 2026-10-24
+    Measured before the change: /metrics is 7,317 bytes per call, polled once a second unconditionally -
+    poll() rescheduled whatever tab was showing and whether the window was visible. About 26 MB an hour per
+    open tab. Of that payload `history` alone is 4,636 bytes and engine / requests / hardware /
+    conversation_cache are Monitor-only; the header pill reads about 256 bytes, 3.5% of it.
+    Shipped, both halves:
+      - the server answers `GET /metrics?lite=1` with {live, engine, time, lite}. Not only fewer bytes: the full
+        path snapshots the telemetry AND calls conv_log.poll, which reads up to a MiB of new engine-log lines
+        (READ_MAX) - the Chat tab was paying for that once a second and had nothing to show for it. A test
+        counts those calls and asserts a lite answer makes neither.
+      - the page asks for lite off the Monitor and About tabs, and the cadence follows what is happening:
+        1 s while a request of ours is in flight or the state is reading/generating/running-tool/queued,
+        15 s idle, 60 s when the window is hidden (document.hidden), and the Monitor and About keep their own
+        1 s because they have cards to fill. A tab switch or the window coming back polls at once.
+      - one scheduler (schedulePoll clears the pending handle) so pollNow() means "now" and cannot fork a
+        second chain; startup no longer polls twice, since showTab already schedules the first.
+    The pill logic moved into renderPill(), which both the full and the lite path call, so the two cannot
+    drift. A lite answer is merged into the last full one, so switching to the Monitor paints immediately
+    instead of waiting a tick.
+    Tests: serve/test_static_cache.py's LiteMetrics (payload keys, size, a running tool still named in the
+    lite answer, and the telemetry/conv_log call counts) and serve/test_chat_sidebar.js's case 42 (the URL per
+    tab, and every cadence). Controls: asking full from the Chat tab, ignoring document.hidden, and making the
+    server do the work anyway each fail.
+    NOT done here, deliberately: the ?history=0 knob (lite supersedes it for the Chat tab) and any change to
+    what the Monitor itself asks for - it needs all of it. Item 41 (SSE) would replace the polling entirely.
 
 41.  SSE /events: push state transitions instead of polling for them. [py] [ui] OPEN, after 35 and 40
     One connection per tab pushing small frames on a state change and when a turn finishes - which is also
@@ -542,6 +554,7 @@ numbers below are already taken.
     16, whose design decision is still unmade. Anything that touches the prompt path is out of scope: a
     checkpoint mismatch costs a re-read of minutes, and that incident already happened once.
 
+
 42.  The icon sprite is inlined into the pages that use it. [py] [ui] DONE 2026-10-24
     The validator (item 39) made each sprite revalidation cheap, but the revalidation was still happening: a
     browser resolves <use href="web/sprite.svg#i-name"> by fetching that file, and it re-resolves it as new
@@ -555,5 +568,7 @@ numbers below are already taken.
     The page's ETag now covers the page AND the sprite (both mtimes and sizes), so editing the sprite changes the
     page's validator and the next reload picks it up with no restart.
     Tests: serve/test_static_cache.py's SpriteInlined class - symbols present and before the first use, no
-    reference to the file, no manifest, exactly 33 symbols, the page still a sane size, a symbol-free page left
-    alone, and the sprite file itself still served with its provenance intact.
+    reference to the file, no metadata in the page, exactly 33 symbols, the page still a sane size, a
+    symbol-free page left alone, and the sprite file itself still served byte for byte as it is on disk.
+    The human deleted the C2PA manifest from sprite.svg afterwards; the guard stays so that if provenance ever
+    comes back to the file it does not ride into every page.
