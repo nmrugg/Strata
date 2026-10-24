@@ -50,6 +50,16 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('draftKeyOf(c.id, !c.messages.length)', item)     # the same key the composer writes
         self.assertIn('class="chat-item__title${drafted ? " draft" : ""}"', item)
 
+    def test_the_copy_sizes_and_the_file_name(self):
+        # todo #38: plain click copies the answer, Shift adds the thinking, Ctrl/Cmd+Shift adds the tool calls.
+        # The saved file is named for the conversation, not just for the day.
+        self.assertIn("const level = (e.ctrlKey || e.metaKey) && e.shiftKey ? 2 : (e.shiftKey ? 1 : 0);", self.js)
+        self.assertIn("function turnText(m, level)", self.js)
+        self.assertIn("function safeFileName(t)", self.js)
+        self.assertIn("a.download = name;", self.js)
+        self.assertNotIn("a.download = `strata-chat-", self.js)          # the day-only name is only a fallback now
+        self.assertIn('chatTitle(chat || {title: "", messages})', self.js)   # works with the sidebar on or off
+
     def test_the_saved_markdown_follows_the_screen(self):
         # the export used to write three piles (all thinking, then every call, then the text).  It now walks the
         # same parts the bubble draws, so the two cannot drift apart again.

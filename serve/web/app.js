@@ -38,7 +38,7 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
   setTimeout(() => el.remove(), ms);
 }
 
-async function copyText(text, btn) {
+async function copyText(text, btn, title = "Copied to clipboard") {
   try {
     await navigator.clipboard.writeText(text);
   } catch (e) {                                   // http on another host: no async clipboard
@@ -50,7 +50,7 @@ async function copyText(text, btn) {
     use.setAttribute("href", `${SPRITE}#i-check`);
     setTimeout(() => use.setAttribute("href", `${SPRITE}#i-copy`), 1500);
   }
-  toast("success", "Copied to clipboard", "", 1800);
+  toast("success", title, "", 1800);
 }
 
 // ------------------------------------------------------------------ theme and tabs
@@ -894,7 +894,8 @@ function msgEl(m, i) {
     // todo #12: the thinking blocks are parts of the bubble now, in the order the model produced them, so the
     // template only makes the bubble and the row under it
     el.innerHTML = `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button>${mdBtn(m)}</div>`;
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer"` +
+      ` title="Copy the answer - Shift: with the thinking, Ctrl+Shift: everything including the tool calls">${icon("copy")}</button>${mdBtn(m)}</div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -1208,7 +1209,17 @@ $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const mc = e.target.closest("[data-msg-copy]");
-  if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+  if (mc) {
+    const m = messages[+mc.closest(".st-msg").dataset.i];
+    // plain click = the answer (as it always was); Shift = the answer and the thinking; Ctrl/Cmd+Shift =
+    // everything, the tool calls and their results included
+    const level = (e.ctrlKey || e.metaKey) && e.shiftKey ? 2 : (e.shiftKey ? 1 : 0);
+    const txt = level ? turnText(m, level) : (m.text || "");
+    // a tool result can be 20,000 characters, so say how much actually went onto the clipboard
+    copyText(txt, mc, ["Copy the answer", "Copied the answer and the thinking",
+                       `Copied everything (${fmt(txt.length)} characters, tool calls included)`][level]);
+    return;
+  }
   const mb = e.target.closest("[data-md-toggle]");
   if (mb) {
     const el = mb.closest(".st-msg"), m = messages[+el.dataset.i];
@@ -1474,12 +1485,42 @@ function turnMarkdown(m) {
   if (m.error) out.push(`> ${m.error}\n\n`);              // an error is part of the turn, not a footnote
   return out.join("");
 }
+// the clipboard in three sizes, from the same walk as the screen and the export: the answer, the answer with
+// the thinking, and everything including what the tools returned.  Keeping one walk means the three views of
+// a turn cannot disagree with each other or with the saved file.
+function turnText(m, level) {                       // 0 = answer, 1 = + thinking, 2 = + tool calls
+  const out = [];
+  for (const p of bubbleParts(m)) {
+    if (p.kind === "text") { const t = (m.text || "").slice(p.from, p.to).trim(); if (t) out.push(t); }
+    else if (p.kind === "think" && level >= 1) {
+      const t = (m.reasoning || "").slice(p.from, p.to).trim();
+      if (t) out.push(level >= 2 ? `Thinking:\n${t}` : t);
+    } else if (p.kind === "tool" && level >= 2) {
+      const t = m.tools[p.k];
+      if (t.result != null) {
+        const ms = t.ms != null && t.state !== "skipped" ? ` · ${fmt(t.ms / 1000, 1)} s` : "";
+        out.push(`Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${ms} (${t.ok ? "ok" : "error"})\n${t.result}`);
+      }
+    }
+  }
+  if (m.error) out.push(`Error: ${m.error}`);
+  return out.join("\n\n");
+}
+// a file named for the conversation, not just for the day: a folder full of strata-chat-*.md says nothing.
+// A title can carry anything the model or the user typed, so drop what a filesystem refuses, trim the tail
+// Windows dislikes (dots and spaces), and cap the length.
+function safeFileName(t) {
+  const s = String(t || "").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim()
+    .replace(/[. ]+$/, "").slice(0, 48).trim();
+  return s || "strata-chat";
+}
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
   const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` : `## ${health.model}\n\n${turnMarkdown(m)}`).join("\n");
+  const name = `${safeFileName(chatTitle(chat || {title: "", messages}))}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
-  a.download = `strata-chat-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 };

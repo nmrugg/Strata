@@ -172,7 +172,7 @@ function run(hooks, stored, seed) {
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
   const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
                removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); }};
-  const confirms = [], confirmAnswer = {yes: true};   // the page asks confirm() twice now: the tool-thinking
+  const confirms = [], confirmAnswer = {yes: true}, copied = [];   // the page asks confirm() twice now: the tool-thinking
   const env = {                                        // guard and the discard guard - record and answer both
     document, localStorage: {getItem: (k) => (k in stored ? stored[k] : null), setItem: (k, v) => { stored[k] = v; }},
     indexedDB: idb, location: {hash: "", pathname: "/", origin: "http://127.0.0.1"},
@@ -180,7 +180,7 @@ function run(hooks, stored, seed) {
     fetch: hooks.fetch || (async () => ({ok: true, json: async () => ({}), text: async () => ""})),
     confirm: (m) => { confirms.push(m); return confirmAnswer.yes; },
     setTimeout: () => 0, clearTimeout: () => 0, requestAnimationFrame: () => 0,
-    navigator: {clipboard: {writeText: async () => {}}},
+    navigator: {clipboard: {writeText: async (t) => { copied.push(t); }}},   // what the page put on the clipboard
     innerWidth: 1200, innerHeight: 800, window: win, queueMicrotask,
   };
   const names = Object.keys(env);
@@ -188,11 +188,12 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, turnMarkdown, get busy() { return busy; }, get chatId() { return chatId; }, " +
+    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, turnMarkdown, turnText, safeFileName, " +
+    "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
-  return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer};
+  return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied};
 }
 
 const wait = () => new Promise((r) => setTimeout(r, 30));
@@ -1041,6 +1042,42 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.ok(!hmd.includes("Tool x"), "a call that never finished is not written up");
   assert.ok(hmd.includes("> the request failed"), "and the error is in the turn");
   done.push("export: the saved Markdown walks the same parts as the screen - think, text, call, think, text, call, answer");
+
+  // 36. the copy button in three sizes, and a saved file named for the conversation rather than for the day
+  const cp = run({}, {});
+  await wait();
+  const cm = {role: "assistant", text: "the answer", reasoning: "a thought", time: Date.now(),
+              tools: [{id: "c1", name: "easyCMP__fs_read", server: "easyCMP", tool: "fs_read", state: "done",
+                       at: 10, rat: 9, ms: 400, ok: true, result: "what it read", round: 1}]};
+  assert.strictEqual(cp.s.turnText(cm, 0), "the answer", "plain: the answer only");
+  assert.strictEqual(cp.s.turnText(cm, 1), "a thought\n\nthe answer", "Shift: with the thinking, in order");
+  assert.strictEqual(cp.s.turnText(cm, 2),
+                     "Thinking:\na thought\n\nthe answer\n\nTool easyCMP / fs_read · 0.4 s (ok)\nwhat it read",
+                     "Ctrl+Shift: everything, labelled, including what the tool returned");
+  const cel = cp.s.msgEl(cm, 0);
+  cp.s.el("chat").appendChild(cel);
+  cp.s.messages.length = 0; cp.s.messages.push(cm);
+  const cbtn = cel.querySelector("[data-msg-copy]");
+  cbtn.attrs["data-msg-copy"] = "";
+  cp.s.el("chat")._l["click"]({target: cbtn});
+  cp.s.el("chat")._l["click"]({target: cbtn, shiftKey: true});
+  cp.s.el("chat")._l["click"]({target: cbtn, shiftKey: true, ctrlKey: true});
+  assert.deepStrictEqual(cp.copied, ["the answer", "a thought\n\nthe answer",
+                                     "Thinking:\na thought\n\nthe answer\n\nTool easyCMP / fs_read · 0.4 s (ok)\nwhat it read"],
+                         "the modifiers pick the size, and a plain click is unchanged");
+  await wait();                                       // copyText awaits the clipboard, so the toasts are a tick later
+  assert.strictEqual(cp.s.el("toasts").children.length, 3, "and each copy said something");
+  assert.ok(cp.s.el("toasts").children.some((t) => (t.querySelector(".st-toast__title").textContent || "").includes("tool calls included")),
+            "the biggest one says how much went onto the clipboard");
+  // the file name: the conversation's own name first, and hostile characters gone
+  assert.strictEqual(cp.s.safeFileName("You are working on Strata"), "You are working on Strata");
+  assert.strictEqual(cp.s.safeFileName('what / next: a "quoted" name?'), "what next a quoted name");
+  assert.strictEqual(cp.s.safeFileName("trailing dots and spaces...  "), "trailing dots and spaces");
+  assert.strictEqual(cp.s.safeFileName("a\nnewline\tand    runs"), "a newline and runs");
+  assert.strictEqual(cp.s.safeFileName("x".repeat(120)).length, 48, "capped so the path stays sane");
+  assert.strictEqual(cp.s.safeFileName("///"), "strata-chat", "a name with nothing left falls back");
+  assert.strictEqual(cp.s.safeFileName(""), "strata-chat", "and an empty one does too");
+  done.push("copy: plain, Shift (+thinking), Ctrl+Shift (everything); export named for the conversation");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
