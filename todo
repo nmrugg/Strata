@@ -773,7 +773,8 @@ pointing at history, not at something to do. They are listed so `todo #name` res
     86c61adb and 3ebbb7fe.
 `md-button`  The per-message switch that overrides that default. Done 2026-10-23 in 86c61adb and 3ebbb7fe.
 
-## 9. Done and shelved - numbers kept, because serve/web/app.js, serve/server.py, serve/test_* and LESSONS.md cite them
+## 10. Done and shelved - kept by name, because serve/web/app.js, serve/web/app.css, serve/server.py,
+    serve/test_* and LESSONS.md cite them in comments
 
 `switch-while-running`  Read and switch to another conversation while one is running. [ui] DONE 2026-10-23
     Shipped in 85084ba6. It was NOT the three-line change this entry once claimed - the entry was corrected

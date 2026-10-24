@@ -5,8 +5,8 @@ Paste everything below the line to a fresh agent.
 ---
 
 You are working on Strata at `/programs/Strata` (branch `fork`, remote Niko1221/Strata).
-Read `AGENTS.md`, **`LESSONS.md`**, and `/programs/Strata/todo` (**39 open items, 55 total,
-sorted by effort**) first.
+Read `AGENTS.md`, **`LESSONS.md`**, and `/programs/Strata/todo` first - the todo has **40 open
+items** under 64 names in all (40 open, 16 done or shelved, 8 historical).
 
 ## Read this before you touch `todo`
 
@@ -66,8 +66,8 @@ it is not. If you must discuss one, name the tag instead of reproducing it.
 ## Environment
 
 - Fast tests:
-  `.venv/bin/python -m unittest serve.test_frontend serve.test_parser_track serve.test_reasoning_tools serve.test_reasoning_rescue serve.test_chat_sidebar serve.test_mcp serve.test_mcp_round_history serve.test_abandoned_calls serve.test_fence_quoted_thinking serve.test_static_cache`
-  → **166 tests, ~40 s**
+  `.venv/bin/python -m unittest serve.test_frontend serve.test_parser_track serve.test_reasoning_tools serve.test_reasoning_rescue serve.test_chat_sidebar serve.test_mcp serve.test_mcp_round_history serve.test_abandoned_calls serve.test_fence_quoted_thinking serve.test_static_cache serve.test_reasoning_loop_recovery`
+  → **190 tests, ~40 s**. All CPU-only, no GPU and no engine.
 - Full server suite: `.venv/bin/python -m unittest serve.test_server` → **313 tests, ~95 s**
 - Web app harness: `node serve/test_chat_sidebar.js` → **47 `ok -` lines**, and
   `serve/test_chat_sidebar.py` runs it from Python. **Run both** for any `app.js` change.
@@ -93,7 +93,7 @@ it is not. If you must discuss one, name the tag instead of reproducing it.
   `app.js`/`index.html`/`app.css` change needs a **browser reload, not a restart**. A change
   that needs a matching server change will break the running page the moment you save it.
 
-## What shipped on 2026-10-24 (four commits, all on `fork`, none pushed)
+## What shipped on 2026-10-24 (nine commits, all on `fork`, none pushed)
 
 `4f26e5c7` one three-way **"Show thinking"** control — `Folded / Fold when done / Always`
 (default *Fold when done*) — replacing four overlapping switches (`show`, `openthink`,
@@ -101,13 +101,22 @@ it is not. If you must discuss one, name the tag instead of reproducing it.
 key (`settings.show`). Old stored settings map to it once on load (`migrateShow`).
 `a0bb1d98` a click on a tool block holds for the **turn**, not forever, and is no longer
 written into the chat record.
-`71a07306` LESSONS entries. `7e2a66a4`, `6b0dd108`, `fe0e3a33` and `b7929b54` are todo and docs churn
-from the same day, including two renumber passes that the rename below undoes; the hashes are the
-stable citation, the numbers in those messages are not.
+`71a07306` LESSONS entries. `7e2a66a4`, `6b0dd108`, `fe0e3a33`, `b7929b54` and `6619fd92` are todo
+and docs churn from the same day, including two renumber passes that `b419d23d` then undid by
+renaming to names; the hashes are the stable citation, the numbers inside those messages are not.
+`b419d23d` is the loop-recovery fix (`recover-noop`, `slow-death`) plus the rename.
 
-The items those commits added are, by name: `fold-control`, `click-not-persisted`, `drawer-auto-apply`,
+The items those commits added, by name: `fold-control`, `click-not-persisted`, `drawer-auto-apply`,
 `no-scrim`, `send-spinner`, `hide-preview-when-open`, `server-before-model`, `test-command`,
 `slow-death`, `recover-noop` and `dead-turn`.
+
+**State of the box right now**, because it changes what a fix looks like: the server was restarted
+after `b419d23d`, so both recovery fixes are live. The drawer's thinking level is set to **low**,
+and `shared` is **false** (`GET /settings` answers `{"shared": false, "defaults": {}}`), so low
+applies to the web app's own requests and not to the agent harness. That puts the web app in
+exactly the case `recover-noop` fixed: a detected loop at low effort now logs honestly instead of
+doing nothing, and it is still not rescued - the open decision there is whether an already-low
+request should fall back to `"stop"`.
 
 Two mechanisms worth knowing before you touch either kind of block:
 
@@ -121,7 +130,7 @@ Two mechanisms worth knowing before you touch either kind of block:
   (`if (d.open === toolOpen(t)) return;`). The **thinking branch still uses the flag** and has
   the same weakness — if a thought is ever reported stuck open, give it the same treatment.
 
-## The unresolved bug: turns that end badly (context, and two new findings)
+## The unresolved bug: turns that end badly (three distinct deaths - name the one you mean)
 
 Established earlier: not the engine — every request ends `finish: stop` with
 `output_tokens == engine_generated`; it is the parser classifying the model's text. The real
@@ -166,6 +175,20 @@ cannot see it, and a counter that cannot see the bug is worse than none.
 `hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error` and item no-placeholder uses it only to
 hide the bubble. Nothing acts on it — so a Continue affordance, or an opt-in re-prompt, is one
 boolean away. It would not have saved this session, because the agent harness is a different client.
+
+## Do not re-litigate these
+
+Four things a previous session got wrong about the state of the code. Still true:
+
+- **Parking conversations.** Measured once: 326 ms to park 193,453 tokens. That is a measurement of
+  the mechanism, **not** a demonstration of the promise the human actually wants ("this conversation
+  stays cached, even after a restart"). Do not claim parking works as a per-conversation guarantee;
+  `pin-conversation` is the item that would deliver it, and it needs a decision before code.
+- **The Stop button works.** It was once listed as an open item by mistake. Nothing to do.
+- **`open_browser: false` in `strata-iq3_s.json` was added by an agent**, not by the human and not
+  upstream; a fresh checkout would not have it. Never describe a change you made as pre-existing.
+- **Markdown on the human's own messages is done** - `md-per-author` and `md-button` in the todo's
+  Historical section. Do not re-open it as missing.
 
 ## How to behave
 
