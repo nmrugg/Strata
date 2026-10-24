@@ -201,7 +201,13 @@ directly, so it still passed when the X and the scrim were rewired back to
 `openDrawer(false)` (`node exit=0` on deliberately broken code). Rewriting the case to click
 `el("drawer-close").onclick()` and `el("scrim").onclick()` made the same control fail with
 `closing asks first - 0 !== 1`. Wire-level claims need wire-level tests; text assertions on
-the wiring line are a second-best, not a substitute.
+the wiring line are a second-best, not a substitute. It has now bitten twice in one session, both times
+because the **stub was less faithful than the assertions assumed**: a case that called `closeDrawer()` instead
+of clicking the button passed on unwired code, and a case that checked a container's children passed while
+every tool call in the app was `display: none`, because the stub never read bare boolean attributes out of
+inserted HTML - a shell written as `<details ... hidden>` looked visible. The stub now parses the root tag,
+its classes and its bare attributes, and fires a `toggle` event when script sets `open`. When a control fails
+to fail, suspect the stub before believing the code.
 
 **Blank chats are not stable, and more than one is reachable today.** `newChat()` invents an
 id (`c<time><rand>`) and `openHistory` pushes a blank chat into `chats` **without writing it**,
