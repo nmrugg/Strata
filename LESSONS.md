@@ -268,6 +268,12 @@ drawn. It now queues the callbacks and exposes `flush()`, and a stream test driv
 `read()` flushes first, the way one animation frame does). That is what made the switching-chats bug testable
 at all: with the old stub, painting into a detached node was invisible to the tests by construction.
 
+**A hanging test exits 0 with no output - it looks like a pass.** `serve/test_chat_sidebar.js` is one async
+IIFE that prints its `ok -` lines at the very end. If any awaited promise never resolves (I drove a fake stream
+with one `step()` too few), node's event loop empties, the process exits **0**, and nothing prints: no failure,
+no test count. `node exit=0` alone is not evidence. Count the `ok -` lines, or compare the total against the
+number of cases you expect, before believing a green harness run.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right
