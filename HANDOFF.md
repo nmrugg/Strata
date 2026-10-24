@@ -63,7 +63,7 @@ so the literal sequence never appears in your output. Markdown fences are safe.
 ## Environment
 
 - Fast tests:
-  `.venv/bin/python -m unittest serve.test_frontend serve.test_parser_track serve.test_reasoning_tools serve.test_reasoning_rescue serve.test_chat_sidebar serve.test_mcp serve.test_mcp_round_history serve.test_abandoned_calls serve.test_fence_quoted_thinking`
+  `.venv/bin/python -m unittest serve.test_frontend serve.test_parser_track serve.test_reasoning_tools serve.test_reasoning_rescue serve.test_chat_sidebar serve.test_mcp serve.test_mcp_round_history serve.test_abandoned_calls serve.test_fence_quoted_thinking serve.test_static_cache`
 - Full server suite (~95 s): `.venv/bin/python -m unittest serve.test_server` (311 tests)
 - The web-app JS has its own harness: `node serve/test_chat_sidebar.js`, and
   `serve/test_chat_sidebar.py` runs it from Python. **Run both** for any `app.js` change.

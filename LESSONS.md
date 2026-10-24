@@ -118,12 +118,17 @@ where the leave warning went, and `app.js` went from 0 to 1 `beforeunload` regis
 attached in `setBusy(true)` and undone in `setBusy(false)` (a permanent one costs the
 browser's back/forward cache).
 
-**A web-app change needs no restart.** `serve/server.py:5054-5068` reads every
-`/web/...` file (`app.js`, `app.css`) from disk on each request and sends
-`Cache-Control: no-cache`, so the new script is live on the next page load. `index.html` is
-served at `/` and is also read per request (`server.py:5119`) but carries **no**
-`Cache-Control`, so a plain reload can show a stale page - hard-refresh it. Only `serve/*.py`
-and the config need the human to restart (and you never do it yourself - see Existential).
+**A web-app change needs no restart, and revalidating it is now a 304.** `serve/server.py`'s
+`_send_static` serves `/web/*` and the two pages: `Cache-Control: no-cache` so an edit to
+`app.js` shows on the next reload with no restart, plus an `ETag` and `Last-Modified` so that
+revalidation costs ~150 bytes instead of the file. The bytes are held in memory against the
+file's mtime and size, so an edit is picked up on the next request and the disk is not read
+once per asset per tab. Before this (2026-10-24, `serve/test_static_cache.py`): `/web/*` sent
+`no-cache` with **no validator at all**, so every revalidation was a full 200 - 29,112 bytes
+for the icon sprite, which the page re-resolves as output streams - and `index.html` carried
+no `Cache-Control` at all, which is why a changed `app.js` sometimes needed a hard-refresh.
+That hard-refresh advice is now obsolete. Only `serve/*.py` and the config need the human to
+restart (and you never do it yourself - see Existential).
 
 **`/health`'s `loaded` does not mean "the model is loaded".** It is
 `Service.loaded()` = `not hasattr(engine, "alive") or engine.alive()` (`serve/server.py:2941-2943`),

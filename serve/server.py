@@ -45,6 +45,7 @@ import threading
 import time
 import urllib.request
 import uuid
+from email.utils import formatdate, parsedate_to_datetime
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -5017,6 +5018,54 @@ def make_handler(svc: Service):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
+        # The web app's own files and the two pages: a validator, so a browser asking "still the same?" gets a
+        # 304 instead of the whole file.  Cache-Control stays no-cache on purpose - edit app.js and the next
+        # reload must show it, no restart - but no-cache only forces a revalidation, and a revalidation with an
+        # ETag is about 150 bytes instead of 29,112 for the icon sprite, which the page re-resolves as it
+        # writes.  The bytes are held against the file's mtime and size, so an edit is picked up on the next
+        # request and the disk is not read once per asset per tab per second.
+        _static_cache = {}
+
+        @classmethod
+        def _static_file(cls, f: Path):
+            st = f.stat()
+            tag = f'W/"{st.st_mtime_ns:x}-{st.st_size:x}"'
+            key = str(f)
+            hit = cls._static_cache.get(key)
+            if hit is not None and hit[0] == tag:
+                return tag, st, hit[1]
+            body = f.read_bytes()
+            cls._static_cache[key] = (tag, body)
+            return tag, st, body
+
+        @staticmethod
+        def _not_modified(header: str, mtime: float) -> bool:
+            try:
+                return int(mtime) <= int(parsedate_to_datetime(header).timestamp())
+            except (TypeError, ValueError):
+                return False                      # a stamp we cannot read is no reason to claim freshness
+
+        def _send_static(self, f: Path, content_type: str) -> None:
+            tag, st, body = self._static_file(f)
+            stamp = formatdate(st.st_mtime, usegmt=True)
+            inm, ims = self.headers.get("If-None-Match"), self.headers.get("If-Modified-Since")
+            same = bool(inm) and (inm.strip() == "*" or any(t.strip() == tag for t in inm.split(",")))
+            if same or (not inm and ims and self._not_modified(ims, st.st_mtime)):
+                self.send_response(304)
+                self.send_header("ETag", tag)
+                self.send_header("Last-Modified", stamp)
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("ETag", tag)
+            self.send_header("Last-Modified", stamp)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def _json(self, code, obj, headers=None):
             if self.record is not None:
                 with svc.status_lock:
@@ -5073,13 +5122,7 @@ def make_handler(svc: Service):
                 if "/" in name or "\\" in name or ext not in types or not f.is_file():
                     self._json(404, {"error": {"message": "not found"}})
                     return
-                body = f.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", types[ext])
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_static(f, types[ext])
                 return
             if path == "/metrics/prometheus":
                 if self._authorized():
@@ -5128,12 +5171,11 @@ def make_handler(svc: Service):
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
             if path == "" or (path == "/api-monitor" and svc.api_monitor):
-                body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                # the page itself gets the same validator: with no Cache-Control at all a browser could serve a
+                # stale index.html on a plain reload, which is why a changed app.js sometimes needed a
+                # hard-refresh.  no-cache plus an ETag makes an ordinary reload correct and a 304.
+                self._send_static(ROOT / "serve" / "web" / ("monitor.html" if path else "index.html"),
+                                  "text/html; charset=utf-8")
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),

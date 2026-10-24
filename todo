@@ -493,3 +493,52 @@ is section 8, items 34-36.
     `m.text` straight from the caller), and it goes through `bubbleParts()` like the bubble does - if you want a
     fourth size or a different format, change that function, not the callers.
 
+## 9. Added 2026-10-24: the metrics and caching overhaul (decided, in order)
+
+Decided: no WebSockets (overkill for one-way state, and serve() is stdlib http.server). Validators and
+smaller, less frequent polling first; SSE only if a poll still isn't enough. No measuring phase - the
+numbers below are already taken.
+
+39.  Static assets: a validator, so a revalidation is a 304 and not the whole file. [py] DONE 2026-10-24
+    `Cache-Control: no-cache` on /web/* with NO ETag or Last-Modified meant every revalidation was a full
+    200 - 29,112 bytes for the icon sprite, which the page re-resolves as output streams. The page itself
+    carried no Cache-Control at all, which is why a changed app.js sometimes needed a hard-refresh.
+    Shipped: `_send_static` in serve/server.py serves /web/* and both pages with ETag + Last-Modified,
+    honours If-None-Match (including `*` and a list of tags) and If-Modified-Since, and answers 304 with no
+    body. The bytes are held in memory against the file's mtime and size, so an edit is picked up on the next
+    request with no restart and the disk is not read once per asset per tab per second. no-cache is kept on
+    purpose: a developer editing app.js must see it immediately.
+    Tests: serve/test_static_cache.py (11), added to the fast suite list in HANDOFF.md.
+
+40.  Metrics: ask for less, and less often. [py] [ui] OPEN
+    Measured 2026-10-24: /metrics is 7,317 bytes per call, polled once a second unconditionally (poll()
+    reschedules whatever tab is showing and whether the window is visible) - about 26 MB per hour per open
+    tab. In that payload `history` (the sparkline series) is 4,636 bytes, and engine / requests / hardware /
+    conversation_cache are monitor-only; the header pill uses only `live`, about 256 bytes - 3.5% of it.
+    The shape:
+      - a small status endpoint for the pill (state, queued, tok_s, prompt progress), and the full /metrics
+        only while the Monitor tab is visible; `?history=0` to drop the 4.6 KB of series
+      - back off when idle (10-30 s), 1 s while one of our requests is in flight, and pause entirely when the
+        tab is hidden (document.hidden) - the unread marker (item 37) is what tells you something finished
+      - idle has to be a real state first: measured 2026-10-23, during an MCP tool round /metrics answered
+        `live.state=idle` in 3 of 3 samples. Polling less is unsafe until the state machine is honest, so
+        item 35 (a first-class running-tool state) is a prerequisite here, not a nice-to-have.
+
+41.  SSE /events: push state transitions instead of polling for them. [py] [ui] OPEN, after 35 and 40
+    One connection per tab pushing small frames on a state change and when a turn finishes - which is also
+    what makes item 37 (an unread reply in another conversation) and item 10 (queued conversations) solid
+    rather than polling-driven. The cost to accept: serve() is a ThreadingHTTPServer, so a stream that never
+    ends parks a thread for the life of the tab, and it interacts with the idle-unload timer and the watchdog,
+    both of which reason about live connections. protocol_version is HTTP/1.0 (SSE ends by closing), so the
+    client needs a reconnect loop.
+    PRECONDITION, and this should not ship without it: the chat write is a blind whole-record put (writeChat
+    -> objectStore.put, no read, no revision) and the in-memory list is a snapshot taken once by allChats() in
+    openHistory, with no BroadcastChannel and no storage listener. Two tabs on one chat already lose data
+    (item 33): tab A finishes a turn and writes three messages, tab B - still holding its old copy - writes
+    one, and A's turn is gone from disk while still on A's screen. Eight call sites do this, and push
+    multiplies the writers. The minimum is a compare-and-put inside the existing IndexedDB transaction (read
+    the record's revision in the same readwrite transaction, refuse the write if it moved, re-read) - about
+    40-60 lines, one file, no server change, testable against the stub IndexedDB the harness already has.
+    Message ids and merge-on-conflict stay with item 33; server-side conversation identity stays with item
+    16, whose design decision is still unmade. Anything that touches the prompt path is out of scope: a
+    checkpoint mismatch costs a re-read of minutes, and that incident already happened once.
