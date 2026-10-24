@@ -1452,13 +1452,31 @@ $("new-btn").onclick = () => {
   }
   startChat();
 };
+// The saved chat follows the screen: the same parts, in the same order, from bubbleParts().  The old export
+// wrote three piles instead - all thinking, then every call, then the text - so a saved multi-round turn lost
+// which thought led to which call.  One source for the order means the two cannot drift again.
+function toolMarkdown(t) {
+  const ms = t.ms != null && t.state !== "skipped" ? ` · ${fmt(t.ms / 1000, 1)} s` : "";
+  return `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${ms}${t.ok ? "" : " (error)"}</summary>\n\n` +
+    `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`;
+}
+function turnMarkdown(m) {
+  const out = [];
+  for (const p of bubbleParts(m)) {
+    if (p.kind === "think") {
+      const t = (m.reasoning || "").slice(p.from, p.to).trim();
+      if (t) out.push(`<details><summary>${p.secs != null ? `Thought for ${fmt(p.secs, 1)} s` : "Thoughts"}</summary>\n\n${t}\n\n</details>\n\n`);
+    } else if (p.kind === "text") {
+      const t = (m.text || "").slice(p.from, p.to).trim();
+      if (t) out.push(`${t}\n\n`);
+    } else if (m.tools[p.k].result != null) out.push(toolMarkdown(m.tools[p.k]));   // a call that never finished is not in the record
+  }
+  if (m.error) out.push(`> ${m.error}\n\n`);              // an error is part of the turn, not a footnote
+  return out.join("");
+}
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
-  const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
-    `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
-    `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
-  const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
-    `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
+  const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` : `## ${health.model}\n\n${turnMarkdown(m)}`).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
   a.download = `strata-chat-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;

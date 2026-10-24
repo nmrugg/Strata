@@ -476,11 +476,10 @@ is section 8, items 34-36.
     hold a modifier to get more. Suggested shape - plain click = the answer text (unchanged), Shift+click =
     answer + the thinking runs, Ctrl+Shift+click = answer + thinking + each call's arguments and the result as
     the model read it.
-    What already exists to reuse: the Markdown export builds exactly that structure per message (a `## model`
-    heading, a `<details>` for the thinking, and one block per call with its arguments and result) in
-    `$("export-btn").onclick`, and the thinking runs are derivable from `at`/`rat` the same way `thinkRuns()`
-    does it now. The pieces are there; it is a matter of factoring that builder out and feeding it one message
-    instead of the chat.
+    What already exists to reuse, and it is now most of the work: `turnMarkdown(m)` (added with the export
+    fix) builds a whole turn in screen order - thinking per run, text, each call with its arguments and the
+    result as the model read it - via `bubbleParts()`. "Copy everything" is that string handed to the
+    clipboard instead of to a file; "copy answer + thinking" is the same walk with the tool parts skipped.
     Care: a tool result can be 20,000 characters (the reason an open block's body is built lazily), so
     "copy everything" should say how big it is in the toast, and the modifier must not fight the browser's own
     Shift-click behaviour on a button (it does not, but the toggle listener tests `tagName`, so keep the two

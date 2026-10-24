@@ -188,7 +188,7 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, get busy() { return busy; }, get chatId() { return chatId; }, " +
+    "bubbleParts, toolSync, toolOpen, apiMessages, assistantMessages, turnMarkdown, get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
@@ -1009,6 +1009,38 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
                      "one line, whitespace collapsed, capped at 200 for the browser to ellipsize");
   assert.ok(!fprev.includes("\n"), "and never more than one line");
   done.push("thinking: a live block grows with the reasoning, and a collapsed one previews a single line");
+
+  // 35. the saved Markdown follows the screen.  The old export wrote three piles - all thinking, then every
+  // call, then the text - so a saved multi-round turn lost which thought led to which call.
+  const ex = run({}, {});
+  await wait();
+  const xmm = {role: "assistant", text: "I'll read it.Now let me run it.done",
+              reasoning: "first thought\n\nsecond thought", time: Date.now(),
+              tools: [{id: "c1", name: "easyCMP__fs_read", server: "easyCMP", tool: "fs_read", state: "done",
+                       at: 13, rat: 13, ms: 400, ok: true, result: "the file", round: 1},
+                      {id: "c2", name: "easyCMP__run_cmd", server: "easyCMP", tool: "run_cmd", state: "done",
+                       at: 31, rat: 29, ms: 900, ok: true, result: "the output", round: 2}]};
+  const xmd = ex.s.turnMarkdown(xmm);
+  const xat = (s) => xmd.indexOf(s);
+  assert.ok(xat("Thoughts") >= 0 && xat("Thoughts") < xat("I'll read it."), "the first thought comes first");
+  assert.ok(xat("I'll read it.") < xat("Tool easyCMP / fs_read"), "then what it said, then the call it made");
+  assert.ok(xat("Tool easyCMP / fs_read") < xat("second thought"),
+            "the second thought sits after that call, not in a pile at the top");
+  assert.ok(xat("second thought") < xat("Now let me run it."), "and before the next round's text");
+  assert.ok(xat("Now let me run it.") < xat("Tool easyCMP / run_cmd"), "then the second call");
+  assert.ok(xat("Tool easyCMP / run_cmd") < xmd.lastIndexOf("done"), "and the answer last");
+  assert.strictEqual((xmd.match(/<summary>Thoughts<\/summary>/g) || []).length, 2, "one block per thinking run");
+  assert.ok(xmd.includes("<summary>Thoughts</summary>\n\nfirst thought\n\n</details>"), "each holds only its own run");
+  assert.ok(xmd.includes("Tool easyCMP / fs_read · 0.4 s"), "a call shows how long it took, like the screen does");
+  assert.ok(!xmd.includes("<summary>Thinking</summary>"), "no single merged thinking block any more");
+  assert.ok(xmd.includes("```json\n{}\n```"), "the arguments are still there");
+  // an unfinished call stays out of the record, as it always was, and an error is part of the turn
+  const half = {role: "assistant", text: "did what it could", reasoning: "", time: Date.now(),
+                tools: [{id: "c9", name: "x", state: "writing", at: 0, rat: 0}], error: "the request failed"};
+  const hmd = ex.s.turnMarkdown(half);
+  assert.ok(!hmd.includes("Tool x"), "a call that never finished is not written up");
+  assert.ok(hmd.includes("> the request failed"), "and the error is in the turn");
+  done.push("export: the saved Markdown walks the same parts as the screen - think, text, call, think, text, call, answer");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

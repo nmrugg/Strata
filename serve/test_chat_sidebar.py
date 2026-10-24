@@ -50,6 +50,14 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('draftKeyOf(c.id, !c.messages.length)', item)     # the same key the composer writes
         self.assertIn('class="chat-item__title${drafted ? " draft" : ""}"', item)
 
+    def test_the_saved_markdown_follows_the_screen(self):
+        # the export used to write three piles (all thinking, then every call, then the text).  It now walks the
+        # same parts the bubble draws, so the two cannot drift apart again.
+        self.assertIn("for (const p of bubbleParts(m)) {", self.body("turnMarkdown"))
+        self.assertNotIn("const tools = (m) =>", self.js)
+        self.assertNotIn("<summary>Thinking</summary>", self.js)
+        self.assertIn("function toolMarkdown(t)", self.js)
+
     def test_the_composer_keeps_its_text_per_conversation(self):
         # the box keeps what you typed: per chat across a switch, and across a reload.  A chat with no messages
         # is keyed "blank" rather than by its id, because blank chats are never written to the store and newChat()
