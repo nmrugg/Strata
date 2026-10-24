@@ -448,21 +448,21 @@ is section 8, items 34-36.
     Care: `s-mcpthink` already fires its own confirm when flipped (:1466) because it re-reads a chat, and
     `s-share` writes the SERVER's shared defaults (:1512) - the discard warning must not re-trigger either.
 
-37.  Mark a conversation whose reply finished while you were not looking at it. [ui] BLOCKED on
-    9 (and 10) - the colour is already reserved for it
-    The human's want: a green marker in the chat list for "the model finished something here that you have
-    not seen". Not possible today, and the reason is worth recording: `openChat` refuses while a request runs
-    (`serve/web/app.js:727`, `if (busy) { toast("warn", "Still writing", ...) }`), and the page has exactly one
-    stream (`busy` is a single `{controller, msg}`, `send()` returns early when it is set), so a reply can only
-    ever finish in the chat you are already looking at. It becomes reachable when item 9 lands (switch chats
-    mid-stream, which needs `paint()` to re-resolve its element) and more useful with item 10 (several streams).
-    What it needs beyond that: a per-chat flag or a `lastReplyAt` / `lastSeenAt` pair on the chat record - the
-    list already redraws on every switch, create, rename and delete, so a plain boolean set when a stream ends
-    in a non-open chat and cleared when the chat is opened is enough.
-    The convention is already in the stylesheet: the accent is NOT used by the draft marker
-    (`app.css`, `.chat-item__title.draft::before` inherits the row's ink on purpose). When this lands, the
-    accent marker wins where a chat has both - "go read this" outranks "you left text here" - and the draft is
-    still visible the moment the chat is opened.
+37.  Mark a conversation whose reply finished while you were not looking at it. [ui] OPEN - unblocked
+    by item 9 (2026-10-23); item 10 would make it much more useful
+    This used to be impossible, and that is why it was parked: `openChat` refused while a request ran, so a
+    reply could only ever finish in the chat you were already looking at. Item 9 landed (85084ba6), so now a
+    turn really can finish in a chat that is not on screen - `busy` even carries which chat it belongs to
+    (`busy.chat`), which is the hook this needs.
+    The shape: when a turn ends, if `busy.chatId !== chatId`, mark that chat unread (a boolean on the chat
+    record, or a `lastReplyAt` beside a `lastSeenAt`), and show it in the list with the ACCENT colour - which
+    `app.css` deliberately keeps free: the draft marker inherits the row's ink on purpose
+    (`.chat-item__title.draft::before`, no colour). Where a chat has both, the accent wins and the draft marker
+    is dropped: "go read this" outranks "you left text here", and the draft is visible the moment the chat is
+    opened anyway. The right side of each row is free now that the edit/delete buttons no longer reserve 64px
+    until hover, so a dot there is possible without moving the name.
+    Clearing: opening the chat (showChat) marks it seen. Item 10 (several streams at once) makes this genuinely
+    load-bearing rather than occasional.
 
 38.  Copy the whole turn - thinking and tool calls included - from the copy button. [ui] DONE
     2026-10-23 in 54698d98, exactly as suggested: plain click = the answer (unchanged), Shift+click = the
