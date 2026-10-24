@@ -261,6 +261,13 @@ of its fields are live and refresh them, and write the test as "grow it, then as
 `p.runs` matters too: a stale run count makes the last block stop looking like the last block, which turns off
 both auto-opening and auto-following.
 
+**The harness never painted a stream until 2026-10-23.** `serve/test_chat_sidebar.js` stubbed
+`requestAnimationFrame: () => 0`, so `if (!frame) frame = requestAnimationFrame(paint)` scheduled a paint that
+**never ran** - every streaming test up to then asserted on the message objects and never once on what was
+drawn. It now queues the callbacks and exposes `flush()`, and a stream test drives one frame at a time (each
+`read()` flushes first, the way one animation frame does). That is what made the switching-chats bug testable
+at all: with the old stub, painting into a detached node was invisible to the tests by construction.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right
