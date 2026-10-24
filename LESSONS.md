@@ -8,6 +8,13 @@ discover.
 evidence that produced it. Prefer a measured number over an adjective, and cite
 `file:line` you actually read. Delete an entry when it stops being true.
 
+**Line numbers in here are as-of the date of the entry, not a live index.** They rot on every
+edit, and four of them in this file were already wrong when they were re-checked on 2026-10-24.
+Before acting on one, re-find the code by its symbol (a function or constant name survives
+refactoring; `app.js:1225` does not). Prefer writing the symbol and leaving the number out.
+The same applies to the counts quoted in entries - a test count, a token count, a duration is a
+measurement of one moment on one box, useful as evidence and misleading as a constant.
+
 ## Existential
 
 **Never restart the server you are running on.** The process serving port 8080

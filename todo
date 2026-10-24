@@ -12,6 +12,12 @@ comments cite it as `todo #pin-conversation`; prose in this file says "item pin-
 Names are lowercase, hyphenated, and describe the want rather than the symptom. To find an item from a code comment: grep -n '`pin-conversation`' todo. To find the code from an item: grep -rn 'todo #pin-conversation' serve/.
 Adding an item: pick a name no other line uses; do not extend a sequence.
 
+LINE REFERENCES rot. Items cite code as `file:line`, and 80 of them in this file are already
+as-of their writing date; a session that edits the code invalidates them silently. When you pick
+up an item, re-find the cited code by symbol before trusting the number, and write new
+references as `function_name in serve/server.py` rather than `serve/server.py:4001` where the
+number is not essential.
+
 HISTORICAL NAMES. Work done and removed from this file on 2026-10-23 is still cited by code
 comments, and those comments used to point at bare numbers that named nothing. They now name the
 work: leave-warning (513721b8), start-beep (ae1598b0), keep-thinking-open, keep-tool-calls-open

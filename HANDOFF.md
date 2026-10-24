@@ -1,12 +1,7 @@
-# Handoff prompt — Strata, 2026-10-24
-
-Paste everything below the line to a fresh agent.
-
----
-
 You are working on Strata at `/programs/Strata` (branch `fork`, remote Niko1221/Strata).
-Read `AGENTS.md`, **`LESSONS.md`**, and `/programs/Strata/todo` first - the todo has **40 open
-items** under 64 names in all (40 open, 16 done or shelved, 8 historical).
+Read `AGENTS.md`, **`LESSONS.md`**, and `/programs/Strata/todo` first. Open items are everything
+above the Historical and Done sections; count them with
+`sed '/^## 9. Historical/,$d' todo | grep -c '^`'` (40 as of 2026-10-24 - the count moves).
 
 ## Read this before you touch `todo`
 
@@ -67,22 +62,25 @@ it is not. If you must discuss one, name the tag instead of reproducing it.
 
 - Fast tests:
   `.venv/bin/python -m unittest serve.test_frontend serve.test_parser_track serve.test_reasoning_tools serve.test_reasoning_rescue serve.test_chat_sidebar serve.test_mcp serve.test_mcp_round_history serve.test_abandoned_calls serve.test_fence_quoted_thinking serve.test_static_cache serve.test_reasoning_loop_recovery`
-  → **190 tests, ~40 s**. All CPU-only, no GPU and no engine.
-- Full server suite: `.venv/bin/python -m unittest serve.test_server` → **313 tests, ~95 s**
+  → **~190 tests, ~40 s** as of 2026-10-24; the count moves whenever anyone adds one, so treat it
+  as a canary rather than a fact. All CPU-only, no GPU and no engine.
+- Full server suite: `.venv/bin/python -m unittest serve.test_server` → **~313 tests, ~95 s**
 - Web app harness: `node serve/test_chat_sidebar.js` → **47 `ok -` lines**, and
   `serve/test_chat_sidebar.py` runs it from Python. **Run both** for any `app.js` change.
-  `node --check serve/web/app.js` for syntax. **Count the `ok -` lines**: a hanging harness
-  exits 0 and prints nothing, which looks like a pass.
+  `node --check serve/web/app.js` for syntax. **Count the `ok -` lines** (47 as of
+  2026-10-24): a hanging harness exits 0 and prints nothing, which looks like a pass.
 - Files: web app `serve/web/app.js`, `serve/web/index.html`, `serve/web/app.css`; server
   `serve/server.py`; parser `serve/frontend.py`; MCP hub `serve/mcp.py`.
 - Settings live in `DEFAULTS` in `app.js` and persist through the `store` object
   (localStorage, key `strata.sampling`). Follow that pattern for new settings.
-- Config `strata-iq3_s.json`, **actual values** (the previous handoff got one wrong):
+- Config `strata-iq3_s.json`. **Read the file rather than this list** - a previous handoff
+  misquoted one of these flags, and the values change:
   `reasoning_close_retry: true` (not `"calls"`), `reasoning_loop_recovery: "recover"`,
   `tool_call_recovery: true`, `fence_quoted_thinking: true`, `open_browser: false`,
   `start_beep`, and **`effort_position` is absent**, so it is the default `"start"`.
-- The config's `env` block reaches **only the engine child** (`server.py:2626-2632`).
-  Server-side vars like `STRATA_DEBUG` go in the shell that starts the server.
+- The config's `env` block reaches **only the engine child** (search for `child_env` in `serve/server.py`).
+  The block is applied by `child_env(cfg)` in `serve/server.py`; server-side vars like
+  `STRATA_DEBUG` go in the shell that starts the server, not in the config.
 - Two logs. Engine stderr → `strata-iq3_s.log`. The server's own prints reach a file **only**
   if started with `... 2>&1 | tee -a /tmp/strata-server.log`. With `STRATA_DEBUG=1` that file
   contains the model's full raw output per request, so grepping a probe string matches the
@@ -93,30 +91,37 @@ it is not. If you must discuss one, name the tag instead of reproducing it.
   `app.js`/`index.html`/`app.css` change needs a **browser reload, not a restart**. A change
   that needs a matching server change will break the running page the moment you save it.
 
-## What shipped on 2026-10-24 (nine commits, all on `fork`, none pushed)
+## What shipped on 2026-10-24
 
-`4f26e5c7` one three-way **"Show thinking"** control — `Folded / Fold when done / Always`
-(default *Fold when done*) — replacing four overlapping switches (`show`, `openthink`,
-`opentools`, `autofold`). It governs **both** thinking blocks and tool-call blocks from one
-key (`settings.show`). Old stored settings map to it once on load (`migrateShow`).
-`a0bb1d98` a click on a tool block holds for the **turn**, not forever, and is no longer
-written into the chat record.
-`71a07306` LESSONS entries. `7e2a66a4`, `6b0dd108`, `fe0e3a33`, `b7929b54` and `6619fd92` are todo
-and docs churn from the same day, including two renumber passes that `b419d23d` then undid by
-renaming to names; the hashes are the stable citation, the numbers inside those messages are not.
-`b419d23d` is the loop-recovery fix (`recover-noop`, `slow-death`) plus the rename.
+Three commits carry code; the rest of that day's history is todo and docs churn, and `git log` is
+the complete list rather than anything printed here:
+
+- `4f26e5c7` one three-way **"Show thinking"** control - `Folded / Fold when done / Always`
+  (default *Fold when done*) - replacing four overlapping switches that answered the same question
+  twice. It governs **both** thinking blocks and tool-call blocks from one key (`settings.show`);
+  an old stored settings object maps onto it once on load (`migrateShow`).
+- `a0bb1d98` a click on a tool block holds for the **turn**, not forever, and is never written into
+  the chat record.
+- `b419d23d` the loop-recovery fixes (`recover-noop`, and the log blindness in `slow-death`) plus
+  the rename of todo items from numbers to names.
 
 The items those commits added, by name: `fold-control`, `click-not-persisted`, `drawer-auto-apply`,
 `no-scrim`, `send-spinner`, `hide-preview-when-open`, `server-before-model`, `test-command`,
-`slow-death`, `recover-noop` and `dead-turn`.
+`slow-death`, `recover-noop`, `dead-turn`.
 
-**State of the box right now**, because it changes what a fix looks like: the server was restarted
-after `b419d23d`, so both recovery fixes are live. The drawer's thinking level is set to **low**,
-and `shared` is **false** (`GET /settings` answers `{"shared": false, "defaults": {}}`), so low
-applies to the web app's own requests and not to the agent harness. That puts the web app in
-exactly the case `recover-noop` fixed: a detected loop at low effort now logs honestly instead of
-doing nothing, and it is still not rescued - the open decision there is whether an already-low
-request should fall back to `"stop"`.
+**Check the live state rather than trusting this file.** It changes between sessions and goes stale
+faster than anything else here:
+
+- which build is running: `ps -eo pid,lstart,cmd | grep serve/server.py` and compare the start time
+  with `stat -c %y serve/server.py`. Code and config take effect only on restart, so if the process
+  predates the file, the fix you just made is not live.
+- what the model and engine think: `curl -s localhost:8080/health`. Note `loaded` does **not** mean
+  what it sounds like - see `LESSONS.md`.
+- what the drawer is set to and whether it is shared with other clients: `curl -s localhost:8080/settings`.
+  Sharing matters: with `shared: false` the drawer's level applies only to the web app, not to the
+  agent harness running you.
+- what the run config actually says: read `strata-iq3_s.json`. A previous handoff misquoted one of
+  its flags, so quote the file, not the handoff.
 
 Two mechanisms worth knowing before you touch either kind of block:
 
@@ -134,47 +139,52 @@ Two mechanisms worth knowing before you touch either kind of block:
 
 Established earlier: not the engine — every request ends `finish: stop` with
 `output_tokens == engine_generated`; it is the parser classifying the model's text. The real
-fix is to stop representing boundaries as text: the engine has them as token IDs
-(248068/248069 thinking pair, 248058/248059 tool-call pair, 248045/248046 turn pair, marked
-special in `token_type.json`) and sends raw IDs on its `T` lines, but the server detokenises
-and discards the ID at `server.py:3995`. Whether the engine forwards them is **unverified** —
-check `generate.cpp:11818` before sizing it. The 37-case corpus
-`serve/fixtures/rcall_specimens.json` already rejected the obvious rule "a real end is always
-followed by a line break", so a smarter local heuristic is probably impossible. Run that
-corpus before touching the parser.
+fix is to stop representing boundaries as text. The engine already has them as token IDs
+(the thinking pair, the tool-call pair and the turn pair, all marked special in
+`token_type.json`) and sends raw IDs on its `T` lines: `StrataEngine._control` in
+`serve/server.py` reads `T <id>` and hands the id to a callback, and `Detokenizer.push` is
+where the id becomes text and the id itself is thrown away — every call site is
+`parser.feed(detok.push(t))`. Whether the engine forwards the special IDs on those lines is
+**unverified**: check where the engine writes its `T` lines in `src/` before sizing the work.
+The 37-case corpus `serve/fixtures/rcall_specimens.json` already rejected the obvious rule
+"a real end is always followed by a line break", so a smarter local heuristic is probably
+impossible. Run that corpus before touching the parser.
 
-**New, root cause written up in `strata-slow-death.txt`** (repo root, **untracked** — it is full of
-literal control tags, so read it but never quote from it). It describes **three separate deaths**,
-and conflating them wastes time:
+The item names are the durable citation; the numbers in older commit messages are not.
 
-1. **The slow death** (todo **72**). `reasoning_loop_recovery: "recover"` *fires* — "repeated
-   reasoning detected at 2560 tokens (coverage=0.555); resuming the same output with the low-effort
-   instruction" — and then the thinking counter sits at **exactly 2560** for minutes while the
-   reported rate decays 88.5 → 29.3 tok/s. The turn neither advances nor ends. Both the freeze and
-   the decay are **unexplained**; measure before fixing.
-2. **The silent no-op** (todo **73**). `focused_recovery_prompt()` (`server.py:193`) splices token
-   ids, swapping `HIGH_EFFORT` (= `EFFORT_TEXT["xhigh"]`, `server.py:157`) for `LOW_EFFORT` (158).
-   It looks for xhigh because that is the template's **default** sentence and the rescue's job is to
-   *lower* effort; it does not know the request's level. So a request that asked **low or medium**
-   has no xhigh sequence, the function returns `None`, and nothing is recovered. This box's **own
-   web traffic is not in that case** — the app sends `high`, and `chat_template.jinja:59-61` maps
-   `high` to `xhigh`. Other clients that ask low or medium are. Fix: key the splice on the
-   request's own level.
-3. **The forged-boundary death** (todo **83**, and `LESSONS.md`). A turn cut because a boundary tag
-   appeared as text. This session died twice because the agent *quoted* a log line containing one
-   while investigating. No counter sees it: 0 `EMPTY TURN` lines across 2,024 requests.
+1. **`slow-death`.** `reasoning_loop_recovery: "recover"` *fires* — "repeated reasoning
+   detected at 2560 tokens (coverage=0.555); resuming the same output with the low-effort
+   instruction" — and then the thinking counter sat at **exactly 2560** for minutes while the
+   reported rate decayed 88.5 → 29.3 tok/s. **Fixed as to the blindness** (commit `b419d23d`):
+   the per-request status reset happens before the pass loop, so a restarted pass never
+   re-declared itself and the progress line repeated the previous pass's frozen count — it read
+   as a hang. Each pass now declares `phase="reading the prompt"`, `generated=0` and
+   `pass_first_token=None`. **The cause is still unconfirmed** and is now observable: the next
+   time it fires, the log will say `reading the prompt: X of Y` and you will know within seconds
+   whether the splice's changed early token forced a full re-read. The item carries the measured
+   cost if so. Do not fix it before that observation.
+2. **`recover-noop`.** **Fixed** (`b419d23d`). `focused_recovery_prompt()` in `serve/server.py`
+   used to splice only the xhigh effort sentence — the template's default — so a request that
+   asked low or medium had no such sequence, the function returned `None`, and the loop was
+   logged as detected while nothing was recovered. It now keys on the sentence actually in the
+   prompt, inserts the low one where the template wrote none (medium), and returns `None`
+   honestly when the sentence in place is already the lowest. The template's own mapping lives in
+   `serve/chat_template.jinja` (`high` resolves to `xhigh`; medium gets no sentence at all).
+   **Still open:** for a request already at low there is nothing lower to ask for, so the thinking
+   still runs to the budget. Whether it should fall back to `"stop"` is an unmade decision.
+3. **`dead-turn`.** A turn cut because a boundary tag appeared as text. This session died twice
+   because the agent *quoted* a log line containing one while investigating — reading such a log
+   is safe, echoing it is not. No counter sees it: it is not an empty turn, it ends with
+   plausible text. The cheapest thing that could notice it is the client running the agent.
 
-Measured over 2,024 requests in `/tmp/strata-server.log`: 0 `EMPTY TURN` lines, 19
+Measured on 2026-10-24 over 2,024 requests in `/tmp/strata-server.log` (that file exists only if
+the server was started with the `tee` shown above): 0 `EMPTY TURN` lines, 19
 `reasoning_close_retry` rescues, 5 "tool calls inside the thinking", and 10 zero-token turns that
-were all `finish=cancel` **mid-prefill** — the client giving up on a long read, which is a fourth,
-unrelated thing — a client timing out on a long prefill, which is the re-read and start-up family
-(items **70** and **92**), not a parser bug. So the counter built for the stalled-turn problem
-cannot see it, and a counter that cannot see the bug is worse than none.
-
-**The front end can already detect a dead turn.** `app.js:1342` computes
-`hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error` and item no-placeholder uses it only to
-hide the bubble. Nothing acts on it — so a Continue affordance, or an opt-in re-prompt, is one
-boolean away. It would not have saved this session, because the agent harness is a different client.
+were all `finish=cancel` **mid-prefill** — a client timing out on a long read, which is the re-read
+and start-up family (`pin-conversation`, `server-before-model`), not a parser bug. A dated
+measurement, not a constant: re-measure it rather than quoting it. The point that survives is that
+the counter built for this problem could not see it, and a counter that cannot see the bug is
+worse than none.
 
 ## Do not re-litigate these
 
