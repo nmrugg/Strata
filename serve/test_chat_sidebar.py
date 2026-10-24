@@ -256,23 +256,54 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("t.open = d.open", toggle)
         self.assertIn("syncToolBody(", toggle)                      # the body an unopened block was built without
 
-    def test_the_tool_call_blocks_can_be_left_open(self):
-        # todo #4: "Keep tool calls open", the same shape as the thinking switch.  A block the user clicked keeps
-        # their choice (t.open is no longer undefined), so the switch only answers "nobody has clicked this one".
-        self.assertIn('id="s-opentools"', self.html)
-        self.assertIn('"s-opentools"', self.js)
-        self.assertIn("opentools: false", self.js)                        # off by default
-        self.assertIn("t.open === undefined ? settings.opentools === true", self.js)
-        self.assertIn('open ? toolBodyHtml(t) : ""', self.js)       # the body exists only while the block is open
-
-    def test_the_thinking_block_can_be_left_open(self):
-        # todo #3: "Keep thinking open" - a settings flag that drives the details element's open attribute
-        self.assertIn('id="s-openthink"', self.html)
-        self.assertIn('"s-openthink"', self.js)
-        self.assertIn("openthink: false", self.js)                          # off by default
+    def test_show_thinking_is_one_three_way_control_for_both_kinds(self):
+        # todo #3 and #4, and the fold switch that joined them, are now one segmented control: the drawer used
+        # to carry four switches that answered the same question twice and contradicted each other (show /
+        # openthink / opentools / autofold).  One key, three values, and the old stored booleans are mapped.
+        self.assertIn('id="s-show"', self.html)
+        self.assertIn('role="radiogroup" aria-label="Show thinking"', self.html)
+        for v in ("folded", "live", "always"):
+            self.assertIn(f'data-v="{v}"', self.html)
+        self.assertIn("show: \"live\"", self.js)                             # the middle one is the default
+        for gone in ("s-openthink", "s-opentools", "s-autofold"):
+            self.assertNotIn(gone, self.html)                               # the four are gone, not hidden
+            self.assertNotIn(f'"{gone}"', self.js)
+        # the one decision, read once by both kinds of block
+        self.assertIn("settings.show === \"always\" ? true", self.js)
+        self.assertIn("settings.show === \"live\" ? toolLive(t)", self.js)
+        self.assertIn('const toolLive = (t) => t.state === "writing" || t.state === "running";', self.js)
         think = self.body("syncThink")
-        self.assertIn("settings.openthink === true", think)                  # the switch, per block
-        self.assertIn('if (det.dataset.touched !== "1" && det.open !== wantOpen)', think)  # a click wins
+        self.assertIn('settings.show === "always" ? true', think)            # the thinking half
+        self.assertIn('settings.show === "live" ? liveRun : false;', think)
+        self.assertIn('if (det.dataset.touched !== "1" && det.open !== wantOpen)', think)   # a click wins
+        # an old settings object has the four as booleans; map them once rather than let a saved true/false
+        # decide how the drawer looks
+        mig = self.body("migrateShow")
+        self.assertIn("if (SHOWS.includes(s.show)) return s;", mig)          # a new object passes straight through
+        self.assertIn("s.autofold === true ? \"live\"", mig)
+        self.assertIn("(s.openthink === true || s.opentools === true) ? \"always\"", mig)
+        self.assertIn('s.show === false ? "folded"', mig)
+        self.assertIn("for (const k of [\"openthink\", \"opentools\", \"autofold\"]) delete out[k];", mig)
+        self.assertIn("migrateShow(store.get(\"sampling\", {}))", self.js)    # and it runs on load
+        self.assertIn('open ? toolBodyHtml(t) : ""', self.js)                # the body exists only while open
+        # the control's box sizes itself to its buttons: .seg was a fixed 4-column grid, which left an empty
+        # cell behind a 3-option control (Thinking has four, Show thinking has three)
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        seg_rule = re.search(r"\.seg \{([^}]*)\}", css).group(1)
+        self.assertIn("display: flex", seg_rule)
+        self.assertNotIn("repeat(4", seg_rule)
+        self.assertIn(".seg button { flex: 1 1 0;", css)
+
+    def test_the_fold_knows_when_a_thought_is_over(self):
+        # "the last run while streaming" is not when a thought is over: while a tool round runs thinkRuns still
+        # reports one run, so that rule would hold it open through the whole call.  Two signals say it is
+        # finished - cut (a call starts where the run ends) and tstart (answer text grew past where the run
+        # began, stamped in send() as m.rts).  m.rts is numbers only, so the replay cannot change.
+        think = self.body("syncThink")
+        self.assertIn("const liveRun = p.i === p.runs - 1 && streaming && !p.cut && !(p.tstart != null && m.text.length > p.tstart);", think)
+        self.assertIn("return {...r, i, secs, cut: i < cuts.length, tstart: (m.rts || [])[i]};", self.body("thinkRuns"))
+        self.assertIn("(m.rts = m.rts || [])[roundCuts(m).length] = m.text.length;", self.body("send"))
+        self.assertIn("p.secs = w.secs; p.cut = w.cut;", self.js)            # the part refreshes the ones that grow
 
     def test_it_is_opt_in_and_off_is_the_page_from_the_last_release(self):
         self.assertIn('store.get("history", false)', self.js)             # off by default

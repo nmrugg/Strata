@@ -265,9 +265,12 @@ main { flex: 1; min-height: 0; display: flex; }
 /* ---------------------------------------------------------------- drawer */
 .st-drawer { z-index: 40; }
 .scrim { position: fixed; inset: 0; background: rgba(15, 23, 42, .18); z-index: 39; }
-.seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 4px; background: var(--st-surface-2);
+/* flex, not a 4-column grid: the control has as many options as it has buttons (Thinking has four, Show
+   thinking has three), and a fixed repeat(4, 1fr) left an empty cell behind for the shorter one.  flex:1 1 0
+   gives equal widths either way, which is what the grid did. */
+.seg { display: flex; gap: 4px; padding: 4px; background: var(--st-surface-2);
        border: 1px solid var(--st-line); border-radius: var(--st-r-md); }
-.seg button { height: 32px; border: 0; border-radius: 10px; background: transparent; color: var(--st-ink-muted);
+.seg button { flex: 1 1 0; min-width: 0; height: 32px; border: 0; border-radius: 10px; background: transparent; color: var(--st-ink-muted);
               font: 500 var(--st-fs-sm)/1 var(--st-font); cursor: pointer; }
 .seg button[aria-checked="true"] { background: var(--st-surface); color: var(--st-ink); font-weight: var(--st-fw-bold);
                                    box-shadow: var(--st-sh-card); }

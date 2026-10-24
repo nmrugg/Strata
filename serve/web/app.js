@@ -643,8 +643,24 @@ function markdownBlocks(text) {
 function markdown(text) { return markdownBlocks(text).join(""); }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, openthink: false, opentools: false, mdmine: false, mdtheirs: true, esp: true, mcp: true, mcpthink: false};
-let settings = {...DEFAULTS, ...store.get("sampling", {})};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: "live", mdmine: false, mdtheirs: true, esp: true, mcp: true, mcpthink: false};
+// "Show thinking" used to be four switches (show / openthink / opentools / autofold) that overlapped and
+// half-contradicted each other.  They are one choice now - "folded" | "live" | "always" - and an old stored
+// object still has them as booleans, so map it once on load rather than letting a saved true/false decide
+// how the drawer looks.  The old default (thinking open while it streams, calls closed) had no name; it
+// becomes the new default, "live".
+const SHOWS = ["folded", "live", "always"];
+function migrateShow(s) {
+  if (SHOWS.includes(s.show)) return s;
+  const out = {...s};
+  out.show = s.autofold === true ? "live"                                  // the fold switch from earlier today
+           : (s.openthink === true || s.opentools === true) ? "always"     // either "keep ... open" switch
+           : s.show === false ? "folded"                                   // "Show thinking" off
+           : DEFAULTS.show;                                                // the old default
+  for (const k of ["openthink", "opentools", "autofold"]) delete out[k];
+  return out;
+}
+let settings = {...DEFAULTS, ...migrateShow(store.get("sampling", {}))};
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 
@@ -991,9 +1007,18 @@ function msgEl(m, i) {
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
 const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
                     error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
-// A tool block's open state lives on the tool (the answer is rebuilt while it streams).  Until the user clicks
-// one, t.open is undefined and the "Keep tool calls open" switch decides; after a click their choice decides.
-const toolOpen = (t) => t.open === undefined ? settings.opentools === true : !!t.open;
+// A tool block's open state lives on the tool while the turn runs (the answer is rebuilt every frame, so it
+// has to survive a repaint).  One control, "Show thinking", decides what happens when nobody has clicked one:
+// "folded" never opens it, "live" opens only a call that is still happening - being written, or running - so it
+// collapses on its own once it settles, "always" opens it and leaves it.  A click wins over the control for the
+// rest of the turn, and no further: the click is dropped when the turn ends (send) and is never written to the
+// chat record (cleanMessages), because it is how the page is showing the work, not part of the conversation.
+// It used to be written, and that is why one tap pinned a call open through every reload after it.
+const toolLive = (t) => t.state === "writing" || t.state === "running";
+const toolOpen = (t) => t.open !== undefined ? !!t.open
+  : settings.show === "always" ? true
+  : settings.show === "live" ? toolLive(t)
+  : false;
 // what an open tool block holds: the arguments, and the result as the model read it.  Built only while the block
 // is open - a result can be 20,000 characters - so opening one with a click fills it in here (see the toggle
 // listener below), exactly as the thinking body is filled when it opens.
@@ -1057,7 +1082,8 @@ function toolSync(d, t) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   if (d.dataset.state !== t.state) d.dataset.state = t.state;
   const open = toolOpen(t);
-  if (d.open !== open) d.open = open;
+  if (d.open !== open) d.open = open;      // fires a toggle event; the listener tells ours from a click by
+                                           // comparing the element against toolOpen(), not by consuming a flag
   const name = d.querySelector(".tool-call__name");
   const nm = t.tool || t.name || "tool";
   if (name.textContent !== nm) name.textContent = nm;
@@ -1098,7 +1124,13 @@ function thinkRuns(m) {
     // whose arrival ended the thinking
     const last = (i < cuts.length ? (i + 1 < cuts.length ? cuts[i + 1].first : (m.tools || []).length) - 1 : -1);
     const secs = last >= 0 && m.tools[last].tsec != null ? m.tools[last].tsec : (i === 0 ? m.thinkSecs : null);
-    return {...r, i, secs};
+    // cut: a call started at the end of this run, so the thinking that led to it is over even though this is
+    // still the last run (the next round's reasoning has not arrived yet).
+    // tstart: how much answer text existed when this run began, stamped in send() as m.rts (display only - it
+    // touches neither m.text nor m.reasoning, so the replay is untouched).  Text grown past it means the model
+    // stopped thinking and started writing.  A run with no stamp - a chat from before this existed - reports
+    // null and is never folded by this rule.  "Show thinking: Fold when done" uses cut and tstart.
+    return {...r, i, secs, cut: i < cuts.length, tstart: (m.rts || [])[i]};
   });
 }
 // the answer cut at the calls: each round's text before its call, then the calls.  The last text run has
@@ -1122,7 +1154,8 @@ function flatParts(m) {
 function bubbleParts(m) {
   const cuts = roundCuts(m), tools = m.tools || [], runs = thinkRuns(m), flat = flatParts(m);
   const out = [];
-  const thinkPart = (i) => ({kind: "think", i, from: runs[i].from, to: runs[i].to, secs: runs[i].secs, runs: runs.length});
+  const thinkPart = (i) => ({kind: "think", i, from: runs[i].from, to: runs[i].to, secs: runs[i].secs,
+                             cut: runs[i].cut, tstart: runs[i].tstart, runs: runs.length});
   let fi = 0;
   for (let i = 0; i < cuts.length; i++) {
     const stop = i + 1 < cuts.length ? cuts[i + 1].first : tools.length;      // this round's tool range
@@ -1159,11 +1192,17 @@ const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summa
 // one line of a thinking run for the collapsed summary, the way a tool block previews its result.  The first
 // 200 characters are taken and CSS ellipsises what does not fit, so the line never wraps.
 const thinkPreview = (t) => t.replace(/\s+/g, " ").trim().slice(0, 200);
-// a thinking block follows the rules the single block used to: the last one opens while the model is still
-// thinking (settings.show), "Keep thinking open" opens all of them, and a block the reader opened or closed
-// by hand is never touched again.  The open state is decided before the body is filled: filling first leaves
-// an auto-opened block open and blank, because the toggle listener skips the fill for an open we asked for
-// ourselves (it sees det._auto).
+// One control, "Show thinking", decides how a thinking block is shown, and the same three answers cover the
+// tool calls beside it: "folded" never opens one, "live" opens the work while it is happening and closes it
+// when it is done, "always" opens it and leaves it.  A block the reader opened or closed by hand wins over the
+// control for the rest of the turn (det.dataset.touched), and that choice lives on the element only -
+// renderChat rebuilds the elements, so after a reload the control decides again.  The open state is worked out
+// before the body is filled: filling first leaves an auto-opened block open and blank, because the toggle
+// listener skips the fill for an open we asked for ourselves (it sees det._auto).
+//
+// "Done" for a thought is not "it is the last run": while a tool round runs thinkRuns still reports one run,
+// so that rule would hold the thought open through the whole call.  Two signals say it is over - p.cut, a call
+// starting exactly where the run ends, and p.tstart, answer text grown past where the run began.
 function syncThink(det, m, p, streaming) {           // det IS the details: querySelector looks at descendants only
   const thinkingNow = streaming && p.i === p.runs - 1 && !m.text;
   const text = (m.reasoning || "").slice(p.from, p.to);
@@ -1172,7 +1211,9 @@ function syncThink(det, m, p, streaming) {           // det IS the details: quer
   const prev = det.querySelector(".think-preview");
   const pv = thinkPreview(text);
   if (prev.textContent !== pv) prev.textContent = pv;      // the collapsed line; CSS hides it once open
-  const wantOpen = settings.openthink === true ? true : (p.i === p.runs - 1 && streaming && settings.show === true);
+  const liveRun = p.i === p.runs - 1 && streaming && !p.cut && !(p.tstart != null && m.text.length > p.tstart);
+  const wantOpen = settings.show === "always" ? true
+    : settings.show === "live" ? liveRun : false;
   if (det.dataset.touched !== "1" && det.open !== wantOpen) { det._auto = true; det.open = wantOpen; }
   const body = det.querySelector(".thinking");
   const follow = streaming && p.i === p.runs - 1 && nearEnd(body, 48);   // only the live block follows its own text
@@ -1234,7 +1275,10 @@ function updatePart(host, m, p, w, streaming) {
     // the live run's slice grows: from/to/runs must come from this paint, not from when the part was made, or
     // the block keeps showing only what it held at creation (the "first word only" bug)
     p.from = w.from; p.to = w.to; p.runs = w.runs;
-    p.secs = w.secs;                                   // a run's seconds are stamped when the NEXT run starts
+    p.secs = w.secs; p.cut = w.cut;                     // a run's seconds are stamped when the NEXT run starts, and
+                                                       // cut turns true when a call lands at the end of it.  Not
+                                                       // tstart: that is fixed when the run begins and makePart
+                                                       // copies it, so there is no stale version to refresh
     syncThink(p.el, m, p, streaming);
     return;
   }
@@ -1355,6 +1399,12 @@ $("chat").addEventListener("toggle", (e) => {
     const el = d.closest(".st-msg"), m = messages[+el.dataset.i];
     const t = m && m.tools && m.tools[+d.dataset.tool];
     if (!t) return;
+    // Is this the reader, or us?  toolSync sets d.open itself, and a browser queues the toggle event, so a
+    // one-shot flag is not safe: with two events in flight the first eats the flag and the second - our own
+    // change - is read as a click.  That sets t.open, toolOpen short-circuits on it, and the block never folds
+    // again until send() clears it at the end of the turn.  Compare instead: if the element now holds what the
+    // rule already wants, nobody clicked.
+    if (d.open === toolOpen(t)) return;
     t.open = d.open;                                  // no longer undefined: this block's own choice decides now
     if (d.open) syncToolBody(d.querySelector(".st-collapse__body"), t);   // built only while open: a result can be 20,000 characters
     return;
@@ -1511,6 +1561,7 @@ async function send() {
         if (d.reasoning_content) {
           if (!firstAt) firstAt = performance.now();
           if (!thinkStart) thinkStart = performance.now();
+          const newRun = !m.reasoning || (lastTool && lastTool.rat === m.reasoning.length);
           if (lastTool && m.reasoning && lastTool.rat === m.reasoning.length) {
             m.reasoning += "\n\n";                   // the separator assistantMessages() replays: keep it as it was
             if (thinkStart) {                        // and that closes the previous thinking run: stamp its seconds
@@ -1518,6 +1569,11 @@ async function send() {
               thinkStart = performance.now();
             }
           }
+          // A thinking run starts here: remember how much answer text already existed, which is what tells a
+          // later paint the thought is over as soon as the model writes again.  roundCuts(m).length is the index
+          // of the run this chunk begins - 0 with no calls yet, one past the last call's round after one.
+          // Display only: m.rts holds numbers, never text, so the replay is untouched.
+          if (newRun) (m.rts = m.rts || [])[roundCuts(m).length] = m.text.length;
           m.reasoning += d.reasoning_content;
         }
         if (d.content) {
@@ -1727,9 +1783,7 @@ function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
-  $("s-show").setAttribute("aria-checked", String(!!s.show));
-  $("s-openthink").setAttribute("aria-checked", String(s.openthink === true));
-  $("s-opentools").setAttribute("aria-checked", String(s.opentools === true));
+  for (const b of $("s-show").children) b.setAttribute("aria-checked", String(b.dataset.v === s.show));
   $("s-mdmine").setAttribute("aria-checked", String(s.mdmine === true));
   $("s-mdtheirs").setAttribute("aria-checked", String(s.mdtheirs !== false));
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
@@ -1779,13 +1833,14 @@ function outputs() {
   $("o-topk").textContent = $("s-topk").value;
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
   $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v] : "";
+  const sh = [...$("s-show").children].find((b) => b.getAttribute("aria-checked") === "true");
+  $("o-show").textContent = sh ? {folded: "closed, click to read", live: "open while it happens (default)",
+                                  always: "open, and stays open"}[sh.dataset.v] : "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
-$("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
-$("s-openthink").onclick = () => $("s-openthink").setAttribute("aria-checked", String($("s-openthink").getAttribute("aria-checked") !== "true"));
-$("s-opentools").onclick = () => $("s-opentools").setAttribute("aria-checked", String($("s-opentools").getAttribute("aria-checked") !== "true"));
+for (const b of $("s-show").children) b.onclick = () => { for (const x of $("s-show").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 $("s-mdmine").onclick = () => $("s-mdmine").setAttribute("aria-checked", String($("s-mdmine").getAttribute("aria-checked") !== "true"));
 $("s-mdtheirs").onclick = () => $("s-mdtheirs").setAttribute("aria-checked", String($("s-mdtheirs").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
@@ -1805,12 +1860,14 @@ $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($(
 // read through this, so the two can never drift apart (the same reason toolSync compares against toolHtml's
 // helpers rather than re-deriving the strings).
 function drawerSettings() {
-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
+  // the two segmented controls (Thinking, Show thinking) are read the same way; `on` is for the switches
+  const seg = (id, d) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true");
+                           return b ? b.dataset.v : d; };
   const on = (id) => $(id).getAttribute("aria-checked") === "true";
-  return {thinking: sel ? sel.dataset.v : DEFAULTS.thinking, temperature: +$("s-temp").value,
+  return {thinking: seg("s-thinking", DEFAULTS.thinking), temperature: +$("s-temp").value,
           top_p: +$("s-topp").value, top_k: +$("s-topk").value, max: $("s-max").value.trim(),
-          seed: $("s-seed").value.trim(), show: on("s-show"), openthink: on("s-openthink"),
-          opentools: on("s-opentools"), mdmine: on("s-mdmine"), mdtheirs: on("s-mdtheirs"),
+          seed: $("s-seed").value.trim(), show: seg("s-show", DEFAULTS.show),
+          mdmine: on("s-mdmine"), mdtheirs: on("s-mdtheirs"),
           esp: on("s-esp"), mcp: on("s-mcp"), mcpthink: on("s-mcpthink")};
 }
 // only Apply writes, so closing the panel with switches changed throws the changes away.  The share switch is

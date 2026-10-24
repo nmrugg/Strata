@@ -202,7 +202,7 @@ function run(hooks, stored, seed) {
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
-    "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
+    "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
                fetches, flush: () => { while (raf.length) raf.shift()(); }};
@@ -510,43 +510,53 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(holds().length, 0, "ending twice does not throw and does not double-remove");
   done.push("leave warning: on while a request runs, off when it ends, none on an idle page");
 
-  // 22. "Keep thinking open" (todo #3): the setting drives the details' open attribute - for a finished answer,
-  // for one still streaming, and for a chat re-rendered later (renderChat builds each message with msgEl) - and
-  // a block the user opened or closed themselves is still left alone.
+  // 22. "Show thinking" (todo #3, now one three-way control with the calls): "folded" | "live" | "always".
+  // The setting drives the details' open attribute - for a finished answer, for one still streaming, and for a
+  // chat re-rendered later (renderChat builds each message with msgEl) - and a block the user opened or closed
+  // themselves is still left alone.
   const th = run({}, {});
   await wait();
   const thinkMsg = (m) => th.s.msgEl(m, 0);      // msgEl renders an assistant message exactly as renderChat does
   const detOf = (el, n = 0) => el.querySelector(".st-bubble")._blocks[n].el;   // thinking is a part of the bubble now
-  assert.strictEqual(th.s.settings.openthink, false, "off is the default");
+  assert.strictEqual(th.s.settings.show, "live", "the default is the middle one, fold when done");
   let done1 = thinkMsg({role: "assistant", text: "the answer", reasoning: "why it answered", time: Date.now()});
-  assert.notStrictEqual(detOf(done1).open, true, "off: the thinking of a finished answer stays closed");
-  th.s.setSettings({openthink: true});
+  assert.notStrictEqual(detOf(done1).open, true, "live: the thinking of a finished answer stays closed");
+  th.s.setSettings({show: "always"});
   done1 = thinkMsg({role: "assistant", text: "the answer", reasoning: "why it answered", time: Date.now()});
-  assert.strictEqual(detOf(done1).open, true, "on: it is open, answer already written");
+  assert.strictEqual(detOf(done1).open, true, "always: it is open, answer already written");
   assert.strictEqual(detOf(done1).querySelector(".thinking").textContent, "why it answered", "and its text is filled in");
   const live = {role: "assistant", text: "", reasoning: "still going", time: Date.now()};
   const liveEl = th.s.msgEl(live, 0);
   th.s.updateAssistant(liveEl, live, true);
-  assert.strictEqual(detOf(liveEl).open, true, "on: open while it streams too");
+  assert.strictEqual(detOf(liveEl).open, true, "always: open while it streams too");
   detOf(liveEl).dataset.touched = "1";                     // the user clicked the block itself
   detOf(liveEl).open = false;
   th.s.updateAssistant(liveEl, live, true);
   assert.strictEqual(detOf(liveEl).open, false, "the page does not fight a click the user made");
-  // with the switch off, the two existing rules are untouched: "Show thinking" opens it while it streams and
-  // closes it when the answer starts
-  const showOff = run({}, {});
+  // "live" opens the run that is streaming and folds it when the answer starts - the old default, named
+  const showLive = run({}, {});
   await wait();
   const showMsg = {role: "assistant", text: "", reasoning: "still going", time: Date.now()};
-  const showEl = showOff.s.msgEl(showMsg, 0);
-  showOff.s.updateAssistant(showEl, showMsg, true);
-  assert.strictEqual(detOf(showEl).open, true, "show: true opens it while it streams, as before");
-  showOff.s.updateAssistant(showEl, {...showMsg, text: "the answer"}, false);
-  assert.strictEqual(detOf(showEl).open, false, "and closes it when the answer starts, as before");
-  done.push("thinking: 'keep thinking open' drives the open attribute; off by default; a user click wins");
+  const showEl = showLive.s.msgEl(showMsg, 0);
+  showLive.s.updateAssistant(showEl, showMsg, true);
+  assert.strictEqual(detOf(showEl).open, true, "live: open while it streams");
+  showLive.s.updateAssistant(showEl, {...showMsg, text: "the answer"}, false);
+  assert.strictEqual(detOf(showEl).open, false, "and closed when the answer starts");
+  // "folded" opens nothing, even mid-stream
+  const showFold = run({}, {});
+  await wait();
+  showFold.s.setSettings({show: "folded"});
+  const foldEl = showFold.s.msgEl({...showMsg, text: ""}, 0);
+  showFold.s.updateAssistant(foldEl, {...showMsg, text: ""}, true);
+  assert.strictEqual(detOf(foldEl).open, false, "folded: closed while it streams");
+  assert.strictEqual(detOf(foldEl).querySelector(".think-preview").textContent, "still going",
+                     "but its one-line preview is still there, so the reader knows what is behind the click");
+  done.push("thinking: Show thinking folded/live/always drives the open attribute; live is the default; a user click wins");
 
-  // 23. "Keep tool calls open" (todo #4): a tool block nobody has clicked follows the switch; once one is
-  // clicked, that choice wins in both directions.  The body (arguments, the result as the model read it) is only
-  // built while the block is open, so "not open" is checked by its absence, not by the preview line.
+  // 23. the same control for the calls (todo #4, folded into Show thinking): a tool block nobody has clicked
+  // follows it; once one is clicked, that choice wins for the rest of the turn.  The body (arguments, the
+  // result as the model read it) is only built while the block is open, so "not open" is checked by its
+  // absence, not by the preview line.
   const toolHtmlOf = (m) => too.s.toolHtml(m.tools[0], 0);
   const isOpen = (m) => toolHtmlOf(m).includes('data-tool="0" data-state="done" open');
   const bodyShown = (m) => toolHtmlOf(m).includes("<pre class=\"tool-call__pre tool-call__pre-result\">the result</pre>");
@@ -554,24 +564,27 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
                           tools: [{id: "t1", name: "x", state: "done", at: 6, result: "the result", round: 0}]});
   const too = run({}, {});
   await wait();
-  assert.strictEqual(too.s.settings.opentools, false, "off is the default");
+  assert.strictEqual(too.s.settings.show, "live", "the default is the middle one");
   let tm = toolMsg();
-  assert.ok(!isOpen(tm), "off: the block is closed");
+  assert.ok(!isOpen(tm), "live: a call that is already done is closed");
   assert.ok(!bodyShown(tm), "and its body is not built");
-  too.s.setSettings({opentools: true});
+  too.s.setSettings({show: "always"});
   tm = toolMsg();
-  assert.ok(isOpen(tm), "on: nobody has clicked it, so it is open");
+  assert.ok(isOpen(tm), "always: nobody has clicked it, so it is open");
   assert.ok(bodyShown(tm), "and the result the model read is shown");
+  too.s.setSettings({show: "folded"});
+  tm = toolMsg();
+  assert.ok(!isOpen(tm), "folded: closed even though it is finished and readable");
   tm.tools[0].open = !too.s.toolOpen(tm.tools[0]);          // what a click records now (see 24)
-  assert.ok(!isOpen(tm), "a click closes it, switch aside");
+  assert.ok(isOpen(tm), "a click opens it, control aside");
   tm.tools[0].open = !too.s.toolOpen(tm.tools[0]);
-  assert.ok(isOpen(tm), "and the next click opens it again");
-  const tooOff = run({}, {});
+  assert.ok(!isOpen(tm), "and the next click closes it again");
+  const tooLive = run({}, {});
   await wait();
-  const tmOff = toolMsg();
-  tmOff.tools[0].open = !tooOff.s.toolOpen(tmOff.tools[0]);
-  assert.ok(isOpen(tmOff), "off: a click still opens it, as before");
-  done.push("tool calls: 'keep tool calls open' opens an untouched block; after a click the click decides");
+  const tmLive = toolMsg();
+  tmLive.tools[0].open = !tooLive.s.toolOpen(tmLive.tools[0]);
+  assert.ok(isOpen(tmLive), "live: a click still opens a settled call");
+  done.push("tool calls: Show thinking folded/live/always decides an untouched block; after a click the click decides");
 
   // 24. opening and closing a tool block while the engine writes (todo #8).  The answer's bubble is rewritten
   // every frame, so a click handler that prevented the browser's own opening and asked for a rebuild lost the
@@ -658,7 +671,12 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(det.querySelector(".st-badge").textContent, "Running", "the badge follows the state");
   assert.strictEqual(det.querySelector(".tool-call__name"), nameSpan, "with the elements untouched");
   const box = det.querySelector(".st-collapse__body");
-  assert.ok((box._html || "").includes("a.txt"), "opening it built the body, with the arguments");
+  // the block was open from the frame it was made (the default is "live" and this call is being written), so
+  // its body was built then and the arguments arrive by text afterwards - which is the point of the parts
+  // machinery.  box._html is the first build; the live text is what the reader actually sees.
+  const preArgs = box.querySelector(".tool-call__pre-args");
+  assert.strictEqual(preArgs.textContent, JSON.stringify({path: "a.txt"}, null, 2),
+                     "the open block shows the arguments, written as text into the element it was built with");
   assert.ok(!(box._html || "").includes("tool-call__pre-result"), "and there was no result to show yet");
   Object.assign(rm.tools[0], {state: "done", result: "the file", chars: 8, ok: true, ms: 412});
   rp.s.updateAssistant(rel, rm, true);
@@ -863,11 +881,11 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   sbody.scrollTop = 1200 - 420 - 30;                    // 30px off the bottom: still "at" it
   sc.s.updateAssistant(sels, smsg, true);
   assert.strictEqual(sbody.scrollTop, 1200, "just off the bottom: it still follows");
-  // and a finished message is never dragged: a history block opened with "Keep thinking open" shows where you
+  // and a finished message is never dragged: a history block opened with "Show thinking: Always" shows where you
   // left it, not the end of the reasoning
   const o = run({}, {});
   await wait();
-  o.s.setSettings({openthink: true});
+  o.s.setSettings({show: "always"});
   const om = {role: "assistant", text: "the answer", reasoning: "what it thought", time: Date.now()};
   const oel = o.s.msgEl(om, 0);
   const ob = detOf(oel).querySelector(".thinking");
@@ -973,10 +991,16 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(gb._blocks.length, 2, "two thinking blocks, one per round");
   assert.strictEqual(gb.children.filter((c) => (c.className || "").includes("tool-call")).length, 2,
                      "both calls at the top level, readable without a click");
-  assert.strictEqual(gb._blocks[0].el.querySelector(".thinking").textContent, "first thought",
-                     "the run that streamed kept its text");
+  // "Show thinking: live" (the default) keeps a finished turn's thinking closed, so neither body is built -
+  // what each block shows is its one-line preview.  Opening one fills it, which is the next two assertions.
+  assert.strictEqual(gb._blocks[0].el.open, false, "live: a finished turn's thinking is closed");
+  assert.strictEqual(gb._blocks[0].el.querySelector(".think-preview").textContent, "first thought",
+                     "the run that streamed is still readable on the collapsed line");
   assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "", "the run that never streamed is empty");
-  gb._blocks[1].el.open = true;                                // a real details fires the toggle event itself
+  gb._blocks[0].el.open = true;                                // a real details fires the toggle event itself
+  assert.strictEqual(gb._blocks[0].el.querySelector(".thinking").textContent, "first thought",
+                     "opening the first fills it with its own slice");
+  gb._blocks[1].el.open = true;
   assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "\n\nsecond thought",
                      "and it fills with only that run's slice, not the whole reasoning");
   // a run's seconds are stamped only when the NEXT run starts, so the title has to catch up on a later paint
@@ -1194,7 +1218,8 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   // server sends the pieces only because the page asked (strata_mcp_args); here they are fed in as events.
   const aw = run({}, {});
   await wait();
-  aw.s.setSettings({opentools: true});                       // the body is only built while the block is open
+  // no setting needed: the default ("live") opens a call that is still being written, and the body is only
+  // built while the block is open
   const wm = {role: "assistant", text: "", reasoning: "", time: Date.now(), tools: []};
   const wel = aw.s.msgEl(wm, 0);
   aw.s.onTool(wm, {event: "start", id: "c1", name: "easyCMP__fs_write"});
@@ -1320,6 +1345,292 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   hv2.s.setTab("monitor");
   assert.strictEqual(hv2.s.pollDelay({live: {state: "idle"}}), 1000, "the Monitor's own cadence is unchanged");
   done.push("hover: the Monitor prefetches at once, throttled to one fetch per second");
+
+  // 45. "Show thinking: Fold when done" - one control, both kinds of block.  The want: the thinking and a tool
+  // call are open while they are happening, then close themselves once they are done.  Driven through the real
+  // paint path, one frame at a time, because the collapse only exists if a later paint re-decides the open
+  // attribute.  (The plain-answer half of this, where a fold needs the m.rts stamp send() writes, is cases 46
+  // and 47; here the fold comes from `cut`, a call landing at the end of the run.)
+  const af = run({}, {});
+  await wait();
+  assert.strictEqual(af.s.settings.show, "live", "the middle option is the default");
+  const am45 = {role: "assistant", text: "", reasoning: "", time: Date.now(), tools: []};
+  const ael45 = af.s.msgEl(am45, 0);
+  af.s.el("chat").appendChild(ael45);           // the toggle listener is on #chat, so the block must be under it
+  af.s.messages.length = 0; af.s.messages.push(am45);
+  af.s.updateAssistant(ael45, am45, true);
+  am45.reasoning = "let me read that";
+  af.s.updateAssistant(ael45, am45, true);
+  const ab45 = ael45.querySelector(".st-bubble");
+  const think45 = ab45._blocks[0].el;
+  assert.strictEqual(think45.open, true, "the thought is open while it is being thought");
+  af.s.onTool(am45, {event: "start", id: "c1", name: "easyCMP__fs_read"});
+  af.s.updateAssistant(ael45, am45, true);
+  const call45 = ab45._parts.find((p) => p.kind === "tool").el;
+  // the stub does not read data-* out of inserted HTML (case 24 builds its block by hand for the same reason),
+  // so give this one the attribute the real DOM would have parsed.  Then fire the toggle the page's own
+  // d.open = true produced - twice, because a browser queues the event and two paints can leave two in
+  // flight.  A consumed flag eats the first and reads the second as a click; a comparison eats both.
+  call45.dataset.tool = "0";
+  af.s.el("chat")._l["toggle"]({target: call45});
+  af.s.el("chat")._l["toggle"]({target: call45});
+  assert.strictEqual(am45.tools[0].open, undefined,
+                     "two of the page's own toggles are still not a click (this is what pinned the block open)");
+  assert.strictEqual(call45.open, true, "the call is open while the model writes it");
+  assert.strictEqual(think45.open, false, "and the thought that led to it folds: the model has already acted on it");
+  const box45 = call45.querySelector(".st-collapse__body");
+  const pre45 = box45.querySelector(".tool-call__pre-args");   // the body was built when the block opened
+  assert.ok(box45._html.includes("(being written)"), "built while writing, so the reader saw it being written");
+  af.s.onTool(am45, {event: "call", id: "c1", name: "easyCMP__fs_read", server: "easyCMP", tool: "fs_read",
+                     arguments: {path: "a.txt"}, round: 1});
+  af.s.updateAssistant(ael45, am45, true);
+  assert.strictEqual(call45.open, true, "still open while it runs");
+  assert.strictEqual(pre45.textContent, JSON.stringify({path: "a.txt"}, null, 2),
+                     "its arguments were written into the open block, so the reader saw them");
+  af.s.onTool(am45, {event: "result", id: "c1", text: "the file", ok: true, ms: 412});
+  am45.text = "here is the answer";
+  af.s.updateAssistant(ael45, am45, true);
+  assert.strictEqual(call45.open, false, "the call folds once the result is in");
+  assert.ok(!box45._hasResult,
+            "it folded in the frame the result landed, so the result body was never built - the summary line previews it");
+  call45.open = true;                                  // the reader clicks it back open
+  af.s.el("chat")._l["toggle"]({target: call45});      // the stub fires it through the parent; be explicit
+  assert.strictEqual(am45.tools[0].open, true, "that click is the reader's, not the page's");
+  assert.strictEqual(box45.querySelector(".tool-call__pre-result").textContent, "the file",
+                     "and opening it fills in the result, as it always did");
+  af.s.updateAssistant(ael45, am45, false);
+  assert.strictEqual(ab45._blocks[0].el.open, false, "the thought stays folded when the turn ends");
+  assert.strictEqual(call45.open, true, "and the reader's own open block is left open");
+  // a click still wins, in both directions, and is not overwritten by the fold
+  const af2 = run({}, {});
+  await wait();
+  af2.s.setSettings({show: "live"});
+  const bm45 = {role: "assistant", text: "", reasoning: "", time: Date.now(), tools: []};
+  const bel45 = af2.s.msgEl(bm45, 0);
+  af2.s.el("chat").appendChild(bel45);
+  af2.s.messages.length = 0; af2.s.messages.push(bm45);
+  af2.s.onTool(bm45, {event: "start", id: "c1", name: "easyCMP__fs_read"});
+  af2.s.updateAssistant(bel45, bm45, true);
+  const bd45 = bel45.querySelector(".st-bubble")._parts.find((p) => p.kind === "tool").el;
+  bd45.dataset.tool = "0";                             // as above: the stub does not parse data-* out of HTML
+  bd45.open = false;                                   // the reader closed it while it ran
+  af2.s.el("chat")._l["toggle"]({target: bd45});       // a real details fires it; the stub does too
+  assert.strictEqual(bm45.tools[0].open, false, "the page took the reader's choice");
+  af2.s.onTool(bm45, {event: "call", id: "c1", name: "easyCMP__fs_read", arguments: {}, round: 1});
+  af2.s.updateAssistant(bel45, bm45, true);
+  assert.strictEqual(bd45.open, false, "and the fold did not reopen it under them");
+  af2.s.onTool(bm45, {event: "result", id: "c1", text: "r", ok: true, ms: 10});
+  af2.s.updateAssistant(bel45, bm45, true);
+  assert.strictEqual(bd45.open, false, "still theirs when it settles");
+  // the plain answer case: with no tool calls there is no cut, so the thought folds on the first answer text.
+  // send() stamps m.rts[0] = 0 when the first reasoning token arrives; the harness feeds it the same way.
+  const pf = run({}, {});
+  await wait();
+  pf.s.setSettings({show: "live"});
+  const pm45 = {role: "assistant", text: "", reasoning: "", time: Date.now(), rts: [0]};
+  const pel45 = pf.s.msgEl(pm45, 0);
+  pf.s.el("chat").appendChild(pel45);
+  pf.s.messages.length = 0; pf.s.messages.push(pm45);
+  pf.s.updateAssistant(pel45, pm45, true);
+  pm45.reasoning = "a long thought about nothing much";
+  pf.s.updateAssistant(pel45, pm45, true);
+  const pb45 = pel45.querySelector(".st-bubble");
+  assert.strictEqual(pb45._blocks[0].el.open, true, "open while it is only thinking");
+  pm45.text = "the answer starts";
+  pf.s.updateAssistant(pel45, pm45, true);
+  assert.strictEqual(pb45._blocks[0].el.open, false, "and folded the moment the answer starts");
+  pm45.reasoning += " then thinks again";
+  pf.s.updateAssistant(pel45, pm45, true);
+  assert.strictEqual(pb45._blocks[0].el.open, false, "a thought after the answer stays folded (its stamp is 0)");
+  // no stamp at all (a chat from before this existed, or a stream that never stamped one): the fold does not
+  // guess, and the old rule still holds - the live run stays open while the turn streams
+  const ns = run({}, {});
+  await wait();
+  ns.s.setSettings({show: "live"});
+  const nm45 = {role: "assistant", text: "already writing", reasoning: "still thinking", time: Date.now()};
+  const nel45 = ns.s.msgEl(nm45, 0);
+  ns.s.el("chat").appendChild(nel45);
+  ns.s.messages.length = 0; ns.s.messages.push(nm45);
+  ns.s.updateAssistant(nel45, nm45, true);
+  const nb45 = nel45.querySelector(".st-bubble");
+  assert.strictEqual(nb45._blocks[0].el.open, true, "no stamp, no fold by the text rule: it follows 'Show thinking'");
+  // the tripwire again: m.rts is numbers only, and the replay must be byte for byte what it was
+  const trip = {role: "assistant", text: "beforeafter", reasoning: "thought", time: Date.now(), rts: [0],
+                tools: [{id: "c1", name: "x", state: "done", at: 6, rat: 7, result: "r", round: 0}]};
+  assert.strictEqual(JSON.stringify(ns.s.assistantMessages(trip, true)), JSON.stringify([
+    {role: "assistant", content: "before", tool_calls: [{id: "c1", type: "function",
+        function: {name: "x", arguments: "{}"}}], reasoning_content: "thought"},
+    {role: "tool", tool_call_id: "c1", content: "r"},
+    {role: "assistant", content: "after"}]), "m.rts changes nothing about what goes back to the server");
+  // the same for a thinking block the reader opened by hand
+  const cm45 = {role: "assistant", text: "", reasoning: "a thought", time: Date.now()};
+  const cel45 = af2.s.msgEl(cm45, 0);
+  af2.s.el("chat").appendChild(cel45);
+  af2.s.messages.length = 0; af2.s.messages.push(cm45);
+  af2.s.updateAssistant(cel45, cm45, true);
+  const cd45 = cel45.querySelector(".st-bubble")._blocks[0].el;
+  assert.strictEqual(cd45.open, true, "open while it streams");
+  cd45.open = false;
+  af2.s.el("chat")._l["toggle"]({target: cd45});
+  assert.strictEqual(cd45.dataset.touched, "1", "marked as the reader's own");
+  cm45.reasoning += " and more";
+  af2.s.updateAssistant(cel45, cm45, true);
+  assert.strictEqual(cd45.open, false, "the page does not fight that click, the control aside");
+  // all three options, on the same finished message, both kinds of block
+  const af3 = run({}, {});
+  await wait();
+  const dm45 = {role: "assistant", text: "answer", reasoning: "thought", time: Date.now(),
+                tools: [{id: "c1", name: "x", state: "done", at: 6, result: "r", round: 0}]};
+  const db45 = af3.s.msgEl(dm45, 0).querySelector(".st-bubble");
+  assert.strictEqual(db45._blocks[0].el.open, false, "live: a finished thought stays closed");
+  assert.ok(!db45._parts.find((p) => p.kind === "tool").el._html.includes('data-state="done" open'), "live: the call is closed");
+  af3.s.setSettings({show: "always"});
+  const eb45 = af3.s.msgEl(dm45, 0).querySelector(".st-bubble");
+  assert.strictEqual(eb45._blocks[0].el.open, true, "always: the thought is open");
+  assert.ok(eb45._parts.find((p) => p.kind === "tool").el._html.includes('data-state="done" open'),
+            "always: and so is the call, with its body");
+  af3.s.setSettings({show: "folded"});
+  const fb45 = af3.s.msgEl(dm45, 0).querySelector(".st-bubble");
+  assert.strictEqual(fb45._blocks[0].el.open, false, "folded: the thought is closed");
+  assert.ok(!fb45._parts.find((p) => p.kind === "tool").el._html.includes('data-state="done" open'),
+            "folded: and the call is closed even though it is finished and readable");
+  done.push("fold: thinking and tool calls open while they happen and close when they settle; a click still wins");
+
+  // 46. the fold driven through send(), not by hand.  Case 45 feeds the page message objects; this one streams,
+  // so it also covers what send() does on the way: the m.rts stamp that tells a later paint where a thinking
+  // run began in the answer text.  Without that line the plain answer case never folds, and a test that sets
+  // rts itself cannot see it missing (LESSONS.md: a test that calls the function instead of driving the wired
+  // control passes on code that is not wired at all).  Same frame queue as case 37: one step per frame.
+  const ctl46 = {step: null, flush: null}, q46 = [];
+  const read46 = () => new Promise((res) => {
+    ctl46.step = () => {
+      if (ctl46.flush) ctl46.flush();               // paint first, as one animation frame would
+      res(q46.length ? {done: false, value: new TextEncoder().encode(q46.shift())} : {done: true});
+    };
+  });
+  const sd = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: read46})}})}, {});
+  await wait();
+  ctl46.flush = sd.flush;
+  sd.s.setSettings({show: "live"});
+  // the row is found by its class and index rather than by position: send() also wrote the user's message, and
+  // the stub's msgEl returns a fresh object each time, so a captured child would not be the row being painted
+  const rowOf46 = () => sd.s.el("chat").children.find((c) => c.className.includes("st-msg--assistant"));
+  q46.push(frame({choices: [{delta: {reasoning_content: "a thought"}}]}),
+         frame({choices: [{delta: {content: "the answer"}}]}));
+  sd.s.el("input").value = "a question";
+  const settled46 = sd.s.send();                     // not awaited: the stream is still open
+  await wait();                                      // the fetch resolves and the first read is armed
+  ctl46.step(); await wait(); sd.flush();            // the thinking chunk, then the frame it scheduled
+  const am46 = sd.s.messages[1];
+  assert.deepStrictEqual(am46.rts, [0], "send() stamped where the first thinking run began: no answer text yet");
+  assert.strictEqual(am46.text, "", "and only thinking has arrived so far");
+  const ab46 = rowOf46().querySelector(".st-bubble");
+  assert.strictEqual(ab46._blocks.length, 1, "the thinking block is a part of the bubble");
+  assert.strictEqual(ab46._blocks[0].el.open, true, "so the thought is open on screen");
+  ctl46.step(); await wait(); sd.flush();            // the first content frame
+  assert.strictEqual(rowOf46().querySelector(".st-bubble")._blocks[0].el.open, false,
+                     "the answer arrives and the thought folds, mid-stream");
+  ctl46.step(); await wait(); sd.flush();            // end of stream
+  await settled46;
+  assert.strictEqual(rowOf46().querySelector(".st-bubble")._blocks[0].el.open, false,
+                     "and stays folded when the turn ends");
+  assert.strictEqual(am46.reasoning, "a thought", "the reasoning itself is untouched");
+  assert.strictEqual(sd.s.apiMessages()[1].content, "the answer", "and the prompt carries the answer as usual");
+  done.push("fold: driven through send() - the stamp lands, and the thought folds when the answer starts");
+
+  // 47. the second stamp: a thought that begins AFTER a tool round is stamped with the answer text that already
+  // existed, so it folds when the model writes again and not before.  Without the index (a plain [0]) the second
+  // thought would fold the instant it opened, because text.length is already past 0.
+  const q47 = [];
+  const ctl47 = {step: null};
+  const read47 = () => new Promise((res) => { ctl47.step = () => {
+    if (ctl47.flush) ctl47.flush();
+    res(q47.length ? {done: false, value: new TextEncoder().encode(q47.shift())} : {done: true});
+  }; });
+  const s2 = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: read47})}})}, {});
+  await wait();
+  ctl47.flush = s2.flush;
+  s2.s.setSettings({show: "live"});
+  const row47 = () => s2.s.el("chat").children.find((c) => c.className.includes("st-msg--assistant"));
+  q47.push(frame({choices: [{delta: {reasoning_content: "first thought"}}]}),
+         frame({choices: [{delta: {content: "I will read it"}}]}),
+         frame({strata_mcp: {event: "start", id: "c1", name: "x"}}),
+         frame({strata_mcp: {event: "call", id: "c1", name: "x", server: "easyCMP", tool: "x",
+                             arguments: {}, round: 0}}),
+         frame({strata_mcp: {event: "result", id: "c1", text: "r", ok: true, ms: 5}}),
+         frame({choices: [{delta: {reasoning_content: "second thought"}}]}),
+         frame({choices: [{delta: {content: " the answer"}}]}));
+  s2.s.el("input").value = "go";
+  const settled47 = s2.s.send();
+  await wait();
+  for (let i = 0; i < 6; i++) { ctl47.step(); await wait(); s2.flush(); }   // through the second thought
+  const am47 = s2.s.messages[1];
+  assert.deepStrictEqual(am47.rts, [0, "I will read it".length],
+                         "run 0 stamped at 0, run 1 at the text that existed when it began");
+  const rb47 = row47().querySelector(".st-bubble");
+  assert.strictEqual(rb47._blocks[1].el.open, true, "the second thought is open: nothing has been written since it began");
+  assert.strictEqual(rb47._blocks[0].el.open, false, "and the first is folded: a call cut it");
+  ctl47.step(); await wait(); s2.flush();           // the answer resumes
+  const rb47b = row47().querySelector(".st-bubble");
+  assert.strictEqual(rb47b._blocks[1].el.open, false, "the second thought folds once the text grows past its stamp");
+  assert.strictEqual(am47.reasoning, "first thought\n\nsecond thought", "the reasoning is exactly as before");
+  ctl47.step(); await wait();                       // one step past the last frame: the stream ends
+  await settled47;
+  done.push("fold: a thought after a tool round folds on the next text, not the moment it opens");
+
+  // 49. the four old switches become one control.  A browser that has "sampling" stored from the old page has
+  // show/openthink/opentools/autofold as booleans; migrateShow maps them once on load, so the drawer shows the
+  // right position and the page behaves as it did, rather than the saved true/false deciding how a three-way
+  // control looks.  A new object (show already a word) passes through untouched.
+  const stored = (sampling) => run({}, {"strata.sampling": JSON.stringify(sampling)});
+  const old_default = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "",
+                       show: true, openthink: false, opentools: false, mdmine: false, mdtheirs: true,
+                       esp: true, mcp: true, mcpthink: false};        // the page before the fold switch existed
+  const m1 = stored(old_default); await wait();
+  assert.strictEqual(m1.s.settings.show, "live", "the old default (thinking open while it streams) is 'live'");
+  assert.strictEqual("openthink" in m1.s.settings, false, "and the old keys are gone, not left behind");
+  const m2 = stored({...old_default, autofold: true}); await wait();
+  assert.strictEqual(m2.s.settings.show, "live", "the fold switch from earlier today maps to 'live'");
+  const m3 = stored({...old_default, opentools: true}); await wait();
+  assert.strictEqual(m3.s.settings.show, "always", "'keep tool calls open' maps to 'always'");
+  const m4 = stored({...old_default, openthink: true}); await wait();
+  assert.strictEqual(m4.s.settings.show, "always", "'keep thinking open' maps to 'always' too - the same answer");
+  const m4b = stored({...old_default, opentools: true, autofold: true}); await wait();
+  assert.strictEqual(m4b.s.settings.show, "live",
+                     "both on: the fold wins over keep-open, the precedence that already applied to them");
+  const m5 = stored({...old_default, show: false}); await wait();
+  assert.strictEqual(m5.s.settings.show, "folded", "'Show thinking' off maps to 'folded'");
+  const m6 = stored({...old_default, show: "always"}); await wait();
+  assert.strictEqual(m6.s.settings.show, "always", "a new-style object passes straight through");
+  // and the mapped value is what the page acts on, not just what the setting says
+  const m7 = stored({...old_default, autofold: true}); await wait();
+  const mm7 = {role: "assistant", text: "answer", reasoning: "thought", time: Date.now(), rts: [0],
+               tools: [{id: "c1", name: "x", state: "done", at: 6, result: "r", round: 0}]};
+  const mb7 = m7.s.msgEl(mm7, 0).querySelector(".st-bubble");
+  assert.strictEqual(mb7._blocks[0].el.open, false, "the migrated setting still folds a finished thought");
+  assert.ok(!mb7._parts.find((p) => p.kind === "tool").el._html.includes('data-state="done" open'),
+            "and a finished call, exactly as the old autofold switch did");
+  // the drawer shows it: three options, and Apply writes the word back.  The options are not clicked here:
+  // the stub has no parse-time children, so app.js's "for (const b of children) b.onclick = ..." loop finds
+  // nothing to attach to (the same limit s-thinking has always had).  Setting aria-checked is what case 29 does
+  // for a switch, and it drives the same read path - drawerSettings, drawerDirty and Apply.
+  const m8 = stored({...old_default, opentools: true}); await wait();
+  const seg = m8.s.el("s-show");
+  // build the three options the browser would have parsed, then let the page read them itself
+  seg.children = ["folded", "live", "always"].map((v) => { const e = makeEl(); e.dataset.v = v; e._parent = seg; return e; });
+  m8.s.loadDrawer(m8.s.settings);                   // the same call openDrawer makes
+  assert.deepStrictEqual(seg.children.map((b) => b.attrs["aria-checked"]), ["false", "false", "true"],
+                         "the page itself shows the migrated answer, and there are three options not four switches");
+  assert.strictEqual(m8.s.drawerDirty(), false, "opening the panel with a migrated object changes nothing");
+  for (const b of seg.children) b.setAttribute("aria-checked", String(b.dataset.v === "live"));
+  assert.strictEqual(m8.s.drawerDirty(), true, "moving it is an unapplied change like any other");
+  assert.strictEqual(m8.s.drawerSettings().show, "live", "and drawerSettings reads the control, not the old keys");
+  await m8.s.el("s-apply").onclick();
+  assert.strictEqual(JSON.parse(m8.stored["strata.sampling"]).show, "live", "Apply writes the word");
+  assert.strictEqual("autofold" in JSON.parse(m8.stored["strata.sampling"]), false, "and writes no old key");
+  const m9 = run({}, {}); await wait();
+  assert.strictEqual(m9.s.settings.show, "live", "a browser with nothing stored gets the default");
+  done.push("settings: the four old switches map to folded/live/always once on load, and the drawer shows it");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

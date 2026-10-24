@@ -239,14 +239,16 @@
       <label class="st-label" for="s-seed">Seed <output>empty = random</output></label>
       <input class="st-input" id="s-seed" type="number" min="1" step="1" placeholder="Random">
     </div>
-    <div class="toggle-row"><span>Show thinking<br><span class="muted small">expanded while it streams</span></span>
-      <button class="st-toggle" id="s-show" role="switch" aria-checked="true" aria-label="Show thinking"></button></div>
-    <div class="toggle-row"><span>Keep thinking open<br><span class="muted small">open always, not only while it
-      streams</span></span>
-      <button class="st-toggle" id="s-openthink" role="switch" aria-checked="false" aria-label="Keep thinking open"></button></div>
-    <div class="toggle-row"><span>Keep tool calls open<br><span class="muted small">their arguments and results, open
-      as they arrive</span></span>
-      <button class="st-toggle" id="s-opentools" role="switch" aria-checked="false" aria-label="Keep tool calls open"></button></div>
+    <div class="st-field">
+      <label class="st-label" for="s-show">Show thinking <output id="o-show"></output></label>
+      <div class="seg" id="s-show" role="radiogroup" aria-label="Show thinking">
+        <button type="button" role="radio" data-v="folded">Folded</button>
+        <button type="button" role="radio" data-v="live">Fold when done</button>
+        <button type="button" role="radio" data-v="always">Always</button>
+      </div>
+      <span class="muted small">the thinking and the tool calls: never open, open while they happen and close
+        when they are done, or stay open. A block you open or close by hand is left alone for that turn</span>
+    </div>
     <div class="toggle-row"><span>Format the model's messages<br><span class="muted small">on: bold, lists, code
       fences. off: exactly the characters it wrote</span></span>
       <button class="st-toggle" id="s-mdtheirs" role="switch" aria-checked="true" aria-label="Render the model's messages as markdown"></button></div>
