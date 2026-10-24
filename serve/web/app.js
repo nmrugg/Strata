@@ -685,9 +685,14 @@ function chatTitle(c) {
   return first.split("\n")[0].trim().slice(0, TITLE_MAX) || "New chat";
 }
 
-// pictures are kept as their names only: a data URL would fill the browser's storage
+// A tool block's open/closed click is display state, not conversation, and it used to be saved with the chat -
+// which is why one tap pinned a call open through every reload after it.  cleanMessages drops it on the way
+// out; this drops it on the way in, for records an older page already wrote.  Only the tool's open field is
+// touched: a very old record that still carries a picture's data URL is left exactly as it is.
+const dropToolOpen = (list) => list.map((m) => (m && m.tools ? {...m, tools: m.tools.map((t) => ({...t, open: undefined}))} : m));
 const cleanMessages = (list) => list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                                  files: (m.files || []).map((f) => ({name: f.name}))}));
+                                                  files: (m.files || []).map((f) => ({name: f.name})),
+                                                  tools: (m.tools || []).map((t) => ({...t, open: undefined}))}));
 const cleanChat = (c) => ({...c, messages: cleanMessages(c.messages)});
 
 let historyOn = store.get("history", false);
@@ -761,8 +766,11 @@ function dropChat(c) { dropRecord(c); renderSidebar(); }
 async function openHistory(fromScreen) {
   db = await openDb();
   chats = db ? await allChats() : [];
+  // a tool block's open/closed click is display state, not conversation, and an older page saved it with the
+  // chat (see dropToolOpen).  Stripped where the records arrive, in place: the array from getAll is ours.
+  for (const c of chats) c.messages = dropToolOpen(c.messages || []);
   if (!chats.length) {
-    const old = fromScreen ? messages : store.get("chat", []);          // the single chat from before the sidebar
+    const old = fromScreen ? messages : dropToolOpen(store.get("chat", []));   // the single chat from before the sidebar
     if (old.length) {
       const c = {...newChat(), messages: old, time: old[old.length - 1].time || Date.now()};
       chats = [c];
@@ -1599,6 +1607,10 @@ async function send() {
     m.meta = "Stopped";
   }
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
+  // a click on a tool block holds for the turn and no further (todo #46): the open choice is
+  // dropped here, before the final paint below re-decides it from "Show thinking", and cleanMessages keeps it
+  // out of the saved record.  A click on a finished message's block still holds until the chat is redrawn.
+  for (const t of m.tools || []) delete t.open;
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;

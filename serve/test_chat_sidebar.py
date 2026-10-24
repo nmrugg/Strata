@@ -294,6 +294,30 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn("repeat(4", seg_rule)
         self.assertIn(".seg button { flex: 1 1 0;", css)
 
+    def test_a_click_on_a_tool_block_holds_for_the_turn_only(self):
+        # the second half of the simplification: a block the reader opened used to keep that choice on the tool
+        # record, which was written into the chat - so one tap pinned a call open through every reload after it
+        # and no control could reclaim it.  A thinking block never did that, because its "the reader touched
+        # this" lives on the DOM element.  Now both are display state: dropped when the turn ends, and kept out
+        # of the record on the way out and on the way back in.
+        self.assertIn("for (const t of m.tools || []) delete t.open;", self.body("send"))
+        self.assertIn("tools: (m.tools || []).map((t) => ({...t, open: undefined}))", self.js)   # cleanMessages
+        self.assertIn("c.messages = dropToolOpen(c.messages || []);", self.body("openHistory"))  # records an
+        self.assertIn("fromScreen ? messages : dropToolOpen(store.get(\"chat\", []))",            # older page wrote
+            self.js)
+        self.assertIn("const dropToolOpen = (list) =>", self.js)
+        # and the page's own open/close must not be mistaken for the reader's.  This is a comparison, not a
+        # consumed flag: a browser queues the toggle event, so with two events in flight the first used to eat
+        # the flag and the second - the page's own change - was read as a click, which set t.open and meant the
+        # block never folded again until send() cleared it at the end of the turn.
+        self.assertIn("if (d.open !== open) d.open = open;", self.body("toolSync"))
+        toggle = re.search(r'\$\("chat"\)\.addEventListener\("toggle", \(e\) => \{(.*?)\n\}, true\);', self.js, re.S).group(1)
+        tool_branch = toggle.split('if (!d.classList.contains("think"))')[0]
+        self.assertIn("if (d.open === toolOpen(t)) return;", tool_branch)
+        self.assertNotIn("_auto", tool_branch)         # the thinking branch keeps its flag; this one must not
+        # m.md is still kept: the human chose that per message and asked for it to survive a reload
+        self.assertIn("m.md = !msgMd(m);", self.js)
+
     def test_the_fold_knows_when_a_thought_is_over(self):
         # "the last run while streaming" is not when a thought is over: while a tool round runs thinkRuns still
         # reports one run, so that rule would hold it open through the whole call.  Two signals say it is
@@ -360,7 +384,7 @@ class ChatSidebar(unittest.TestCase):
         # the bug reported on #1787: the single chat from before the switch must not be copied into an empty chat
         history = self.body("openHistory")
         self.assertIn("chats = db ? await allChats() : []", history)
-        self.assertIn("const old = fromScreen ? messages : store.get(\"chat\", [])", history)
+        self.assertIn("const old = fromScreen ? messages : dropToolOpen(store.get(\"chat\", []))", history)
 
     def test_turning_the_switch_off_keeps_the_chat_on_the_screen(self):
         # the single chat is written when the switch is flipped, otherwise a reload shows the chat from before it

@@ -114,7 +114,8 @@ function makeIdb(hooks, seed) {
       queueMicrotask(() => {
         if (hooks.quota) { req.error = {name: "QuotaExceededError"}; req.onerror && req.onerror(); return; }
         if (hooks.abort) return;                       // the transaction aborts, the request says nothing
-        data[value.id] = value; req.result = value; req.onsuccess && req.onsuccess();
+        // as on the read side: a real put structured-clones, so the record does not alias the page's object
+        data[value.id] = JSON.parse(JSON.stringify(value)); req.result = value; req.onsuccess && req.onsuccess();
       });
       return req;
     },
@@ -131,7 +132,11 @@ function makeIdb(hooks, seed) {
       const req = {result: null, error: null, transaction: current, onsuccess: null, onerror: null};
       queueMicrotask(() => {
         if (hooks.abort) return;                       // the transaction aborts, the request says nothing
-        req.result = Object.values(data); req.onsuccess && req.onsuccess();
+        // a real IndexedDB read structured-clones: the record and the object the page gets back are separate.
+        // Handing out the live objects made case 5 pass for the wrong reason - writing chats[0].title wrote the
+        // record by aliasing - so an app that stops mutating the object it read looked like a regression.
+        req.result = Object.values(data).map((v) => JSON.parse(JSON.stringify(v)));
+        req.onsuccess && req.onsuccess();
       });
       return req;
     },
@@ -272,7 +277,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   // 5. rename and delete go to the record
   const id = again.s.chats[0].id;
   again.s.chats[0].title = "renamed";
-  again.s.saveChat();
+  again.s.saveChat(again.s.chats[0]);            // the renamed chat, not whichever one is open
   await wait();
   assert.strictEqual(again.records[id].title, "renamed", "the name is in the record");
   again.s.deleteChat(again.s.chats[0]);
@@ -1577,6 +1582,73 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   ctl47.step(); await wait();                       // one step past the last frame: the stream ends
   await settled47;
   done.push("fold: a thought after a tool round folds on the next text, not the moment it opens");
+
+  // 48. a click on a tool block holds for the turn and no further.  It used to be kept on the tool record and
+  // written into the chat, so one tap pinned a call open through every reload after it - and no switch could
+  // reclaim it, because toolOpen short-circuits when t.open is set.  Now send() drops it when the turn ends and
+  // cleanMessages keeps it out of the record.  This is what makes the thinking and the calls behave the same
+  // way: a thinking block's "the reader touched this" always lived on the DOM element and so never survived.
+  const q48 = [];
+  const ctl48 = {step: null};
+  const read48 = () => new Promise((res) => { ctl48.step = () => {
+    if (ctl48.flush) ctl48.flush();
+    res(q48.length ? {done: false, value: new TextEncoder().encode(q48.shift())} : {done: true});
+  }; });
+  const s48 = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: read48})}})},
+                   {"strata.history": "true"}, {});
+  await wait();
+  ctl48.flush = s48.flush;
+  s48.s.setSettings({show: "folded"});                  // nothing opens by itself: only the reader's click does
+  const row48 = () => s48.s.el("chat").children.find((c) => c.className.includes("st-msg--assistant"));
+  q48.push(frame({choices:[{delta:{content:"I will read it"}}]}),
+         frame({strata_mcp:{event:"start",id:"c1",name:"x"}}),
+         frame({strata_mcp:{event:"call",id:"c1",name:"x",arguments:{a:1},round:0}}),
+         frame({strata_mcp:{event:"result",id:"c1",text:"the file",ok:true,ms:5}}));
+  s48.s.el("input").value = "go";
+  const settled48 = s48.s.send();
+  await wait();
+  for (let i = 0; i < 4; i++) { ctl48.step(); await wait(); s48.flush(); }   // the call finishes
+  let b48 = row48().querySelector(".st-bubble");
+  let t48 = b48._parts.find((p) => p.kind === "tool").el;
+  t48.dataset.tool = "0";
+  assert.strictEqual(t48.open, false, "folded: the finished call is closed");
+  t48.open = true; s48.s.el("chat")._l["toggle"]({target: t48});            // the reader opens it
+  assert.strictEqual(s48.s.messages[1].tools[0].open, true, "the click is recorded for now");
+  ctl48.step(); await wait();                                              // end of stream: the turn finishes
+  await settled48;
+  b48 = row48().querySelector(".st-bubble");
+  t48 = b48._parts.find((p) => p.kind === "tool").el;
+  assert.strictEqual(s48.s.messages[1].tools[0].open, undefined, "send() dropped the click with the turn");
+  assert.strictEqual(t48.open, false, "and the final paint closed the block again, per the control");
+  await wait();
+  const rec48 = Object.values(s48.records)[0];
+  assert.strictEqual(rec48.messages[1].tools[0].open, undefined, "and nothing about it reached the chat record");
+  // a chat saved by an older page can still carry open: true; a reload must ignore it, not obey it forever
+  const s49 = run({}, {"strata.history":"true","strata.chatId":JSON.stringify("A")},
+    {A:{id:"A",title:"a",time:Date.now(),messages:[
+      {role:"user",text:"go",time:Date.now()},
+      {role:"assistant",text:"the answer",reasoning:"a thought",time:Date.now(),rts:[0],
+       tools:[{id:"c1",name:"x",state:"done",at:0,rat:9,result:"the file",round:0,open:true}]}]}});
+  await wait();
+  s49.s.setSettings({show:"folded"});
+  const old49 = s49.s.el("chat").children.find((c)=>c.className.includes("st-msg--assistant"))
+                             .querySelector(".st-bubble");
+  assert.strictEqual(old49._parts.find((p)=>p.kind==="tool").el.open, false,
+                     "a stored open:true from the old page no longer pins the block");
+  assert.strictEqual(old49._blocks[0].el.open, false, "and the thinking agrees with it");
+  // and the write path strips it on its own, with no turn running: a block opened by hand on a FINISHED message
+  // has no send() to drop the choice, so cleanMessages is the only thing standing between it and the record.
+  s49.s.saveChat(s49.s.chat); await wait();
+  assert.strictEqual(s49.records["A"].messages[1].tools[0].open, undefined,
+                     "saving a chat an older page wrote cleans the stored open out of it");
+  const clicked49 = old49._parts.find((p)=>p.kind==="tool").el;
+  clicked49.dataset.tool = "0";
+  clicked49.open = true; s49.s.el("chat")._l["toggle"]({target: clicked49});
+  assert.strictEqual(s49.s.chat.messages[1].tools[0].open, true, "the click is recorded in memory, for this view");
+  s49.s.saveChat(s49.s.chat); await wait();
+  assert.strictEqual(s49.records["A"].messages[1].tools[0].open, undefined,
+                     "but it is not written out: the record stays free of display state");
+  done.push("fold: a click on a call holds for the turn only - it is not saved, and cannot pin the block open");
 
   // 49. the four old switches become one control.  A browser that has "sampling" stored from the old page has
   // show/openthink/opentools/autofold as booleans; migrateShow maps them once on load, so the drawer shows the
