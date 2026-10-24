@@ -172,14 +172,17 @@ function run(hooks, stored, seed) {
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
   const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
                removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); }};
-  const confirms = [], confirmAnswer = {yes: true}, copied = [];   // the page asks confirm() twice now: the tool-thinking
+  const confirms = [], confirmAnswer = {yes: true}, copied = [], raf = [];
+  // requestAnimationFrame is queued, not swallowed: a stream that never paints cannot be tested at all, and
+  // flush() gives a test the same "one paint per frame" interleaving the browser gives the page
   const env = {                                        // guard and the discard guard - record and answer both
     document, localStorage: {getItem: (k) => (k in stored ? stored[k] : null), setItem: (k, v) => { stored[k] = v; }},
     indexedDB: idb, location: {hash: "", pathname: "/", origin: "http://127.0.0.1"},
     history: {replaceState() {}}, matchMedia: () => ({matches: false, addEventListener() {}}),
     fetch: hooks.fetch || (async () => ({ok: true, json: async () => ({}), text: async () => ""})),
     confirm: (m) => { confirms.push(m); return confirmAnswer.yes; },
-    setTimeout: () => 0, clearTimeout: () => 0, requestAnimationFrame: () => 0,
+    setTimeout: () => 0, clearTimeout: () => 0,
+    requestAnimationFrame: (f) => { raf.push(f); return raf.length; }, cancelAnimationFrame: () => {},
     navigator: {clipboard: {writeText: async (t) => { copied.push(t); }}},   // what the page put on the clipboard
     innerWidth: 1200, innerHeight: 800, window: win, queueMicrotask,
   };
@@ -193,7 +196,9 @@ function run(hooks, stored, seed) {
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
-  return {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied};
+  const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
+               flush: () => { while (raf.length) raf.shift()(); }};
+  return api;
 }
 
 const wait = () => new Promise((r) => setTimeout(r, 30));
@@ -1084,6 +1089,52 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(cp.s.safeFileName("///"), "strata-chat", "a name with nothing left falls back");
   assert.strictEqual(cp.s.safeFileName(""), "strata-chat", "and an empty one does too");
   done.push("copy: plain, Shift (+thinking), Ctrl+Shift (everything); export named for the conversation");
+
+  // 37. switching conversations while one is answering (todo #9).  The turn writes into its own message object
+  // and paint() looks the row up each frame, so leaving and coming back neither loses the answer nor paints a
+  // detached node - and the finished turn is saved into ITS chat, not whichever one happens to be open.
+  const ctl = {step: null, flush: null}, sse = [];
+  const readFrame = () => new Promise((res) => {
+    ctl.step = () => {
+      if (ctl.flush) ctl.flush();                  // paint first, as one animation frame would
+      res(sse.length ? {done: false, value: new TextEncoder().encode(sse.shift())} : {done: true});
+    };
+  });
+  const sw = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: readFrame})}})},
+    {"strata.history": "true", "strata.chatId": JSON.stringify("A")},
+    {A: {id: "A", title: "chat A", time: Date.now(), messages: [msg("ask A")]},
+     B: {id: "B", title: "chat B", time: Date.now(), messages: [msg("ask B")]}});
+  await wait();
+  ctl.flush = sw.flush;
+  assert.strictEqual(sw.s.chatId, "A", "chat A is open");
+  const frame = (o) => "data: " + JSON.stringify(o) + "\n\n";
+  sse.push(frame({choices: [{delta: {reasoning_content: "thinking about it"}}]}), frame({choices: [{delta: {content: "first half"}}]}));
+  sw.s.el("input").value = "go";
+  const running = sw.s.send();                       // not awaited: the stream is still open
+  await wait();
+  ctl.step(); await wait();                          // the thinking frame
+  ctl.step(); await wait();                          // the first content frame
+  sw.s.openChat("B"); await wait();                  // switch away mid-answer
+  const chatA = sw.s.chats.find((c) => c.id === "A");
+  const turnOf = (c) => c.messages[c.messages.length - 1];        // ask A, my "go", then the assistant turn
+  sse.push(frame({choices: [{delta: {content: " and the rest"}}]}));
+  ctl.step(); await wait();
+  assert.strictEqual(turnOf(chatA).text, "first half and the rest", "the turn kept writing into its own chat");
+  assert.strictEqual(sw.s.chatId, "B", "and B is what is on screen");
+  assert.strictEqual(sw.s.el("chat").children.filter((e) => e.className.includes("st-msg")).length, 1,
+                     "B shows B's one message, not A's three");
+  sw.s.openChat("A"); await wait();                  // back: renderChat rebuilt every row
+  sse.push(frame({choices: [{delta: {content: " done"}}]}));
+  ctl.step(); await wait(); ctl.step(); await wait();  // the last frame, then the end (which paints first)
+  await running;
+  const htmlOf = (e) => [e._html || "", ...(e.children || []).map(htmlOf)].join("|");
+  assert.strictEqual(turnOf(chatA).text, "first half and the rest done", "the turn finished in chat A");
+  assert.ok(htmlOf(sw.s.el("chat")).includes("first half and the rest done"),
+            "paint found the rebuilt row and drew into it, not a detached node");
+  assert.strictEqual(sw.records["A"].messages[2].text, "first half and the rest done",
+                     "and it was saved into chat A's record");
+  assert.strictEqual(sw.records["B"].messages.length, 1, "chat B's record was never written to");
+  done.push("switching chats mid-answer: the turn keeps its conversation and paints the rebuilt row");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

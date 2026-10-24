@@ -682,10 +682,10 @@ async function openHistory(fromScreen) {
   if (!db) warnStorage("This browser will not keep IndexedDB; the list lives in memory until the page is closed.");
 }
 
-function saveChat() {
+function saveChat(c = chat) {
   if (!historyOn) { store.set("chat", cleanMessages(messages)); return; }   // off: one chat, as before
-  chat.time = Date.now();
-  putChat(chat);
+  c.time = Date.now();
+  putChat(c);                                       // the chat that owns the turn, which may not be the open one
 }
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
@@ -743,12 +743,12 @@ function showChat(c) {
   renderChat();
 }
 function openChat(id) {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  // no busy guard: the answer keeps streaming into its own message object, and paint() finds the row again when
+  // you come back, so reading another conversation mid-turn is safe (todo #9)
   const c = chats.find((x) => x.id === id);
   if (c) showChat(c);
 }
 function startChat() {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (!messages.length) { $("input").focus(); return; }        // already a fresh chat
   const prev = chatId;
   // one blank chat is as good as another: making a second one only fills the list with rows that all say
@@ -769,7 +769,7 @@ function startChat() {
         {label: "Undo", run: () => openChat(prev)});
 }
 function deleteChat(c) {
-  if (busy && c.id === chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (busy && c.id === busy.chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
   if (i < 0) return;                                // the list only ever passes a chat it holds
   chats.splice(i, 1);
@@ -1200,6 +1200,16 @@ function renderChat() {
   if (historyOn) renderSidebar();                   // the name in the list follows the first question
   scrollDown(true);
 }
+// the row for a message in the chat currently on screen.  send() used to capture one element and paint into it
+// for the whole turn, which broke the moment the chat was re-rendered - renderChat() removes every .st-msg, so
+// the stream kept painting a detached node and the answer vanished (LESSONS.md, "Four traps in that same render
+// path", trap 1).  Resolving it each frame is what makes switching chats safe.
+function rowOf(m) {
+  const i = messages.indexOf(m);                    // -1 when a different chat is on screen: nothing to paint
+  if (i < 0) return null;
+  // +e.dataset.i: dataset values are text in a real DOM and numbers in the stub; neither should matter
+  return Array.from($("chat").children).find((e) => +e.dataset.i === i) || null;
+}
 // how far from the bottom of a scroll container still counts as "at the bottom"
 const nearEnd = (s, px) => s.scrollHeight - s.scrollTop - s.clientHeight < px;
 function nearBottom() { return nearEnd($("chat-scroll"), 120); }
@@ -1343,9 +1353,8 @@ async function send() {
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
-  const el = $("chat").lastElementChild;
   const controller = new AbortController();
-  busy = {controller, msg: m};
+  busy = {controller, msg: m, chat, chatId};      // which conversation this turn belongs to, not which is open
   setBusy(true);
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
@@ -1365,7 +1374,9 @@ async function send() {
   }
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
-  const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
+  // the row is looked up every frame: switching chats rebuilds them, and a captured node would keep painting a
+  // detached element.  No row means another chat is on screen - the turn keeps running, it just does not paint.
+  const paint = () => { frame = 0; const el = rowOf(m); if (el) { updateAssistant(el, m, true); scrollDown(); } };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -1433,12 +1444,13 @@ async function send() {
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  const turn = busy;                                // which conversation this turn belonged to
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
-  updateAssistant(el, m, false);
-  saveChat();
-  scrollDown();
+  const fin = rowOf(m);
+  if (fin) { updateAssistant(fin, m, false); scrollDown(); }
+  saveChat(turn.chat);                              // write it into ITS chat, not whichever one is open now
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
@@ -1450,8 +1462,8 @@ function autosize() { const t = $("input"); t.style.height = "auto"; t.style.hei
 $("input").addEventListener("input", () => { autosize(); saveDraft(); });
 
 $("new-btn").onclick = () => {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (!historyOn) {                                   // off: the old behaviour, clear with an Undo
+    if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }   // one chat: this clears it
     if (!messages.length) return;
     const backup = messages;
     messages = [];
@@ -1712,10 +1724,9 @@ $("s-apply").onclick = async () => {
   const mdWas = settings.mdmine, thWas = settings.mdtheirs;
   settings = drawerSettings();
   store.set("sampling", settings);
-  // these two switches are about how the messages on the screen are drawn, so redraw them - but never while an
-  // answer is streaming: send() paints into the element it captured (app.js's
-  // `const el = $("chat").lastElementChild`), and renderChat() would detach it
-  // (LESSONS.md, "Four traps in that same render path")
+  // these two switches are about how the messages on the screen are drawn, so redraw them - but not while an
+  // answer is streaming: the turn would be rebuilt under the reader mid-frame. (It is no longer unsafe the way
+  // it was - paint() resolves its row each frame now - it is just a jump for no benefit.)
   if ((settings.mdmine !== mdWas || settings.mdtheirs !== thWas) && !busy) renderChat();
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);

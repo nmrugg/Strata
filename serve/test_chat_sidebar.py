@@ -81,6 +81,20 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn("<summary>Thinking</summary>", self.js)
         self.assertIn("function toolMarkdown(t)", self.js)
 
+    def test_a_turn_keeps_its_own_conversation_while_you_read_another(self):
+        # todo #9: switching chats mid-answer used to be refused, and the reason it could not simply be allowed
+        # is that send() captured one element and renderChat() destroys them all (LESSONS.md, render-path trap 1).
+        # The turn now belongs to a chat, and the row is looked up each frame.
+        self.assertIn("function rowOf(m)", self.js)
+        self.assertIn("const el = rowOf(m); if (el)", self.body("send"))
+        self.assertIn("busy = {controller, msg: m, chat, chatId};", self.js)
+        self.assertIn("saveChat(turn.chat);", self.body("send"))
+        self.assertNotIn("$(\"chat\").lastElementChild", self.js)          # the capture that made this unsafe is gone
+        self.assertIn("function saveChat(c = chat)", self.js)
+        oc = self.body("openChat")
+        self.assertNotIn("Still writing", oc)                             # reading another chat is allowed now
+        self.assertIn("if (busy && c.id === busy.chatId)", self.body("deleteChat"))  # deleting the live one is not
+
     def test_the_composer_keeps_its_text_per_conversation(self):
         # the box keeps what you typed: per chat across a switch, and across a reload.  A chat with no messages
         # is keyed "blank" rather than by its id, because blank chats are never written to the store and newChat()
