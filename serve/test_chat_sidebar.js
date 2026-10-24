@@ -191,7 +191,7 @@ function run(hooks, stored, seed) {
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
-    "bubbleParts, toolSync, toolOpen, onTool, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
+    "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
@@ -1211,6 +1211,16 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(wm.tools[0].argsText, undefined, "and the streamed text is dropped, not kept beside it");
   assert.strictEqual(wm.tools[0].state, "running", "the block moves on to running");
   done.push("tool calls: the JSON the model is typing streams into the block instead of \"(being written)\"");
+
+  // 41. a running MCP tool is its own state (todo #35): measured 2026-10-23, /metrics answered live.state=idle
+  // in 3 of 3 samples while a tool ran, because between engine rounds there is no live request record at all.
+  const pl = run({}, {});
+  await wait();
+  const pillState = {state: "running-tool", tool: "easyCMP__run_cmd", queued: 0, elapsed_s: 3.2, busy: true};
+  pl.s.render({live: pillState, hardware: {}, hardware_static: {}, engine: {}, history: {}, requests: [], totals: {}});
+  assert.strictEqual(pl.s.el("pill-text").textContent, "Waiting · easyCMP__run_cmd", "the pill names the tool");
+  assert.strictEqual(pl.s.el("pill").dataset.state, "generating", "and stays in the active colour, not idle");
+  done.push("pill: a running MCP tool reads Waiting · <tool>, not Idle");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

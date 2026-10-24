@@ -2903,6 +2903,10 @@ class Service:
         # "parallel" (the engine's batch slots): every running request's own status and rate window; self.status
         # then says busy while any runs and shows the newest one
         self.live_reqs: dict[int, tuple[dict, collections.deque]] = {}
+        # todo #35: MCP calls running right now, keyed by the generator that started them.  Between engine
+        # rounds there is no live_reqs entry at all (it covers the turn, not the tool), which is why a tool
+        # running for 90 seconds read as "idle" - this is what spans the whole turn.
+        self.mcp_running: dict[object, str] = {}
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
@@ -3414,13 +3418,18 @@ class Service:
         the hardware (with a minute of history per series)."""
         with self.status_lock:
             s = dict(self.status)
+            tool_running = next(iter(self.mcp_running.values()), None)
             if self.live_reqs:                          # parallel requests: the newest one's status
                 s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
         now = time.time()
         progress = getattr(self.engine, "progress", None)
-        if s.get("busy") and s.get("first_token") is None:
+        if tool_running:
+            # todo #35: first, because between engine rounds there is no live request record at all - a tool
+            # running for 90 seconds used to read as idle, which is the one thing a user needs to see
+            state = "running-tool"
+        elif s.get("busy") and s.get("first_token") is None:
             state = "reading"
         elif s.get("busy"):
             state = "generating"
@@ -3429,6 +3438,7 @@ class Service:
         else:
             state = "idle"
         live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+                "tool": tool_running,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
@@ -4407,6 +4417,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     messages = list(messages)
+    handle = object()          # this generator: the key its running calls are tracked under, for /metrics
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
         for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
@@ -4451,7 +4462,14 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                           "tool": tool, "arguments": c.arguments, "round": rounds}
             # The call runs on a thread while this generator keeps yielding heartbeats: they reach the client as
             # keep-alives, which is how a client that went away (the web app's Stop) is noticed during a slow tool.
+            # todo #35: an MCP call running is its own state.  Before this, /metrics answered live.state=idle
+            # during a tool round (measured: 3 of 3 samples), and the reason is structural - live_reqs is
+            # registered for the engine's turn only, so between rounds, while the tool runs, there is no live
+            # request record at all and busy is false.  A per-request status field cannot cover that, so the
+            # running calls are tracked here instead, for the life of the call.
             box = {}
+            with svc.status_lock:
+                svc.mcp_running[handle] = c.name
 
             def work(c=c, box=box):
                 try:
@@ -4468,6 +4486,9 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             except GeneratorExit:
                 cancel.set()                             # the client is gone: stop the tool too
                 raise
+            finally:
+                with svc.status_lock:
+                    svc.mcp_running.pop(handle, None)
             if "r" not in box:
                 break
             r = box["r"]

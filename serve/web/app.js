@@ -189,6 +189,8 @@ function render(m) {
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+  } else if (live.state === "running-tool") {
+    setPill("generating", `Waiting · ${live.tool || "a tool"}`);   // todo #35: an MCP call running is not idle
   } else {
     setPill("idle", "Idle");
   }
@@ -255,6 +257,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     } else {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }
+  } else if (live.state === "running-tool") {
+    label = `Waiting · ${live.tool || "a tool call"}`;
+    prog.dataset.tone = "info";                    // the engine is not producing tokens right now
+    pct = 0;
+    detail = live.elapsed_s != null ? `${fmt(live.elapsed_s, 1)} s into this turn` : "running";
   } else if (live.state === "generating") {
     label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
     delete prog.dataset.tone;

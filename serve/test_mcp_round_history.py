@@ -35,6 +35,10 @@ class FakeSvc:
 
     def __init__(self):
         self.round, self.prepared = 0, []
+        # run_with_mcp reports the call it is running through these (todo #35), so the stand-in has to carry
+        # what a real Service carries
+        self.status_lock = threading.Lock()
+        self.mcp_running = {}
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel):
         self.round += 1

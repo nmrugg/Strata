@@ -427,24 +427,22 @@ is section 8, items 34-36.
     keeps stable element references and the thinking block is the only thing on screen while the
     model thinks.
 
-35.  A "Waiting" state while an MCP tool runs, instead of Idle. [ui] mostly; [py] possibly one field
-    The header pill and the Monitor's state card come from /metrics' `live.state`, which is derived at
-    serve/server.py:3415-3423 from `status["busy"]` and `first_token`: "reading" before the first token,
-    "generating" after it, "idle" when no request is in hand. The page draws the pill at
-    serve/web/app.js:184-190 (setPill at :175) and the card at :246-266.
-    The page already knows a tool is running - each tool part carries a state and TOOL_STATE renders it as
-    "Running" (serve/web/app.js:870) - so a client-only fix is about ten lines: when `busy` and some tool of
-    the streaming message has state "running", show "Waiting - <tool>" in the pill and the card.
-    MEASURED 2026-10-23, so the human's report is right: during a 7 s MCP tool call taken in the middle of
-    a live request, `GET /metrics` answered `live.state=idle` in 3 of 3 samples (1.4 s apart), with
-    `queued=0`. The state is derived from `status["busy"]` at serve/server.py:3415-3423, and that flag is
-    not set for the MCP round (`status.update(busy=True...)` at :2981 belongs to another path, cleared at
-    :3000). So the pill and the Monitor card really do say Idle while a tool runs.
-    Two ways to fix it, and the cheap one is client-side: the page already knows (the tool part carries a
-    state and TOOL_STATE renders "Running", serve/web/app.js:870), so "Waiting - <tool>" can be driven off
-    `busy` plus the streaming message's tool states, about ten lines, no restart. The server-side version
-    means setting a state around the tool round in run_with_mcp (serve/server.py:4389) and live[] at :3423,
-    which also shows up for API clients - worth it only if other clients should see it.
+35.  A "Waiting" state while an MCP tool runs, instead of Idle. [py] [ui] DONE 2026-10-24
+    Measured first, on this box: during a 7 s MCP call, GET /metrics answered live.state = "idle" in 3 of 3
+    samples. The cause is structural, not a missing label - live_reqs (the per-request status that carries
+    busy/first_token) is registered for the ENGINE'S TURN only, so between rounds, while a tool runs, there is
+    no live request record at all and busy is false. A per-request status field could not fix it.
+    Shipped: Service.mcp_running, keyed by the generator that started the call, set when the worker thread
+    starts and cleared in a finally (so a client that goes away, a cancelled call and a broken pipe all clear
+    it). metrics() checks it first, so live.state is "running-tool" and live.tool names the call.
+    The page: the header pill reads "Waiting · easyCMP__run_cmd" in the active colour instead of Idle, the
+    Monitor's state card says the same with the elapsed time, and index.html gained a Waiting badge
+    (data-s="running-tool"). A side benefit: tok_s is now correctly absent during a tool, since it is gated on
+    state == "generating".
+    Tests: serve/test_mcp.py polls /metrics while a real fake-MCP sleep runs and asserts running-tool with the
+    right tool name, and that idle never appears after the turn is in hand. serve/test_chat_sidebar.py checks
+    the pill text. test_mcp_round_history.py's FakeSvc had to grow status_lock and mcp_running - a stand-in for
+    Service has to carry what Service carries.
 
 36.  The settings drawer should warn when it is closed with changes not applied. [ui] DONE
     2026-10-23 in 73e775ae: `closeDrawer()` asks once when `drawerDirty()`, and the X, the

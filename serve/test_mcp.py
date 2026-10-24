@@ -326,6 +326,33 @@ class ToolLoop(unittest.TestCase):
         self.assertTrue(all(m["id"] == call["id"] for m in mcp if m["event"] == "args"),
                         "and they belong to that call")
 
+    def test_a_running_tool_is_a_state_of_its_own(self):
+        # measured 2026-10-23: while an MCP call ran, /metrics answered live.state = "idle" in 3 of 3 samples -
+        # the one moment a user wants to know something is happening was reported as nothing happening (todo #35)
+        self.start(call_script("fake__sleep", seconds=1.2), "</think>\n\ndone.")
+        threading.Thread(target=self.post, args=({"strata_mcp": True},), daemon=True).start()
+        base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        states, tools = [], []
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(base + "/metrics", timeout=5) as r:
+                    live = json.loads(r.read())["live"]
+            except (urllib.error.URLError, KeyError):
+                time.sleep(0.05)
+                continue
+            states.append(live["state"])
+            if live["state"] == "running-tool":
+                tools.append(live["tool"])
+            if tools:
+                break
+            time.sleep(0.05)
+        self.assertIn("running-tool", states, states)
+        self.assertEqual(set(tools), {"fake__sleep"}, tools)
+        first = states.index("running-tool")
+        self.assertNotIn("idle", states[first:],
+                         "once a turn of ours is in hand, the tab is never told nothing is happening")
+
     def test_tool_call_then_answer(self):
         self.start(call_script("fake__echo", text="hello from the tool"), "</think>\n\nThe tool said hello.")
         code, text = self.post({"strata_mcp": True})
