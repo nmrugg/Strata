@@ -979,5 +979,29 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(gm.reasoning, "first thought\n\nsecond thought", "and nothing rewrote the reasoning string");
   done.push("layout: think, text, call, think, text, call, answer - all top level, nothing folded");
 
+  // 34. a live thinking block grows with the reasoning.  The bug: the part kept the slice it was created with,
+  // so a new thought bubble showed only its first chunk.
+  const lv = run({}, {});
+  await wait();
+  const lm = {role: "assistant", text: "", reasoning: "one", time: Date.now()};
+  const lel = lv.s.msgEl(lm, 0);
+  lv.s.el("chat").appendChild(lel);
+  const lbul = lel.querySelector(".st-bubble");
+  lv.s.updateAssistant(lel, lm, true);
+  for (const w of [" two", " three", " four"]) { lm.reasoning += w; lv.s.updateAssistant(lel, lm, true); }
+  const ldet = lbul._blocks[0].el;
+  assert.strictEqual(ldet.open, true, "the live block is open while it streams");
+  assert.strictEqual(ldet.querySelector(".thinking").textContent, "one two three four", "and it keeps up");
+  assert.strictEqual(ldet.querySelector(".think-preview").textContent, "one two three four", "and so does its preview");
+  // the collapsed one-line summary, the way a tool block previews its result
+  const fm = {role: "assistant", text: "the answer", reasoning: "line one\nline two\n" + "x".repeat(300),
+              time: Date.now()};
+  const fbul = lv.s.msgEl(fm, 0).querySelector(".st-bubble");
+  const fprev = fbul._blocks[0].el.querySelector(".think-preview").textContent;
+  assert.strictEqual(fprev, ("line one line two " + "x".repeat(300)).slice(0, 200),
+                     "one line, whitespace collapsed, capped at 200 for the browser to ellipsize");
+  assert.ok(!fprev.includes("\n"), "and never more than one line");
+  done.push("thinking: a live block grows with the reasoning, and a collapsed one previews a single line");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

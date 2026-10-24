@@ -1055,8 +1055,12 @@ function addBlocks(host, p, blks) {
 // that round's text and calls starts right after it.  So reading down a multi-round turn gives you the
 // model's thoughts at arm's reach and the work each thought produced folded under it.
 const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summary>${icon("thinking", "st-icon st-icon--sm")}` +
-  `<span class="think-title"></span>${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+  `<span class="think-title"></span><span class="think-preview muted"></span>` +
+  `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
   `<div class="st-collapse__body thinking"></div></details>`;
+// one line of a thinking run for the collapsed summary, the way a tool block previews its result.  The first
+// 200 characters are taken and CSS ellipsises what does not fit, so the line never wraps.
+const thinkPreview = (t) => t.replace(/\s+/g, " ").trim().slice(0, 200);
 // a thinking block follows the rules the single block used to: the last one opens while the model is still
 // thinking (settings.show), "Keep thinking open" opens all of them, and a block the reader opened or closed
 // by hand is never touched again.  The open state is decided before the body is filled: filling first leaves
@@ -1064,13 +1068,16 @@ const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summa
 // ourselves (it sees det._auto).
 function syncThink(det, m, p, streaming) {           // det IS the details: querySelector looks at descendants only
   const thinkingNow = streaming && p.i === p.runs - 1 && !m.text;
+  const text = (m.reasoning || "").slice(p.from, p.to);
   det.querySelector(".think-title").textContent = thinkingNow ? "Thinking\u2026" :
     p.secs != null ? `Thought for ${fmt(p.secs, 1)} s` : "Thoughts";
+  const prev = det.querySelector(".think-preview");
+  const pv = thinkPreview(text);
+  if (prev.textContent !== pv) prev.textContent = pv;      // the collapsed line; CSS hides it once open
   const wantOpen = settings.openthink === true ? true : (p.i === p.runs - 1 && streaming && settings.show === true);
   if (det.dataset.touched !== "1" && det.open !== wantOpen) { det._auto = true; det.open = wantOpen; }
   const body = det.querySelector(".thinking");
   const follow = streaming && p.i === p.runs - 1 && nearEnd(body, 48);   // only the live block follows its own text
-  const text = (m.reasoning || "").slice(p.from, p.to);
   if (det.open || thinkingNow) {
     body.textContent = text;
     if (follow) body.scrollTop = body.scrollHeight;
@@ -1125,7 +1132,13 @@ function makePart(host, w, m) {
 }
 function updatePart(host, m, p, w, streaming) {
   if (p.kind === "tool") { toolSync(p.el, m.tools[p.k]); return; }
-  if (p.kind === "think") { syncThink(p.el, m, p, streaming); return; }
+  if (p.kind === "think") {
+    // the live run's slice grows: from/to/runs must come from this paint, not from when the part was made, or
+    // the block keeps showing only what it held at creation (the "first word only" bug)
+    p.from = w.from; p.to = w.to; p.runs = w.runs;
+    syncThink(p.el, m, p, streaming);
+    return;
+  }
   if (p.plain) {
     const t = m.text.slice(p.from, w.to);
     p._to = w.to;

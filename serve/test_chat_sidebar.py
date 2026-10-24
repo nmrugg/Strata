@@ -111,6 +111,13 @@ class ChatSidebar(unittest.TestCase):
         # a thinking block inside the bubble needs its own margin: as a sibling it got the message row's 6px
         # flex gap, and inside the bubble nothing spaced it from the text under it (the human's spacing report)
         self.assertIn(".st-bubble .st-collapse.think { width: 100%; margin: var(--st-s-3) 0; }", css)
+        # a collapsed thinking block previews one line of it, like a tool block previews its result
+        self.assertIn(".st-collapse.think .think-preview {", css)
+        self.assertIn(".st-collapse.think[open] .think-preview { display: none; }", css)
+        self.assertIn('<span class="think-preview muted"></span>', self.js)
+        self.assertIn("const thinkPreview = (t) => t.replace(/\\s+/g, \" \").trim().slice(0, 200);", self.js)
+        # the live run's slice must come from this paint, not from when the part was made (the first-word bug)
+        self.assertIn("p.from = w.from; p.to = w.to; p.runs = w.runs;", self.js)
         self.assertNotIn(".st-work", css)                              # the container is gone, and so is its CSS
 
     def test_the_drawer_warns_before_losing_unapplied_changes(self):

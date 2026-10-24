@@ -247,6 +247,16 @@ engine's prompt prefix at the first tool round. The stub also has to fire a `tog
 script sets `details.open`, or the page's own `_auto` flag leaks onto the next simulated user
 click and a test fails for a reason that does not exist in a browser.
 
+**A persistent part must refresh every field that grows.** The parts machinery keeps an element per part and
+only rebuilds the tail, so the part object survives across paints - which means any field describing a *growing*
+range has to be re-read from the fresh spec every paint. The text part does that with `_to`; the thinking part
+did not, so a new thought bubble showed only its first chunk and nothing else ever appeared (reported by the
+human 2026-10-23, fixed in the commit after c878ab21: `p.from = w.from; p.to = w.to; p.runs = w.runs;`). The
+same trap was already hit once for text (`1 !== 10` in the insert count). When you add a part kind, ask which
+of its fields are live and refresh them, and write the test as "grow it, then assert the whole text is there".
+`p.runs` matters too: a stale run count makes the last block stop looking like the last block, which turns off
+both auto-opening and auto-following.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right

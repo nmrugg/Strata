@@ -65,6 +65,11 @@ main { flex: 1; min-height: 0; display: flex; }
    6px (components.css:63), and inside the bubble nothing was spacing it from the text that follows.
    .st-bubble > :first-child / :last-child above trim it at the ends of the bubble. */
 .st-bubble .st-collapse.think { width: 100%; margin: var(--st-s-3) 0; }
+/* the collapsed thinking block previews one line of that run, the same shape as .tool-call__preview, and the
+   preview goes away once the block is open because the text is right there under it */
+.st-collapse.think .think-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                                     white-space: nowrap; font-size: var(--st-fs-xs); font-weight: 400; }
+.st-collapse.think[open] .think-preview { display: none; }
 /* a message that is only thinking has no box around it (todo #34): the element has to exist, because the
    thinking lives in it now, but its chrome must not */
 .st-bubble.thinking-only { background: none; border: 0; padding: 0; }
