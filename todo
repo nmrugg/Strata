@@ -12,27 +12,21 @@ is section 8, items 34-36.
 
 ## 2. Small - one file, clear scope (a few hours each)
 
-9.  Read and switch to another conversation while one is running. [ui] NOT three lines - the
-    old text here was wrong, corrected 2026-10-23
-    The server does not care; it is purely the page refusing. app.js has three guards:
-    openChat (serve/web/app.js:727), startChat (:732), deleteChat (:742), all
-    "if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }".
-    WHAT WAS WRONG: "the answer keeps streaming into its own message object either way, so
-    switching away and back is already safe". The message object is indeed safe, but the
-    ELEMENT is not: showChat (:720) calls renderChat(), which removes every .st-msg node,
-    while send() holds the one it captured at :1205 (`const el = $("chat").lastElementChild`)
-    and paint() writes into that captured node (:1227). Drop the guard as written and the
-    answer stops appearing mid-stream, silently. Same trap as LESSONS.md, "Three traps in
-    that same render path", trap 1.
-    The real fix, still one file: paint() must resolve its element each time (keep a
-    message-id -> element map, or look the row up by index in the chat container), and
-    showChat re-attaches the row of a chat that has a live stream. Then drop the guard in
-    openChat and keep or soften it for startChat/deleteChat.
-    A second thing, verified but unresolved: saveChat() at the end of send() writes the
-    chat that is OPEN at that moment (:712 uses `chat`, not the chat the request started
-    in), so with switching allowed a finished answer would not be written to its own
-    chat's record until that chat is opened again. Item 10 (two streams) is the same
-    identity problem, larger.
+9.  Read and switch to another conversation while one is running. [ui] DONE 2026-10-23
+    Shipped in 85084ba6. It was NOT the three-line change this entry once claimed - the entry was corrected
+    first, and the correction was right: showChat calls renderChat(), which removes every .st-msg, while send()
+    had captured one element ($("chat").lastElementChild) and painted into it for the whole turn, so simply
+    dropping the guard would have made the answer vanish mid-stream, silently.
+    What it took instead: the turn carries the conversation it belongs to (busy = {controller, msg, chat,
+    chatId}); rowOf(m) resolves the row by the message's index in the chat on screen, every frame (no row means
+    another chat is open - the turn keeps running, it just does not paint); and saveChat(c) writes the turn's own
+    chat rather than whichever one happens to be open.
+    Guards now: openChat and startChat are free (switching is the point); deleteChat still refuses for the chat
+    that OWNS a live turn (c.id === busy.chatId); and with the sidebar off, "New chat" still refuses, because
+    there it CLEARS the one chat instead of switching.
+    Unlocked by this: item 10 (queue another conversation) and item 37 (mark a chat whose reply finished while
+    you were not looking at it) - both were impossible while switching was refused.
+
 10.  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
     The SERVER ALREADY DOES THIS: docs/BATCHING.md - "By default Strata serves one request
     at a time: the others wait in the server's queue." Nothing engine-side is missing, and
