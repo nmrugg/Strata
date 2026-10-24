@@ -288,6 +288,78 @@ breath, or make the client tolerant (e.g. app.js detecting that the symbols are 
 file URL). Related: the sprite is now a build input, not a fetched asset - deleting it takes the icons out of
 every page (with `serve/server.py`'s guard the page still serves, symbols simply missing).
 
+**Setting `details.open` from script fires a real `toggle` event, and the page's own listener will read it as
+the reader's click unless you mark it.** `toolSync` sets `d.open` itself (`serve/web/app.js:1093`), and the
+`#chat` toggle listener records *any* toggle as the reader's choice (`t.open = d.open`), so an auto-opened
+call stopped following the rules after its first auto-open and never collapsed. The thinking block already
+had a guard (`det._auto`, set `app.js:1225`, consumed `app.js:1421`); the tool block had none.
+
+**The flag was the wrong shape, and it produced the exact symptom "calls fold only at the end of the turn".**
+`_auto` is a one-shot token, but a browser queues `toggle` rather than firing it inside the setter, so two
+paints can leave two events in flight: the first eats the token and the second - the page's own change - is
+read as a click. That sets `t.open`, and `toolOpen` short-circuits on `t.open` (`app.js:1026`), so no control
+can reclaim the block until `send()` deletes `t.open` at the end of the turn (`app.js:1613`). Demonstrated in
+the harness: fire the page's own toggle twice and the flag version leaves `t.open === true`, the comparison
+version leaves it `undefined`. The tool branch now compares instead of consuming (`if (d.open === toolOpen(t))
+return;`, `app.js:1415`) - idempotent, so any number of queued events is the same. The thinking branch keeps
+its flag; it has the same weakness and should get the same treatment if a thinking block is ever reported
+stuck open.
+
+The general rule: **a "was that me?" question needs a comparison against current intent, not a consumed
+token**, whenever the event can be queued. And note the stub fires `toggle` synchronously inside the setter,
+so it cannot show this on its own - the test has to fire the event twice deliberately.
+
+**Display state does not belong in the chat record.** A tool block's open/closed choice was kept on the tool
+(`t.open`) and `cleanMessages` spreads `...m`, so it went into the IndexedDB record and came back on every
+reload: one tap pinned a call open forever, and `toolOpen` short-circuits whenever `t.open` is set
+(`app.js:1026`), so no control could reclaim it. The thinking block never had that bug, because its "the reader
+touched this" lives on the DOM element (`dataset.touched`), which `renderChat()` throws away. Measured before
+fixing: with fold on and keep-open off, a fresh stream folded correctly (`state=done -> open=false`) but one
+click left `t.open=true` in the record, and a reload reopened it. Fix: `send()` drops it when the turn ends
+(`app.js:1610`), `cleanMessages` strips it on write, and `openHistory` strips it on read for records an older
+page already wrote (`dropToolOpen`, `app.js:692`, `771`, `773`). **Both halves need their own test**: the read
+strip masks the write strip, so a control that only removes the write strip still passes until you also click
+a block on a *finished* message and save (harness case 48).
+
+**The harness's IndexedDB stub aliased reads and writes, and one test passed only because of it.** `getAll()`
+returned `Object.values(data)` - the live record objects - and `put()` stored the object it was handed. So case
+5's `chats[0].title = "renamed"; saveChat()` appeared to reach the record through shared identity, while it was
+in fact saving the *open* chat, a different one. Any change that made the app stop mutating what it read looked
+like a regression (it did: 42 ok lines became 0). The stub now structured-clones on both sides, like real IDB,
+and case 5 saves the chat it renamed. When a storage test fails after you stop mutating a record you read,
+check whether the test was relying on aliasing before believing you broke something.
+
+**A shared CSS box for a segmented control must not hardcode the option count.** `.seg` was
+`grid-template-columns: repeat(4, 1fr)`, sized for the four-option Thinking control; a three-option control
+inside it left an empty cell. Now `display: flex` with `flex: 1 1 0` on the buttons (app.css:271-275), which
+gives the four-option control the same equal widths it had. Pinned by a regex on the `.seg` rule, not on the
+whole file - `repeat(4, 1fr)` still appears in the comment explaining why it went, and an `assertNotIn` over
+the file failed on its own comment.
+
+**The stub does not parse `data-*` out of inserted HTML, so a tool block the page made is invisible to the
+toggle listener.** `+d.dataset.tool` is `NaN`, `m.tools[NaN]` is `undefined`, and the listener returns at
+`if (!t)` — a test that opens such a block "as the reader" silently tests nothing. Case 24 has always worked
+around it by building the block by hand (`test_chat_sidebar.js:588`); case 45 sets `dataset.tool` on the node
+the page made instead. Either is fine, doing neither is a silent pass.
+
+**In the fake stream, one `step()` delivers one chunk; the paint for that chunk needs a second flush.** The
+stub's `step()` calls `flush()` *before* resolving the read, so the frame the page schedules for the chunk it
+just handed over is still queued afterwards. A stream test that asserts after `step(); await wait()` alone sees
+the state from before the chunk - `_blocks.length` 0 where it should be 1. The pattern that works is
+`step(); await wait(); flush();` per chunk, and one `step()` past the last frame or `send()` never returns (see
+"hanging test exits 0").
+
+**A thinking run is not "over" just because it is the last one.** While a tool round runs, `thinkRuns` still
+reports one run (the next round's reasoning has not arrived), so "the last run while streaming" keeps the
+thought open through the whole tool call. Two signals say it is finished: `runs[i].cut` (`app.js:1143`, a call
+starts where the run ends) and `runs[i].tstart` - how much answer text existed when the run began, stamped in
+`send()` as `m.rts[index] = m.text.length` (`app.js:1581`), so text grown past it means the model started
+writing. `m.rts` holds numbers only, never text, so the replay tripwire (case 33) is untouched - asserted.
+Like `secs`, `cut` must be refreshed from the fresh spec every paint (`app.js:1288`) or the part keeps a stale
+value - the trap that bit `from`/`to`/`runs` and `secs` before it. `tstart` does NOT need refreshing: it is
+fixed when the run begins, and a control that tried to prove the refresh failed to fail, which is how I found
+the line was dead weight and deleted it.
+
 **One colour per state, and the pill is not a separate decision.** `--st-accent` green means the engine is
 producing tokens; `--st-info` blue means it is not (reading a prompt, waiting on an MCP tool); `--st-warn`
 means queued. `components.css:20-21` already encodes that for the pill's dot and `:58-60` for the badges, so
