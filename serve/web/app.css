@@ -26,6 +26,15 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-msg { width: 100%; }
 .st-msg--assistant { align-self: flex-start; }
 .st-msg--assistant .st-bubble { width: 100%; }
+/* A bubble is a flex item in a column that uses align-items: flex-end (components.css:64), so it sizes itself to
+   its content: one very long line inside a <pre> made a user's post wider than the message's 720px, and the page
+   went wide. The assistant bubble was already capped by width:100% above; the user's was not. Cap both, and let
+   min-width:0 actually shrink them below their content - a flex item defaults to min-width:auto, which is what
+   lets content push past a max-width. The code block then scrolls inside itself (components.css:81 already has
+   overflow:auto on .st-code pre). */
+.st-bubble { max-width: 100%; min-width: 0; }
+.st-bubble .st-code { min-width: 0; }
+.st-bubble .st-code pre { max-width: 100%; overflow-x: auto; }
 .st-msg--user .st-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
 .st-bubble > :first-child { margin-top: 0; }
 .st-bubble > :last-child { margin-bottom: 0; }

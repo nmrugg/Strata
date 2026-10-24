@@ -50,6 +50,15 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('draftKeyOf(c.id, !c.messages.length)', item)     # the same key the composer writes
         self.assertIn('class="chat-item__title${drafted ? " draft" : ""}"', item)
 
+    def test_a_long_code_line_cannot_push_the_page_wide(self):
+        # a bubble is a flex item sized to its content, so one long line in a <pre> made a user's post wider than
+        # the message. The assistant bubble was capped, the user's was not. (CSS only: the harness cannot measure
+        # layout, so the width itself is the human's to confirm in a browser.)
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".st-bubble { max-width: 100%; min-width: 0; }", css)
+        self.assertIn(".st-bubble .st-code { min-width: 0; }", css)
+        self.assertIn(".st-bubble .st-code pre { max-width: 100%; overflow-x: auto; }", css)
+
     def test_the_copy_sizes_and_the_file_name(self):
         # todo #38: plain click copies the answer, Shift adds the thinking, Ctrl/Cmd+Shift adds the tool calls.
         # The saved file is named for the conversation, not just for the day.
