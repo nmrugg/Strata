@@ -3445,15 +3445,20 @@ class Service:
             state = "unloaded"
         else:
             state = "idle"
-        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+        # todo #35 again: every one of these was gated on busy, and busy is False between engine rounds - so
+        # while an MCP call ran, live reported prompt_tokens/generated/max_tokens/elapsed_s as None and the
+        # Monitor's Context fill gauge read 0% mid-turn.  The numbers are in status for the whole turn; the gate
+        # has to include the tool wait, which is what tool_running says.
+        shown = bool(s.get("busy")) or bool(tool_running)
+        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if shown else None,
                 "tool": tool_running,
-                "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
-                "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
-                "max_tokens": s.get("max_tokens") if s.get("busy") else None,
-                "elapsed_s": round(now - s["started"], 1) if s.get("busy") and s.get("started") else None,
+                "prompt_tokens": s.get("prompt_tokens") if shown else None,
+                "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if shown else None,
+                "max_tokens": s.get("max_tokens") if shown else None,
+                "elapsed_s": round(now - s["started"], 1) if shown and s.get("started") else None,
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None,
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
-                "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
+                "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if shown else None,
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress

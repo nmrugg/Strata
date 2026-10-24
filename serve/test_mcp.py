@@ -326,6 +326,26 @@ class ToolLoop(unittest.TestCase):
         self.assertTrue(all(m["id"] == call["id"] for m in mcp if m["event"] == "args"),
                         "and they belong to that call")
 
+    def test_the_turn_numbers_survive_the_tool_wait(self):
+        # the Context fill gauge reads live.prompt_tokens + live.generated, and every one of those was gated on
+        # busy - which is False between engine rounds. So mid-turn, while a tool ran, the gauge showed 0%
+        # (the human's report). The numbers are in status for the whole turn; the gate had to include the wait.
+        self.start(call_script("fake__sleep", seconds=1.5), "</think>\n\ndone.")
+        threading.Thread(target=self.post, args=({"strata_mcp": True},), daemon=True).start()
+        base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        seen, deadline = None, time.time() + 6
+        while time.time() < deadline:
+            with urllib.request.urlopen(base + "/metrics", timeout=5) as r:
+                live = json.loads(r.read())["live"]
+            if live["state"] == "running-tool":
+                seen = live
+                break
+            time.sleep(0.03)
+        self.assertIsNotNone(seen, "never caught the tool running")
+        self.assertIsNotNone(seen["prompt_tokens"], "the prompt this turn is holding, still named during the wait")
+        self.assertIsNotNone(seen["elapsed_s"])
+        self.assertGreater(seen["prompt_tokens"], 0)
+
     def test_a_running_tool_is_a_state_of_its_own(self):
         # measured 2026-10-23: while an MCP call ran, /metrics answered live.state = "idle" in 3 of 3 samples -
         # the one moment a user wants to know something is happening was reported as nothing happening (todo #35)
