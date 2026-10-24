@@ -1136,6 +1136,7 @@ function updatePart(host, m, p, w, streaming) {
     // the live run's slice grows: from/to/runs must come from this paint, not from when the part was made, or
     // the block keeps showing only what it held at creation (the "first word only" bug)
     p.from = w.from; p.to = w.to; p.runs = w.runs;
+    p.secs = w.secs;                                   // a run's seconds are stamped when the NEXT run starts
     syncThink(p.el, m, p, streaming);
     return;
   }

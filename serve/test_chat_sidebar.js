@@ -965,6 +965,13 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   gb._blocks[1].el.open = true;                                // a real details fires the toggle event itself
   assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "\n\nsecond thought",
                      "and it fills with only that run's slice, not the whole reasoning");
+  // a run's seconds are stamped only when the NEXT run starts, so the title has to catch up on a later paint
+  gm.tools[0].tsec = 4.2;
+  gr.s.updateAssistant(gel, gm, false);
+  assert.strictEqual(gb._blocks[0].el.querySelector(".think-title").textContent, "Thought for 4.2 s",
+                     "the title catches up when the seconds arrive, instead of staying 'Thoughts'");
+  assert.strictEqual(gb._blocks[1].el.querySelector(".think-title").textContent, "Thoughts",
+                     "a run with no measured end yet says just that");
   // the tripwire: the layout is display only.  What goes back to the server must be byte for byte what it was,
   // or the engine's prompt prefix breaks at the first tool round and the chat re-reads everything after it
   // (serve/server.py:4470-4481, #2100)

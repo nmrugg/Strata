@@ -252,7 +252,9 @@ only rebuilds the tail, so the part object survives across paints - which means 
 range has to be re-read from the fresh spec every paint. The text part does that with `_to`; the thinking part
 did not, so a new thought bubble showed only its first chunk and nothing else ever appeared (reported by the
 human 2026-10-23, fixed in the commit after c878ab21: `p.from = w.from; p.to = w.to; p.runs = w.runs;`). The
-same trap was already hit once for text (`1 !== 10` in the insert count). When you add a part kind, ask which
+same trap was already hit once for text (`1 !== 10` in the insert count), and once more in the same function
+minutes later: a run's seconds are stamped only when the *next* run starts, so a part that never refreshes
+`secs` says "Thoughts" forever and never "Thought for 4.2 s". When you add a part kind, ask which
 of its fields are live and refresh them, and write the test as "grow it, then assert the whole text is there".
 `p.runs` matters too: a stale run count makes the last block stop looking like the last block, which turns off
 both auto-opening and auto-following.
