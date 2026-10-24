@@ -4,7 +4,8 @@ html,body{margin:0;background:var(--st-bg);color:var(--st-ink);font-family:var(-
 a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:underline}
 :focus-visible{outline:2px solid var(--st-focus);outline-offset:2px}
 
-/* icon — <svg class="st-icon"><use href="icons/sprite.svg#i-chat"/></svg> */
+/* icon — <svg class="st-icon"><use href="#i-chat"/></svg>  (the symbols are inlined into the page by the
+   server; serve/web/sprite.svg is the source and is no longer fetched by the app) */
 .st-icon{width:20px;height:20px;flex:none;color:inherit}
 .st-icon--sm{width:16px;height:16px} .st-icon--lg{width:24px;height:24px}
 
