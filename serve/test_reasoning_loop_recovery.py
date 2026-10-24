@@ -1,7 +1,10 @@
 """CPU-only regression for opt-in reasoning recovery: python -m unittest serve.test_reasoning_loop_recovery."""
+import io
 import threading
+import time
 import unittest
-from serve.server import (Service, ByteTokenizer, MockEngine, HIGH_EFFORT,
+from contextlib import redirect_stdout
+from serve.server import (Service, ByteTokenizer, MockEngine, EFFORT_TEXT, HIGH_EFFORT, LOW_EFFORT,
                           reasoning_repeat_coverage, focused_recovery_prompt)
 
 
@@ -46,6 +49,50 @@ class ReasoningLoopRecovery(unittest.TestCase):
     def test_user_instruction_is_never_rewritten(self):
         ids = self.tok.encode('<|im_start|>user\n' + HIGH_EFFORT, parse_special=True)
         self.assertIsNone(focused_recovery_prompt(self.tok, ids, []))
+
+    def prompt_for(self, sentence):
+        """A first system turn carrying exactly that effort sentence (or none, for medium)."""
+        return self.tok.encode('<|im_start|>system\n' + sentence +
+            '<|im_end|>\n<|im_start|>user\nSolve this unchanged task<|im_end|>\n'
+            '<|im_start|>assistant\n<think>\n', parse_special=True)
+
+    def test_a_request_that_asked_for_low_has_nothing_lower(self):
+        """#2906: the splice looked only for the xhigh sentence, so a request that asked for low matched
+        nothing and the recovery did no work while claiming to be configured.  There is no sentence below low,
+        so None is still right - what was wrong was doing it in silence."""
+        self.assertIsNone(focused_recovery_prompt(self.tok, self.prompt_for(LOW_EFFORT), []))
+
+    def test_a_medium_prompt_gets_the_low_sentence_inserted(self):
+        """The template writes no effort sentence at all for medium (chat_template.jinja:66-70), so there was
+        never one to replace; the low one goes where the template would have put it."""
+        # a real medium prompt has no sentence at all: the system turn opens with its own text instead
+        out = focused_recovery_prompt(self.tok, self.prompt_for("# Tools\n\nYou have access to functions.\n"), [])
+        self.assertIsNotNone(out)
+        self.assertTrue(self.tok.decode(out).startswith('<|im_start|>system\n' + LOW_EFFORT + "\n\n"))
+        self.assertIn("Solve this unchanged task", self.tok.decode(out))     # the task is untouched
+
+    def test_a_medium_sentence_in_place_is_replaced_not_appended(self):
+        """The template writes none today, but if it ever does the replace path must find it: the recovery keys
+        on whatever sentence is actually in the prompt, not on the one the template writes by default."""
+        ids = self.prompt_for(EFFORT_TEXT["medium"] + "\n\n# Tools\n")
+        out = focused_recovery_prompt(self.tok, ids, [])
+        self.assertIsNotNone(out)
+        self.assertIn(LOW_EFFORT, self.tok.decode(out))
+        self.assertNotIn(EFFORT_TEXT["medium"], self.tok.decode(out))
+        self.assertIn("# Tools", self.tok.decode(out))
+
+    def test_the_no_op_says_so_instead_of_silently_continuing(self):
+        engine = RecordingEngine(self.tok, [self.loop])
+        service = Service(engine, self.tok, None)
+        service.reasoning_loop_recovery = "recover"
+        out = io.StringIO()
+        with redirect_stdout(out):
+            events = list(service.run(self.prompt_for(LOW_EFFORT), True, [], 40000, {}, threading.Event()))
+        said = out.getvalue()
+        self.assertIn("the recovery cannot lower", said)         # named, not swallowed
+        self.assertNotIn("resuming the same output", said)       # and it does not claim work it did not do
+        self.assertEqual(len(engine.calls), 1)                   # no second pass was issued
+        self.assertEqual(events[-1][1]['reasoning_recoveries'], 0)
 
     def test_preserves_task_and_exact_generated_tokens(self):
         generated = self.tok.encode('中文 partially checked code', parse_special=False)
@@ -106,6 +153,48 @@ class ReasoningLoopRecovery(unittest.TestCase):
         tail = marked[len(self.tok.encode(head, parse_special=True)):]
         self.assertEqual(spliced[-len(tail):], tail)             # everything after the sentence is the same ids
         self.assertNotEqual(spliced, marked)
+
+    def test_a_recovery_pass_says_it_is_reading_the_prompt_again(self):
+        """#2906, the slow death: after the recovery the log kept printing the PREVIOUS pass's token count,
+        frozen, with a rate that decayed as count/elapsed - it read as a hang.  A pass now states where it is,
+        so a re-read shows up as reading the prompt instead of a stuck thinking count."""
+        seen = []
+
+        class Watching(RecordingEngine):
+            svc = None
+
+            def generate(self, ids, max_new, sampling, cancel, **kw):
+                seen.append(dict(self.svc.status))
+                yield from super().generate(ids, max_new, sampling, cancel, **kw)
+
+        engine = Watching(self.tok, [self.loop, "Answered at last."])
+        service = Service(engine, self.tok, None)
+        engine.svc = service
+        service.reasoning_loop_recovery = "recover"
+        list(service.run(self.ids, True, [], 40000, {}, threading.Event()))
+        self.assertGreaterEqual(len(seen), 2)                    # the recovery issued a second pass
+        first, second = seen[0], seen[-1]
+        self.assertIsNone(first["first_token"])                  # the first pass starts in prefill, as before
+        self.assertIsNotNone(second["first_token"])              # the request's own first token is kept: the
+        self.assertIsNone(second["pass_first_token"])            #   latency sample and the done-line rate use it
+        self.assertEqual(second["phase"], "reading the prompt")  # and the pass says what it is doing
+
+    def test_the_progress_line_follows_the_pass_not_the_request(self):
+        """The line that hid it: a status dict whose pass is back in prefill must print the prefill form even
+        though the request produced a token long ago."""
+        svc = Service(MockEngine(self.tok, ["x"]), self.tok, None)
+        st = {"phase": "thinking", "generated": 2560, "first_token": time.time() - 30, "pass_first_token": None,
+              "started": time.time() - 40, "max_tokens": 670000, "prompt_tokens": 378514}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            svc._progress(0, st=st)
+        self.assertIn("reading the prompt", out.getvalue())
+        # and with the pass's own token set, the thinking form returns
+        st["pass_first_token"] = time.time() - 5
+        out = io.StringIO()
+        with redirect_stdout(out):
+            svc._progress(0, st=st)
+        self.assertIn("thinking: 2560 of max 670000 tokens", out.getvalue())
 
     def test_stop_mode_ends_the_reply_at_the_loop(self):
         engine = RecordingEngine(self.tok, [self.loop])

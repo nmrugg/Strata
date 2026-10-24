@@ -40,7 +40,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
     def test_a_tool_call_shows_what_the_model_is_typing(self):
-        # todo #11: the page asks for a call's argument pieces as they are written and shows them in the block,
+        # todo #tool-args-stream: the page asks for a call's argument pieces as they are written and shows them in the block,
         # instead of a static "(being written)".  serve/test_mcp.py pins the server half.
         self.assertIn("body.strata_mcp_args = true;", self.js)
         self.assertIn('x.event === "args"', self.js)
@@ -82,7 +82,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn(".st-bubble .st-code pre { max-width: 100%; overflow-x: auto; }", css)
 
     def test_the_copy_sizes_and_the_file_name(self):
-        # todo #38: plain click copies the answer, Shift adds the thinking, Ctrl/Cmd+Shift adds the tool calls.
+        # todo #copy-whole-turn: plain click copies the answer, Shift adds the thinking, Ctrl/Cmd+Shift adds the tool calls.
         # The saved file is named for the conversation, not just for the day.
         self.assertIn("const level = (e.ctrlKey || e.metaKey) && e.shiftKey ? 2 : (e.shiftKey ? 1 : 0);", self.js)
         # one builder for the clipboard and the file: the human asked for the copy to look like the export, so
@@ -104,7 +104,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("function toolMarkdown(t)", self.js)
 
     def test_a_turn_keeps_its_own_conversation_while_you_read_another(self):
-        # todo #9: switching chats mid-answer used to be refused, and the reason it could not simply be allowed
+        # todo #switch-while-running: switching chats mid-answer used to be refused, and the reason it could not simply be allowed
         # is that send() captured one element and renderChat() destroys them all (LESSONS.md, render-path trap 1).
         # The turn now belongs to a chat, and the row is looked up each frame.
         self.assertIn("function rowOf(m)", self.js)
@@ -156,7 +156,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("@media (hover: none) { .chat-item__actions { display: flex; } }", css)
 
     def test_nothing_pretends_to_be_output(self):
-        # todo #34: no "Writing" placeholder, no fake caret, and no answer bubble until there is real output.
+        # todo #no-placeholder: no "Writing" placeholder, no fake caret, and no answer bubble until there is real output.
         # (The word "Writing" survives in one place on purpose: TOOL_STATE's label for a tool call that is being
         # written, which IS real output.)
         self.assertNotIn('<span class="muted cursor">Writing</span>', self.js)
@@ -171,7 +171,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("const hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error;", upd)
         self.assertIn("bubble.hidden = !hasOutput && !m.reasoning;", upd)
         self.assertIn('el.querySelector(".st-msg__meta").hidden = !hasOutput && streaming;', upd)
-        # thinking lives inside the bubble now (todo #12), so a thinking-only message keeps the element and
+        # thinking lives inside the bubble now (todo #think-per-round), so a thinking-only message keeps the element and
         # drops its chrome instead of hiding it - hiding the bubble would hide the thinking with it
         self.assertIn('bubble.classList.add("thinking-only")', upd)
         self.assertIn(".st-bubble.thinking-only { background: none; border: 0; padding: 0; }", css)
@@ -188,7 +188,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn(".st-work", css)                              # the container is gone, and so is its CSS
 
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
-        # todo #36: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
+        # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
         self.assertIn("function closeDrawer()", self.js)
         self.assertIn('$("drawer-close").onclick = closeDrawer;', self.js)
         self.assertIn('$("scrim").onclick = closeDrawer;', self.js)
@@ -199,7 +199,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn('$("scrim").onclick = () => openDrawer(false);', self.js)
 
     def test_markdown_for_each_author_with_a_per_message_switch(self):
-        # todo #5 and #6: the drawer sets the default for each author (mine off, the model's on, as the page
+        # todo #md-per-author and #6: the drawer sets the default for each author (mine off, the model's on, as the page
         # always drew them) and every message carries an "md" button in its meta row that overrides that one.
         # Off is the page from before: the exact characters, and the prompt is untouched either way.
         for el in ("s-mdmine", "s-mdtheirs"):
@@ -234,8 +234,8 @@ class ChatSidebar(unittest.TestCase):
             self.assertIn(sel, css)
 
     def test_the_answer_is_updated_in_place_and_not_rebuilt(self):
-        # todo #7: the flash was the whole answer being assigned to the bubble on every frame, which threw away
-        # and re-made every element in it - each tool block's two sprite icons above all (todo #8's clicks, and
+        # todo #update-in-place: the flash was the whole answer being assigned to the bubble on every frame, which threw away
+        # and re-made every element in it - each tool block's two sprite icons above all (todo #tool-click-open's clicks, and
         # the flicker the human reported).  A part whose text did not grow must not be touched at all.
         self.assertNotIn("answerHtml", self.js)                      # the whole-answer string builder is gone
         self.assertIn("function renderBubble(el, m, streaming)", self.js)
@@ -245,7 +245,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("old.insertAdjacentHTML(\"afterend\", last);", self.js)   # one element replaced, not the subtree
 
     def test_a_tool_block_opens_on_the_click_and_not_on_a_rebuild(self):
-        # todo #8: the answer's bubble is rewritten every animation frame while it streams.  The click handler used
+        # todo #tool-click-open: the answer's bubble is rewritten every animation frame while it streams.  The click handler used
         # to prevent the browser's own opening and ask for a rebuild, so a click whose mousedown and mouseup
         # straddled a rebuild landed on a node that was gone and did nothing.
         click = re.search(r'\$\("chat"\)\.addEventListener\("click", \(e\) => \{(.*?)\n\}\);', self.js, re.S).group(1)
@@ -257,7 +257,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("syncToolBody(", toggle)                      # the body an unopened block was built without
 
     def test_show_thinking_is_one_three_way_control_for_both_kinds(self):
-        # todo #3 and #4, and the fold switch that joined them, are now one segmented control: the drawer used
+        # todo #keep-thinking-open and #4, and the fold switch that joined them, are now one segmented control: the drawer used
         # to carry four switches that answered the same question twice and contradicted each other (show /
         # openthink / opentools / autofold).  One key, three values, and the old stored booleans are mapped.
         self.assertIn('id="s-show"', self.html)

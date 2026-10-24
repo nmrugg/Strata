@@ -152,10 +152,11 @@ ANSWER_RESERVE_MIN = 512      # #984: the tokens kept for the answer when a thin
 REASONING_CLOSE = "\n</think>\n\n"
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
 # #728: opt-in handling of reasoning that repeats whole passages (which the single-token guard above cannot see).
-# "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with the
-# low-effort instruction in place of the xhigh one.  Both off by default.
-HIGH_EFFORT = EFFORT_TEXT["xhigh"]
-LOW_EFFORT = EFFORT_TEXT["low"]
+# "reasoning_loop_recovery": "stop" ends the reply there; "recover" (or true) goes on from the same output with
+# the low-effort instruction in place of whichever effort sentence the prompt actually carries (#2906: it used to
+# assume the xhigh one, which made it a silent no-op for a request that asked lower).  Both off by default.
+HIGH_EFFORT = EFFORT_TEXT["xhigh"]        # what the template writes by default, and for "high"
+LOW_EFFORT = EFFORT_TEXT["low"]           # what the recovery lowers to
 LOOP_CHECK_EVERY = 512           # output tokens between two looks at the reasoning (at a clean parser boundary)
 LOOP_COVERAGE = 0.25             # the share of the last 2,000 words inside 12-word passages seen three times
 LOOP_HISTORY_WORDS = 30000       # how far back the passages are counted (bounds the cost of a look)
@@ -191,21 +192,40 @@ def reasoning_repeat_coverage(text):
 
 
 def focused_recovery_prompt(tok, ids, generated):
-    """The prompt's ids with the xhigh effort sentence of the first system message replaced by the low one, then
-    every token generated so far.  A splice of token ids: the prompt is never decoded and encoded again, so a literal
-    `</think>` or vision marker in it (#537, #554) stays what it was.  None when the sentence is not there as whole
-    tokens in the first system message (a user's text never counts).  No answer or end-of-thinking is inserted."""
+    """The prompt's ids with the effort sentence of the first system message replaced by the low one, then
+    every token generated so far.  A splice of token ids: the prompt is never decoded and encoded again, so a
+    literal end-of-thinking tag or vision marker in it (#537, #554) stays what it was.  None when there is no
+    first system message to work on, or when the sentence already in place is the low one - there is nothing
+    lower left to ask for.  No answer or end-of-thinking is inserted.
+
+    #2906: this used to look only for the xhigh sentence, which is the one the template writes by DEFAULT, so a
+    request that asked for a lower effort had no such sentence and "recover" was a silent no-op: the loop was
+    detected and nothing was recovered.  What is looked for now is the sentence actually in the prompt.  The
+    template emits one for xhigh (and for high, which it maps to xhigh) and for low, and none at all for medium
+    (chat_template.jinja:66-70), so a medium prompt gets the low sentence where the template would have put one."""
     end = tok.encode(IM_END, parse_special=True)
     if len(end) != 1 or end[0] not in ids:
         return None
     head = ids[:ids.index(end[0])]
     if not tok.decode(head).startswith("<|im_start|>system\n"):
         return None
-    old, new = tok.encode(HIGH_EFFORT, parse_special=False), tok.encode(LOW_EFFORT, parse_special=False)
-    for i in range(len(head) - len(old) + 1):
-        if head[i:i + len(old)] == old:
-            return ids[:i] + new + ids[i + len(old):] + list(generated)
-    return None
+    low = tok.encode(LOW_EFFORT, parse_special=False)
+    for level in ("xhigh", "medium"):                 # a sentence in place can be replaced by the low one
+        old = tok.encode(EFFORT_TEXT[level], parse_special=False)
+        for i in range(len(head) - len(old) + 1):
+            if head[i:i + len(old)] == old:
+                return ids[:i] + low + ids[i + len(old):] + list(generated)
+    for i in range(len(head) - len(low) + 1):         # already at low: there is nothing lower to ask for
+        if head[i:i + len(low)] == low:
+            return None
+    # No effort sentence anywhere, so the request asked for medium: put the low one at the head of the system
+    # message, where the template puts it when there is one.  Anchored on the ids of the tag itself, and None
+    # if they are not present as a run: better to recover nothing than to splice blind into the role.
+    role = tok.encode("system\n", parse_special=False)     # the tag itself is one special id (as IM_END is)
+    if head[1:1 + len(role)] != role:
+        return None
+    at = 1 + len(role)
+    return ids[:at] + low + tok.encode("\n\n", parse_special=False) + ids[at:] + list(generated)
 
 
 LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
@@ -2903,7 +2923,7 @@ class Service:
         # "parallel" (the engine's batch slots): every running request's own status and rate window; self.status
         # then says busy while any runs and shows the newest one
         self.live_reqs: dict[int, tuple[dict, collections.deque]] = {}
-        # todo #35: MCP calls running right now, keyed by the generator that started them.  Between engine
+        # todo #waiting-state: MCP calls running right now, keyed by the generator that started them.  Between engine
         # rounds there is no live_reqs entry at all (it covers the turn, not the tool), which is why a tool
         # running for 90 seconds read as "idle" - this is what spans the whole turn.
         self.mcp_running: dict[object, str] = {}
@@ -3407,7 +3427,7 @@ class Service:
         return self.mcp_keep_round_thinking if v is None else bool(v)
 
     def mcp_stream_args(self, req: dict) -> bool:
-        """todo #11: does this client want the argument pieces of an MCP call as it is written?  Off unless the
+        """todo #tool-args-stream: does this client want the argument pieces of an MCP call as it is written?  Off unless the
         request asks, so every other client's stream is byte for byte what it was.  The pieces are the raw JSON
         text of the call, in the order the parser cut it - the client shows them until the finished arguments
         arrive, which is what replaces the "(being written)" placeholder."""
@@ -3418,7 +3438,7 @@ class Service:
         the hardware (with a minute of history per series).
 
         Three tiers, because the work each costs is different and the Chat and About tabs were paying for all of
-        it to show a fraction of it (todo #40, and the About half found when asked why About got the full answer):
+        it to show a fraction of it (todo #metrics-lite, and the About half found when asked why About got the full answer):
           lite          {live, engine}                     - the header pill; no telemetry, no log read
           lite + hw     + hardware, hardware_static        - About's cards; telemetry only, no log read
           full          everything                         - the Monitor; telemetry AND the engine-log read
@@ -3434,7 +3454,7 @@ class Service:
         now = time.time()
         progress = getattr(self.engine, "progress", None)
         if tool_running:
-            # todo #35: first, because between engine rounds there is no live request record at all - a tool
+            # todo #waiting-state: first, because between engine rounds there is no live request record at all - a tool
             # running for 90 seconds used to read as idle, which is the one thing a user needs to see
             state = "running-tool"
         elif s.get("busy") and s.get("first_token") is None:
@@ -3445,7 +3465,7 @@ class Service:
             state = "unloaded"
         else:
             state = "idle"
-        # todo #35 again: every one of these was gated on busy, and busy is False between engine rounds - so
+        # todo #waiting-state again: every one of these was gated on busy, and busy is False between engine rounds - so
         # while an MCP call ran, live reported prompt_tokens/generated/max_tokens/elapsed_s as None and the
         # Monitor's Context fill gauge read 0% mid-turn.  The numbers are in status for the whole turn; the gate
         # has to include the tool wait, which is what tool_running says.
@@ -3816,6 +3836,8 @@ class Service:
             s["generated"] = n
             if s.get("first_token") is None:
                 s["first_token"] = time.time()
+            if s.get("pass_first_token") is None:
+                s["pass_first_token"] = s["first_token"]
             (self.rate if rate is None else rate).append((time.time(), n))   # the live rate's window (RATE_WINDOW_S)
             for ev in evs:
                 if ev.kind == "reasoning":
@@ -3836,12 +3858,15 @@ class Service:
         with self.status_lock:
             s = dict(self.status if st is None else st)
         el = now - s.get("started", now)
-        if s.get("first_token") is None:
+        # a status dict from before this field exists (and the hand-built ones in the tests) falls back to the
+        # request's own first token, so only a pass that deliberately cleared it reads as back in prefill
+        ft = s.get("pass_first_token", s.get("first_token"))
+        if ft is None:
             pr = getattr(self.engine, "progress", None)   # (position reached, prompt tokens): a reused prefix counts
             done = f"{pr[0]:,} of {pr[1]:,}" if pr and pr[1] else f"{s.get('prompt_tokens', 0):,}"   # as read (#29)
             print(f"[strata] reading the prompt: {done} tokens, {el:.0f} s so far", flush=True)
         else:
-            rate = s["generated"] / max(1e-6, now - s["first_token"])
+            rate = s["generated"] / max(1e-6, now - ft)
             # #984: while a thinking budget applies, the thinking line shows it, not the request's max_tokens
             limit = (f"budget {s['thinking_budget']} (max {s.get('max_tokens')})"
                      if s["phase"] == "thinking" and s.get("thinking_budget") else f"max {s.get('max_tokens')}")
@@ -3912,6 +3937,7 @@ class Service:
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
+        recovery_unavailable = False                            # #2906: "recover" said nothing when it could not
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         # Only a DONE line replaces engine.last, so a request that died, errored or was disconnected must not have
@@ -3983,8 +4009,9 @@ class Service:
                         if par:
                             self.status["queued"] -= 1
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
-                                  generated=0, started=time.time(), first_token=None, tool=None, tail="",
-                                  max_tokens=max_new, reasoning_recoveries=0, thinking_budget=budget)
+                                  generated=0, started=time.time(), first_token=None, pass_first_token=None,
+                                  tool=None, tail="", max_tokens=max_new, reasoning_recoveries=0,
+                                  thinking_budget=budget)
                         if par:
                             self.live_reqs[id(st)] = (st, rate)
                             self.status.update(st)
@@ -3998,6 +4025,15 @@ class Service:
                     while True:
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
+                        # Each pass reads the prompt it is given from the start.  The loop recovery (#2906)
+                        # splices an early token, so nothing is reused and the pass can spend minutes reading
+                        # again - which used to be invisible: the progress line kept printing the previous
+                        # pass's token count, frozen, with a rate that decayed as 2560/elapsed and looked like
+                        # a hang.  pass_first_token marks the pass; first_token stays the request's own, since
+                        # the latency sample and the done-line rate report it.
+                        with self.status_lock:
+                            st.update(phase="reading the prompt", generated=0, pass_first_token=None,
+                                      prompt_tokens=len(prompt))
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, sampling, cancel)
                         recover_prompt = None
@@ -4071,6 +4107,13 @@ class Service:
                                             recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
                                             if recover_prompt is not None:
                                                 break
+                                            if not recovery_unavailable:      # #2906: the bug was silence - the loop
+                                                recovery_unavailable = True   # was logged as detected and then nothing
+                                                print(f"[strata] repeated reasoning detected at {n} tokens "
+                                                      f"(coverage={repeat_coverage:.3f}): the recovery cannot lower "
+                                                      "this request's effort (its prompt already carries the lowest "
+                                                      "sentence it can splice), so \"recover\" has nothing to do and "
+                                                      "the thinking continues", flush=True)
                                 if budget and parser.state == "reasoning":
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
@@ -4453,7 +4496,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                     elif ev.kind == "tool_call":
                         calls.append(ev.call)
                     elif stream_args and ev.kind == "tool_args":
-                        # todo #11: the call's raw JSON as it is written, so the page can show what the model is
+                        # todo #tool-args-stream: the call's raw JSON as it is written, so the page can show what the model is
                         # typing instead of "(being written)".  Only for requests that asked (strata_mcp_args);
                         # the pieces still do not go into the OpenAI-style deltas, which would duplicate them.
                         yield "mcp", {"event": "args", "id": ev.call.id, "text": ev.text}
@@ -4483,7 +4526,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                           "tool": tool, "arguments": c.arguments, "round": rounds}
             # The call runs on a thread while this generator keeps yielding heartbeats: they reach the client as
             # keep-alives, which is how a client that went away (the web app's Stop) is noticed during a slow tool.
-            # todo #35: an MCP call running is its own state.  Before this, /metrics answered live.state=idle
+            # todo #waiting-state: an MCP call running is its own state.  Before this, /metrics answered live.state=idle
             # during a tool round (measured: 3 of 3 samples), and the reason is structural - live_reqs is
             # registered for the engine's turn only, so between rounds, while the tool runs, there is no live
             # request record at all and busy is false.  A per-request status field cannot cover that, so the
@@ -5222,7 +5265,7 @@ def make_handler(svc: Service):
                 if self._authorized():
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35);
                     # `?lite=1` only what the header pill reads, `&hw=1` adds the two hardware blocks About
-                    # draws (todo #40 - neither asks for the sparkline history, the request table or the log read)
+                    # draws (todo #metrics-lite - neither asks for the sparkline history, the request table or the log read)
                     q = parse_qs(urlsplit(self.path).query)
                     on = lambda k: q.get(k, ["0"])[0] in ("1", "true")
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path,

@@ -308,7 +308,7 @@ class ToolLoop(unittest.TestCase):
         return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
 
     def test_argument_pieces_stream_when_the_client_asks(self):
-        # todo #11: the page asks for a call's JSON as it is written, so it can show what the model is typing
+        # todo #tool-args-stream: the page asks for a call's JSON as it is written, so it can show what the model is typing
         # instead of a static "(being written)".  It only happens for a request that asks - the test above
         # asserts the plain start/call/result sequence for one that does not.
         self.start(call_script("fake__echo", text="hello from the tool"), "</think>\n\nThe tool said hello.")
@@ -348,7 +348,7 @@ class ToolLoop(unittest.TestCase):
 
     def test_a_running_tool_is_a_state_of_its_own(self):
         # measured 2026-10-23: while an MCP call ran, /metrics answered live.state = "idle" in 3 of 3 samples -
-        # the one moment a user wants to know something is happening was reported as nothing happening (todo #35)
+        # the one moment a user wants to know something is happening was reported as nothing happening (todo #waiting-state)
         self.start(call_script("fake__sleep", seconds=1.2), "</think>\n\ndone.")
         threading.Thread(target=self.post, args=({"strata_mcp": True},), daemon=True).start()
         base = f"http://127.0.0.1:{self.httpd.server_address[1]}"

@@ -156,7 +156,7 @@ function setMetric(key, value, unit, sub) {
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
-// todo #40: /metrics is 7,317 bytes and the Chat tab shows none of it but the header pill, which reads about
+// todo #metrics-lite: /metrics is 7,317 bytes and the Chat tab shows none of it but the header pill, which reads about
 // 256 bytes of it.  So: ask for ?lite=1 off the Monitor and About tabs, and go quiet when nothing is happening
 // or the window is in another tab.  Measured before the change: one full poll a second whatever the tab and
 // whether the page was even visible - about 26 MB an hour per open tab, and the server rebuilt the telemetry
@@ -166,7 +166,7 @@ const ACTIVE_STATES = ["reading", "generating", "running-tool", "queued"];
 function pollUrl() {
   if (tab === "monitor") return reqShowAll ? "metrics?requests=all" : "metrics";
   // About draws three blocks: engine facts and the two hardware ones. It has no sparklines, no request table
-  // and no conversation cache, so it asks for lite plus hardware rather than the whole answer (todo #40).
+  // and no conversation cache, so it asks for lite plus hardware rather than the whole answer (todo #metrics-lite).
   if (tab === "about") return "metrics?lite=1&hw=1";
   return "metrics?lite=1";          // the Chat tab: the pill and the projection flag, nothing else
 }
@@ -243,7 +243,7 @@ function renderPill(m) {
     // "reading", not "generating": the palette makes colour one decision per state - the engine produces no
     // tokens while a tool runs, exactly as while a prompt is being read, so both are --st-info blue
     // (components.css:20-21). The Monitor's badge and state card already said blue; the pill was the outlier.
-    setPill("reading", `Waiting · ${live.tool || "a tool"}`);   // todo #35: an MCP call running is not idle
+    setPill("reading", `Waiting · ${live.tool || "a tool"}`);   // todo #waiting-state: an MCP call running is not idle
   } else {
     setPill("idle", "Idle");
   }
@@ -855,7 +855,7 @@ function showChat(c) {
 }
 function openChat(id) {
   // no busy guard: the answer keeps streaming into its own message object, and paint() finds the row again when
-  // you come back, so reading another conversation mid-turn is safe (todo #9)
+  // you come back, so reading another conversation mid-turn is safe (todo #switch-while-running)
   const c = chats.find((x) => x.id === id);
   if (c) showChat(c);
 }
@@ -1002,7 +1002,7 @@ function msgEl(m, i) {
     meta.querySelector(".meta-text").textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
-    // todo #12: the thinking blocks are parts of the bubble now, in the order the model produced them, so the
+    // todo #think-per-round: the thinking blocks are parts of the bubble now, in the order the model produced them, so the
     // template only makes the bubble and the row under it
     el.innerHTML = `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer"` +
@@ -1033,7 +1033,7 @@ const toolOpen = (t) => t.open !== undefined ? !!t.open
 // the strings a tool block shows, in one place: toolHtml() writes them once when the block is made and
 // toolSync() compares against them afterwards, so the two can never drift apart
 // the arguments as the reader should see them: a finished call's, pretty-printed; while the model is still
-// writing one, the raw JSON arriving piece by piece (todo #11) instead of a static "(being written)"
+// writing one, the raw JSON arriving piece by piece (todo #tool-args-stream) instead of a static "(being written)"
 const toolArgsText = (t) => (t.arguments != null ? JSON.stringify(t.arguments, null, 2) : (t.argsText || ""));
 const toolArgs = (t) => toolArgsText(t) || "(being written)";
 // a finished call previews the result the model saw; one still being written previews the JSON arriving now
@@ -1068,7 +1068,7 @@ function syncToolBody(box, t) {
   const args = box.querySelector(".tool-call__pre-args");
   const wantArgs = toolArgs(t);
   // a call being written streams its JSON: follow it the way the thinking follows, only if the reader is at the
-  // bottom of that box already (todo #11)
+  // bottom of that box already (todo #tool-args-stream)
   const follow = t.state === "writing" && nearEnd(args, 48);
   if (args.textContent !== wantArgs) {
     args.textContent = wantArgs;
@@ -1190,7 +1190,7 @@ function addBlocks(host, p, blks) {
 // bubble's innerHTML, which is what used to remake every sprite icon in it 60 times a second (LESSONS.md,
 // "The web app's flash is the innerHTML assignment"), and it is why a part is created once and then synced.
 //
-// Layout (todo #12, the human's rule): a thinking block is always top level, and the container that holds
+// Layout (todo #think-per-round, the human's rule): a thinking block is always top level, and the container that holds
 // that round's text and calls starts right after it.  So reading down a multi-round turn gives you the
 // model's thoughts at arm's reach and the work each thought produced folded under it.
 const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summary>${icon("thinking", "st-icon st-icon--sm")}` +
@@ -1323,7 +1323,7 @@ function onTool(m, x) {
     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
     delete t.argsText;                    // the finished arguments replace the pieces that streamed in
   } else if (x.event === "args") {
-    t.argsText = (t.argsText || "") + (x.text || "");     // todo #11: the call's JSON arriving piece by piece
+    t.argsText = (t.argsText || "") + (x.text || "");     // todo #tool-args-stream: the call's JSON arriving piece by piece
   } else if (x.event === "result") {
     Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
@@ -1334,7 +1334,7 @@ function updateAssistant(el, m, streaming) {
   const bubble = el.querySelector(".st-bubble");
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
-  // todo #34: nothing that only pretends to be output.  There is no box until the model has produced something
+  // todo #no-placeholder: nothing that only pretends to be output.  There is no box until the model has produced something
   // real - an answer, a tool call, an error.  Thinking now lives inside the bubble, so a thinking-only message
   // keeps the element (hiding it would hide the thinking with it) and drops its chrome: .thinking-only below.
   // A finished message that delivered nothing keeps its meta row, so a stopped or empty turn is still visible
@@ -1528,7 +1528,7 @@ async function send() {
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) {          // this server may run MCP tools for it
     body.strata_mcp = true;
-    body.strata_mcp_args = true;               // todo #11: show the call's JSON as it is written, not "(being written)"
+    body.strata_mcp_args = true;               // todo #tool-args-stream: show the call's JSON as it is written, not "(being written)"
     // #2100: the same choice assistantMessages() renders with, so the two rebuilds of a tool turn agree
     body.strata_mcp_thinking = settings.mcpthink === true;
   }
@@ -1607,7 +1607,7 @@ async function send() {
     m.meta = "Stopped";
   }
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
-  // a click on a tool block holds for the turn and no further (todo #46): the open choice is
+  // a click on a tool block holds for the turn and no further (todo #click-not-persisted): the open choice is
   // dropped here, before the final paint below re-decides it from "Show thinking", and cleanMessages keeps it
   // out of the saved record.  A click on a finished message's block still holds until the chat is redrawn.
   for (const t of m.tools || []) delete t.open;
@@ -1616,7 +1616,7 @@ async function send() {
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
   const turn = busy;                                // which conversation this turn belonged to
   busy = null;
-  // a reply that landed in a conversation you are not looking at is worth a mark (todo #37); set it before
+  // a reply that landed in a conversation you are not looking at is worth a mark (todo #chat-state-marker); set it before
   // setBusy(false), which is what redraws the list
   if (historyOn && turn.chat && turn.chatId !== chatId) turn.chat.unread = true;
   setBusy(false);                                   // the spinner clears; elsewhere a dot appears

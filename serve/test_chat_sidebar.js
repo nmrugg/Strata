@@ -515,7 +515,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(holds().length, 0, "ending twice does not throw and does not double-remove");
   done.push("leave warning: on while a request runs, off when it ends, none on an idle page");
 
-  // 22. "Show thinking" (todo #3, now one three-way control with the calls): "folded" | "live" | "always".
+  // 22. "Show thinking" (todo #keep-thinking-open, now one three-way control with the calls): "folded" | "live" | "always".
   // The setting drives the details' open attribute - for a finished answer, for one still streaming, and for a
   // chat re-rendered later (renderChat builds each message with msgEl) - and a block the user opened or closed
   // themselves is still left alone.
@@ -558,7 +558,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
                      "but its one-line preview is still there, so the reader knows what is behind the click");
   done.push("thinking: Show thinking folded/live/always drives the open attribute; live is the default; a user click wins");
 
-  // 23. the same control for the calls (todo #4, folded into Show thinking): a tool block nobody has clicked
+  // 23. the same control for the calls (todo #keep-tool-calls-open, folded into Show thinking): a tool block nobody has clicked
   // follows it; once one is clicked, that choice wins for the rest of the turn.  The body (arguments, the
   // result as the model read it) is only built while the block is open, so "not open" is checked by its
   // absence, not by the preview line.
@@ -591,7 +591,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.ok(isOpen(tmLive), "live: a click still opens a settled call");
   done.push("tool calls: Show thinking folded/live/always decides an untouched block; after a click the click decides");
 
-  // 24. opening and closing a tool block while the engine writes (todo #8).  The answer's bubble is rewritten
+  // 24. opening and closing a tool block while the engine writes (todo #tool-click-open).  The answer's bubble is rewritten
   // every frame, so a click handler that prevented the browser's own opening and asked for a rebuild lost the
   // click whenever the node was replaced between mousedown and mouseup.  Now the browser opens the block and the
   // page only remembers the state and fills in the body the block was built without.
@@ -627,7 +627,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(thblock.dataset.touched, "1", "the thinking block is marked as the user's own");
   done.push("tool calls: the browser opens them, the page remembers - a click is not lost to a rebuild");
 
-  // 25. the answer is updated in place (todo #7).  What is asserted is element identity and the count of whole-
+  // 25. the answer is updated in place (todo #update-in-place).  What is asserted is element identity and the count of whole-
   // subtree assignments, because that is what the flicker is: each tool block carries two <use> references into
   // web/sprite.svg, and re-making them 60 times a second is what shows on screen.
   const rp = run({}, {});
@@ -646,7 +646,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(bubble.children[0], first, "the settled block is the same element, not a copy of it");
   assert.notStrictEqual(bubble.children[1], last0, "the growing block was replaced");
   // thinking frames with the answer unchanged: nothing in the bubble is touched.  The thinking block has to
-  // exist first - with todo #12 a new run is itself a part, so the frame that creates one does add an element
+  // exist first - with todo #think-per-round a new run is itself a part, so the frame that creates one does add an element
   rm.reasoning = "primed";
   rp.s.updateAssistant(rel, rm, true);
   const before = bubble.children.slice(), insA = bubble._ins;
@@ -694,7 +694,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(bubble._sets, undefined, "still no whole-bubble assignment in the whole stream");
   done.push("flash: the answer is updated in place - settled blocks and tool icons keep their identity");
 
-  // 26. my own messages as markdown (todo #5 and #6).  Off is the page from before: the exact characters typed,
+  // 26. my own messages as markdown (todo #md-per-author and #6).  Off is the page from before: the exact characters typed,
   // nothing parsed.  On uses the answers' renderer, which escapes first - so what matters here is that nothing
   // typed can turn into markup, and that the prompt still carries the raw text either way.
   const u = run({}, {});
@@ -721,7 +721,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(u.s.apiMessages()[0].content, raw, "the prompt still carries exactly what was typed");
   done.push("my messages: markdown renders them when the switch is on, and nothing typed becomes markup");
 
-  // 27. the defaults per author, and the "md" button in a message's own meta row (todo #5 and #6 as the human
+  // 27. the defaults per author, and the "md" button in a message's own meta row (todo #md-per-author and #6 as the human
   // asked for them): the drawer sets the default for each side, the button overrides that one message, and the
   // choice is kept on the message so it survives a reload.
   const dd = run({}, {});
@@ -774,7 +774,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(pel0.textContent, pm2.text, "its text is the whole answer so far");
   done.push("md: defaults per author, and a per-message switch that keeps its choice with the chat");
 
-  // 28. nothing that only pretends to be output (todo #34): no "Writing", no caret, and no answer bubble at
+  // 28. nothing that only pretends to be output (todo #no-placeholder): no "Writing", no caret, and no answer bubble at
   // all until the model has produced something real.  The thinking block is what shows while it thinks.
   const cz = run({}, {});
   await wait();
@@ -812,7 +812,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(ebul.querySelector(".msg-error").textContent, "the request failed", "as its own element");
   done.push("no fake output: no Writing, no caret, no bubble until text, a tool call or an error");
 
-  // 29. the settings drawer warns before it throws away changes (todo #36).  Only Apply writes, so closing on
+  // 29. the settings drawer warns before it throws away changes (todo #drawer-discard-warn).  Only Apply writes, so closing on
   // the X, the scrim or Escape used to discard whatever the switches had been moved to, silently.
   const dr = run({}, {});
   await wait();
@@ -1127,7 +1127,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(cp.s.safeFileName(""), "strata-chat", "and an empty one does too");
   done.push("copy: plain, Shift (+thinking), Ctrl+Shift (everything); export named for the conversation");
 
-  // 37. switching conversations while one is answering (todo #9).  The turn writes into its own message object
+  // 37. switching conversations while one is answering (todo #switch-while-running).  The turn writes into its own message object
   // and paint() looks the row up each frame, so leaving and coming back neither loses the answer nor paints a
   // detached node - and the finished turn is saved into ITS chat, not whichever one happens to be open.
   const ctl = {step: null, flush: null}, sse = [];
@@ -1219,7 +1219,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(mk39.s.chats.find((c) => c.id === "A").unread, false, "on the object too");
   done.push("chat list: a spinner for the conversation that is answering, a dot for one with a reply you have not read");
 
-  // 40. a call being written shows the JSON arriving, instead of a static "(being written)" (todo #11).  The
+  // 40. a call being written shows the JSON arriving, instead of a static "(being written)" (todo #tool-args-stream).  The
   // server sends the pieces only because the page asked (strata_mcp_args); here they are fed in as events.
   const aw = run({}, {});
   await wait();
@@ -1250,7 +1250,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(wm.tools[0].state, "running", "the block moves on to running");
   done.push("tool calls: the JSON the model is typing streams into the block instead of \"(being written)\"");
 
-  // 41. a running MCP tool is its own state (todo #35): measured 2026-10-23, /metrics answered live.state=idle
+  // 41. a running MCP tool is its own state (todo #waiting-state): measured 2026-10-23, /metrics answered live.state=idle
   // in 3 of 3 samples while a tool ran, because between engine rounds there is no live request record at all.
   const pl = run({}, {});
   await wait();
@@ -1263,7 +1263,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(pl.s.el("pill").dataset.state, "reading", "so it colours like a prompt read, not idle");
   done.push("pill: a running MCP tool reads Waiting · <tool>, in the reading colour");
 
-  // 42. the polling itself (todo #40): the Chat tab asks for the lite answer, and the cadence follows what is
+  // 42. the polling itself (todo #metrics-lite): the Chat tab asks for the lite answer, and the cadence follows what is
   // actually happening and whether the window is even being looked at.
   const po = run({}, {});
   await wait();

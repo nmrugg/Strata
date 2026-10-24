@@ -171,7 +171,7 @@ class SpriteInlined(Server):
 
 
 class LiteMetrics(Server):
-    """todo #40: the Chat tab shows the header pill and nothing else, so it asks ?lite=1. The point is not only
+    """todo #metrics-lite: the Chat tab shows the header pill and nothing else, so it asks ?lite=1. The point is not only
     the bytes: the full answer snapshots the telemetry and re-reads the engine log (up to a MiB of new lines),
     which the Chat tab was paying for once a second and never showing."""
 
@@ -235,7 +235,7 @@ class LiteMetrics(Server):
             svc.telemetry.snapshot, svc.conv_log.poll = real_tel, real_log
 
     def test_lite_still_reports_a_running_tool(self):
-        # todo #35 and #40 meet here: the pill is the whole reason the Chat tab polls, so a tool must be named
+        # todo #waiting-state and #40 meet here: the pill is the whole reason the Chat tab polls, so a tool must be named
         # in the lite answer too
         tok = ByteTokenizer()
         svc = self.svc

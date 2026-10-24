@@ -69,7 +69,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .msg-images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: flex-end; }
 .msg-images img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
 .st-msg .st-collapse { width: 100%; }
-/* the thinking blocks are parts of the bubble now (todo #12), so they need the width the old sibling rule
+/* the thinking blocks are parts of the bubble now (todo #think-per-round), so they need the width the old sibling rule
    gave them - and their own margin: as a sibling of the bubble the block got the message row's flex gap of
    6px (components.css:63), and inside the bubble nothing was spacing it from the text that follows.
    .st-bubble > :first-child / :last-child above trim it at the ends of the bubble. */
@@ -79,7 +79,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-collapse.think .think-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
                                      white-space: nowrap; font-size: var(--st-fs-xs); font-weight: 400; }
 .st-collapse.think[open] .think-preview { display: none; }
-/* a message that is only thinking has no box around it (todo #34): the element has to exist, because the
+/* a message that is only thinking has no box around it (todo #no-placeholder): the element has to exist, because the
    thinking lives in it now, but its chrome must not */
 .st-bubble.thinking-only { background: none; border: 0; padding: 0; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
@@ -95,7 +95,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-msg__meta .st-btn--md[aria-checked="true"] { background: var(--st-surface-2); }
 /* an answer drawn as plain text: one element, the model's own line breaks kept */
 .st-bubble .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
-/* todo #34: the fake caret rule is gone - the page no longer draws anything that pretends to be output while
+/* todo #no-placeholder: the fake caret rule is gone - the page no longer draws anything that pretends to be output while
    only thinking has arrived, and that caret also stayed at the end of a finished answer.  The blink keyframes
    stay: the Running/Writing badge on a tool block uses them (below). */
 @keyframes blink { 50% { opacity: 0; } }

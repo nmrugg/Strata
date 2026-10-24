@@ -180,7 +180,7 @@ this box for it. The visible proof is the human's own eyes.
 **Four traps in that same render path, all hit on 2026-10-23.** (1) `send()` used to capture one element
 (`const el = $("chat").lastElementChild`) and paint into it for the whole turn, so **any `renderChat()` while a
 request was running detached the element the stream was painting into** and the answer silently stopped
-appearing. Fixed on 2026-10-23 (todo #9): `rowOf(m)` looks the row up by the message's index in the chat on
+appearing. Fixed on 2026-10-23 (todo #switch-while-running): `rowOf(m)` looks the row up by the message's index in the chat on
 screen each frame, and the turn carries the chat it belongs to (`busy = {controller, msg, chat, chatId}`), which
 is what makes switching conversations mid-answer safe. The lesson stands: a long-lived paint target must be
 resolved, not captured. (2) A tool block opened by a click handler that called
@@ -233,7 +233,7 @@ ruinous. `store.set("draft." + key, ...)` is synchronous and tiny. The store hel
 deliberately `get`/`set` only - a test pins that (`test_chat_sidebar.py`) - so "no draft" is
 an empty string, not a deleted key.
 
-**Three more things, learned while grouping the answer into think/work blocks (todo #12, 2026-10-23).**
+**Three more things, learned while grouping the answer into think/work blocks (todo #think-per-round, 2026-10-23).**
 (1) `querySelector` never returns the element it is called on. `syncThink` asked the details
 element for `.st-collapse think` - its own class - which is `null` in a browser and would have
 thrown on the next line; the stub auto-creates a node, so it looked like a test problem instead.
@@ -364,13 +364,13 @@ the line was dead weight and deleted it.
 "the stall" for all of them and wrote it into the todo that way; the human had to separate them.
 They are: (1) the **slow death** - `reasoning_loop_recovery: "recover"` fires and the thinking
 counter then sits at exactly 2560 tokens for minutes while the rate decays 88.5 -> 29.3 tok/s, so
-the turn never advances and never ends (todo 72, `strata-slow-death.txt`); (2) the **silent no-op**
+the turn never advances and never ends (todo slow-death, `strata-slow-death.txt`); (2) the **silent no-op**
 - `focused_recovery_prompt` (`serve/server.py:193`) splices `HIGH_EFFORT` (=`EFFORT_TEXT["xhigh"]`,
 `server.py:157`) down to `LOW_EFFORT`, keyed on xhigh because that is the template's *default*
 sentence, so a request that asked low or medium has no such sequence, the function returns `None`,
-and nothing is recovered (todo 73); (3) the **forged-boundary death** - a turn cut because a
+and nothing is recovered (todo recover-noop); (3) the **forged-boundary death** - a turn cut because a
 boundary tag appeared as text, twice today because the agent quoted a log line containing one
-(todo 83). This box's own web traffic is NOT in case 2: the app sends `high` and
+(todo dead-turn). This box's own web traffic is NOT in case 2: the app sends `high` and
 `serve/chat_template.jinja:59-61` maps `high` to `xhigh`, which is why the log shows the rescue
 firing and then the freeze. Check which one the evidence points at before proposing a fix, and say
 which one you mean when you write "the stall".

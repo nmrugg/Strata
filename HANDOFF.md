@@ -10,30 +10,26 @@ sorted by effort**) first.
 
 ## Read this before you touch `todo`
 
-The file was **renumbered on 2026-10-24** and the scheme is deliberate. Do not "fix" it back.
+Items have **short names, not numbers** (renamed 2026-10-24). Each item's line starts with its name in
+backticks, e.g. `` `pin-conversation` ``. Code comments cite it as `todo #pin-conversation`; prose in the
+file says "item pin-conversation". To go from a comment to the item: `grep -n '`pin-conversation`' todo`. To go the
+other way: `grep -rn 'todo #pin-conversation' serve/`.
 
-- **Open items run 54 up**, in one contiguous sequence in difficulty order. The first one you
-  should take is **54**.
-- **Done and shelved items keep their old numbers** (9, 11, 12, 34–46) and live in the final
-  section. Numbers below 54 are historical.
-- The reason: about forty comments in `serve/web/app.js`, `serve/web/app.css`,
-  `serve/server.py`, `serve/test_*.py`, `serve/test_chat_sidebar.js` and `LESSONS.md` cite
-  `todo #N`. Those cite 3, 4, 5, 6, 7, 8, 9, 11, 12, 34, 35, 36, 37, 38, 40 and 46. Reusing
-  those numbers for new work would point every one of them at the wrong want. That is why open
-  work went *above* the band instead of restarting at 1.
-- 3–8 name items that were done and deleted from the file, so those references dangle by
-  design. They are not bugs to chase.
-- Every `item N` cross-reference inside the file was rewritten against the mapping and
-  verified to resolve. Six duplicate wants were folded out: Fork, system prompt, edit/delete
-  posts, import/export and enable-disable-an-MCP-server each appeared twice, and the stalled-
-  turn item written earlier the same day was merged into what is now item 83.
+Do not reintroduce numbers. The file was renumbered four times in one day; each pass invalidated
+cross-references and the ~40 `todo #N` comments in `serve/`, and twice a scripted renumber corrupted the
+file itself (a heading eaten by its own replace, and `items 39-42` mangled into `items asset-validator-42`).
+A name cannot collide with its neighbour, so there is nothing to keep in sequence and nothing to renumber
+when work lands.
 
-Useful current numbers, because the old handoff cited the old ones:
-**70** pin one conversation (the one real design question), **69** make editing not re-read,
-**71** close the browser and keep generating, **81** leaked markup, **82** the model stops
-before or during a tool call, **72** the slow death, **73** the recovery no-op, **83** nothing
-notices a dead turn, **58** Enter does not poll, **65** trim long tool calls, **87** multiple
-tabs, **92** start the server before the model loads.
+When you finish an item, keep its line and mark it `DONE <date>` - the Done section is history, not a
+waiting room. When you add one, pick a name no other line uses. Eight work items that were done and
+deleted in an earlier session are still cited by code comments; they live in a "Historical names" section
+so those citations resolve instead of dangling.
+
+The one real design question in the file is `pin-conversation`: making a conversation near 1M tokens
+always fast to open. Measured here, parked state is 19.1 KB per token, so 1M tokens is ~18 GiB; NVMe does
+2.3 GB/s write and 3.2 GB/s cold read, so ~8 s to save and ~6 s to resume against ~500 s to re-read. RAM
+cannot hold one such chat. Do not start it with code - it needs a decision first.
 
 ## Your job
 
@@ -105,11 +101,13 @@ it is not. If you must discuss one, name the tag instead of reproducing it.
 key (`settings.show`). Old stored settings map to it once on load (`migrateShow`).
 `a0bb1d98` a click on a tool block holds for the **turn**, not forever, and is no longer
 written into the chat record.
-`71a07306` LESSONS entries. `7e2a66a4` todo items 45–53 at the time they were committed; the
-renumber kept **45** and **46** (both Done) and turned 47–52 into **87–92**, while the old
-stalled-turn item 53 was merged into **82**.
+`71a07306` LESSONS entries. `7e2a66a4`, `6b0dd108`, `fe0e3a33` and `b7929b54` are todo and docs churn
+from the same day, including two renumber passes that the rename below undoes; the hashes are the
+stable citation, the numbers in those messages are not.
 
-Still **uncommitted**: the `todo` reorganisation and this file.
+The items those commits added are, by name: `fold-control`, `click-not-persisted`, `drawer-auto-apply`,
+`no-scrim`, `send-spinner`, `hide-preview-when-open`, `server-before-model`, `test-command`,
+`slow-death`, `recover-noop` and `dead-turn`.
 
 Two mechanisms worth knowing before you touch either kind of block:
 
@@ -165,7 +163,7 @@ unrelated thing — a client timing out on a long prefill, which is the re-read 
 cannot see it, and a counter that cannot see the bug is worse than none.
 
 **The front end can already detect a dead turn.** `app.js:1342` computes
-`hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error` and item 34 uses it only to
+`hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error` and item no-placeholder uses it only to
 hide the bubble. Nothing acts on it — so a Continue affordance, or an opt-in re-prompt, is one
 boolean away. It would not have saved this session, because the agent harness is a different client.
 
