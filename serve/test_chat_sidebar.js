@@ -193,7 +193,7 @@ function run(hooks, stored, seed) {
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
-    "pollUrl, pollDelay, renderPill, setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
+    "pollUrl, pollDelay, renderPill, renderLite, setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
@@ -1221,8 +1221,11 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   const pillState = {state: "running-tool", tool: "easyCMP__run_cmd", queued: 0, elapsed_s: 3.2, busy: true};
   pl.s.render({live: pillState, hardware: {}, hardware_static: {}, engine: {}, history: {}, requests: [], totals: {}});
   assert.strictEqual(pl.s.el("pill-text").textContent, "Waiting · easyCMP__run_cmd", "the pill names the tool");
-  assert.strictEqual(pl.s.el("pill").dataset.state, "generating", "and stays in the active colour, not idle");
-  done.push("pill: a running MCP tool reads Waiting · <tool>, not Idle");
+  // blue, not the generating green: the palette colours reading and generating differently because the engine
+  // produces no tokens while a prompt is being read, and that is also true while a tool runs. The Monitor's
+  // badge and state card already said blue; the pill was the outlier.
+  assert.strictEqual(pl.s.el("pill").dataset.state, "reading", "so it colours like a prompt read, not idle");
+  done.push("pill: a running MCP tool reads Waiting · <tool>, in the reading colour");
 
   // 42. the polling itself (todo #40): the Chat tab asks for the lite answer, and the cadence follows what is
   // actually happening and whether the window is even being looked at.
@@ -1232,7 +1235,8 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   po.s.setTab("monitor");
   assert.strictEqual(po.s.pollUrl(), "metrics", "the Monitor needs the full answer");
   po.s.setTab("about");
-  assert.strictEqual(po.s.pollUrl(), "metrics", "and so does About (it draws engine facts and the request list)");
+  assert.strictEqual(po.s.pollUrl(), "metrics?lite=1&hw=1",
+                     "About draws engine facts and the two hardware blocks, and nothing else");
   po.s.setTab("chat");
   const idle = {live: {state: "idle"}};
   assert.strictEqual(po.s.pollDelay(idle), 15000, "idle and visible: 15 s, not 1 s");
@@ -1246,7 +1250,26 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   po.s.setHidden(false);
   po.s.setTab("monitor");
   assert.strictEqual(po.s.pollDelay(idle), 1000, "the Monitor keeps its own cadence even when idle");
+  po.s.setTab("about");
+  assert.strictEqual(po.s.pollDelay(idle), 15000, "About backs off too: its facts change rarely");
   po.s.setTab("chat");
+  // a lite+hw answer has no sparklines or request table, but it does carry About's cards - renderLite paints
+  // those, which is the half that would otherwise go missing
+  const abt = run({}, {});
+  await wait();
+  abt.s.renderLite({lite: true, live: {state: "idle"}, engine: {model: "qwen", max_context: 1048576, cvec: "project:4-44"},
+                    hardware: {ram_total: 34359738368, ram_used: 10737418240}, hardware_static: {gpu_name: "RTX 3060"}});
+  const factsOf = (id) => (abt.s.el(id)._html || "");
+  assert.ok(factsOf("facts-hw").includes("RTX 3060"), "the hardware card is painted from a lite+hw answer");
+  assert.ok(factsOf("facts-api").includes("/v1"), "and the API card too");
+  assert.ok(factsOf("facts-engine").includes("1,048,576"), "the engine card gets engine.max_context");
+  // the pill colour for a running tool: blue, like the Monitor's badge and state card, not the generating green
+  const pc = run({}, {});
+  await wait();
+  pc.s.renderPill({live: {state: "running-tool", tool: "easyCMP__run_cmd"}});
+  assert.strictEqual(pc.s.el("pill").dataset.state, "reading",
+                     "a tool wait colours like a prompt read: the engine is producing no tokens");
+  assert.strictEqual(pc.s.el("pill-text").textContent, "Waiting · easyCMP__run_cmd", "with the tool named");
   // a lite answer carries no cards, so the lite path paints the pill on its own
   const pl2 = run({}, {});
   await wait();

@@ -288,6 +288,14 @@ breath, or make the client tolerant (e.g. app.js detecting that the symbols are 
 file URL). Related: the sprite is now a build input, not a fetched asset - deleting it takes the icons out of
 every page (with `serve/server.py`'s guard the page still serves, symbols simply missing).
 
+**One colour per state, and the pill is not a separate decision.** `--st-accent` green means the engine is
+producing tokens; `--st-info` blue means it is not (reading a prompt, waiting on an MCP tool); `--st-warn`
+means queued. `components.css:20-21` already encodes that for the pill's dot and `:58-60` for the badges, so
+`setPill(state, ...)` must pass the state that matches, not the one that looks "active". I introduced a
+mismatch on 2026-10-24 by setting `running-tool` to `"generating"` (green) while the Monitor's badge and state
+card already said blue for the same state - three components, one state, two colours. A test now pins the
+pill's `data-state` for `running-tool`, because colour bugs are invisible to everything except a human eye.
+
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
 kept answering normally while the agent's tools went dark. Attribute the crash to the right

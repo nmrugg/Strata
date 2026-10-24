@@ -521,8 +521,8 @@ numbers below are already taken.
         counts those calls and asserts a lite answer makes neither.
       - the page asks for lite off the Monitor and About tabs, and the cadence follows what is happening:
         1 s while a request of ours is in flight or the state is reading/generating/running-tool/queued,
-        15 s idle, 60 s when the window is hidden (document.hidden), and the Monitor and About keep their own
-        1 s because they have cards to fill. A tab switch or the window coming back polls at once.
+        15 s idle, 60 s when the window is hidden (document.hidden); the Monitor keeps its own 1 s because it
+        has sparklines to feed. A tab switch or the window coming back polls at once.
       - one scheduler (schedulePoll clears the pending handle) so pollNow() means "now" and cannot fork a
         second chain; startup no longer polls twice, since showTab already schedules the first.
     The pill logic moved into renderPill(), which both the full and the lite path call, so the two cannot
@@ -534,8 +534,23 @@ numbers below are already taken.
     server do the work anyway each fail.
     NOT done here, deliberately: the ?history=0 knob (lite supersedes it for the Chat tab) and any change to
     what the Monitor itself asks for - it needs all of it. Item 41 (SSE) would replace the polling entirely.
+    Followed up the same day, because the human asked "why does About get full metrics?" and I had never checked:
+    About was asking for the whole 9,686-byte answer to draw 1,282 bytes of it (engine + hardware +
+    hardware_static = 13%). Now three tiers, and the split is about the WORK, not just the bytes:
+      ?lite=1            {live, engine}                    no telemetry snapshot, no engine-log read
+      ?lite=1&hw=1       + hardware, hardware_static      telemetry snapshot only, no engine-log read
+      (none)             everything                        telemetry AND conv_log.poll (up to a MiB of new
+                                                          engine-log lines), which only conversation_cache needs
+    About also backs off to 15 s idle now - its facts change rarely. renderLite() paints the pill and, when the
+    answer carries them, About's cards; without that call the lite+hw keys would arrive and be dropped.
+    Lesson worth keeping: I had asserted "About draws cards, so it needs the full answer" without reading which
+    keys renderAbout() touches. It touches three.
 
-41.  SSE /events: push state transitions instead of polling for them. [py] [ui] OPEN, after 35 and 40
+41.  SSE /events: push state transitions instead of polling for them. [py] [ui] SHELVED 2026-10-24 - the
+    human's call, and the numbers support it: after items 39-42 the Chat tab asks ~404 bytes every 15 s when
+    idle and nothing at all when the window is hidden, so the case for a pushed connection is much weaker than
+    it looked. Revisit only if the Monitor tab's own 1 s full poll becomes a problem, or if item 10 (several
+    streams) makes state changes too frequent to poll for.
     One connection per tab pushing small frames on a state change and when a turn finishes - which is also
     what makes item 37 (an unread reply in another conversation) and item 10 (queued conversations) solid
     rather than polling-driven. The cost to accept: serve() is a ThreadingHTTPServer, so a stream that never

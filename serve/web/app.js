@@ -164,12 +164,15 @@ let reqShowAll = false;   // the Monitor's request table: the last 12, or every 
 const POLL_FULL_MS = 1000, POLL_LIVE_MS = 1000, POLL_IDLE_MS = 15000, POLL_HIDDEN_MS = 60000;
 const ACTIVE_STATES = ["reading", "generating", "running-tool", "queued"];
 function pollUrl() {
-  if (tab === "monitor" || tab === "about") return reqShowAll ? "metrics?requests=all" : "metrics";
+  if (tab === "monitor") return reqShowAll ? "metrics?requests=all" : "metrics";
+  // About draws three blocks: engine facts and the two hardware ones. It has no sparklines, no request table
+  // and no conversation cache, so it asks for lite plus hardware rather than the whole answer (todo #40).
+  if (tab === "about") return "metrics?lite=1&hw=1";
   return "metrics?lite=1";          // the Chat tab: the pill and the projection flag, nothing else
 }
 function pollDelay(m) {
   if (document.hidden) return POLL_HIDDEN_MS;                    // another window: nothing here is being seen
-  if (tab === "monitor" || tab === "about") return POLL_FULL_MS; // the cards need their own cadence
+  if (tab === "monitor") return POLL_FULL_MS;                    // the cards and sparklines need their own cadence
   if (busy || (m && ACTIVE_STATES.includes(m.live && m.live.state))) return POLL_LIVE_MS;
   return POLL_IDLE_MS;                                           // idle: the pill has nothing new to say
 }
@@ -188,8 +191,9 @@ async function poll() {
     } else if (r.ok) {
       const m = await r.json();
       metricsFailures = 0;
-      // a lite answer has no cards in it: merge it into the last full one so a tab switch paints at once
-      if (m.lite) { lastMetrics = {...(lastMetrics || {}), ...m}; renderPill(m); }
+      // a lite answer has no sparklines, request table or cache in it: paint what it does carry, and merge it
+      // into the last full answer so a switch to the Monitor paints at once
+      if (m.lite) { lastMetrics = {...(lastMetrics || {}), ...m}; renderLite(m); }
       else { lastMetrics = m; render(m); }
       schedulePoll(pollDelay(m));
       if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();   // server states change rarely: every 10 s
@@ -211,13 +215,22 @@ function renderPill(m) {
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
   } else if (live.state === "running-tool") {
-    setPill("generating", `Waiting · ${live.tool || "a tool"}`);   // todo #35: an MCP call running is not idle
+    // "reading", not "generating": the palette makes colour one decision per state - the engine produces no
+    // tokens while a tool runs, exactly as while a prompt is being read, so both are --st-info blue
+    // (components.css:20-21). The Monitor's badge and state card already said blue; the pill was the outlier.
+    setPill("reading", `Waiting · ${live.tool || "a tool"}`);   // todo #35: an MCP call running is not idle
   } else {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
 }
 
+// what a lite answer can paint: always the pill, and About's cards when the answer asked for them (?lite=1&hw=1).
+// It has no sparkline history, no request table and no conversation cache, so the Monitor never asks for lite.
+function renderLite(m) {
+  renderPill(m);
+  if (m.hardware) renderAbout(m.engine || {}, m.hardware, m.hardware_static || {});
+}
 function setPill(state, text) {
   $("pill").dataset.state = state === "error" ? "queued" : state;
   $("pill-text").textContent = text;

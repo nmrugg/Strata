@@ -3413,14 +3413,17 @@ class Service:
         arrive, which is what replaces the "(being written)" placeholder."""
         return bool(req.get("strata_mcp_args"))
 
-    def metrics(self, all_requests=False, full=True) -> dict:
+    def metrics(self, all_requests=False, full=True, hw=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
         the hardware (with a minute of history per series).
 
-        `full=False` (the page's `?lite=1`, which the Chat tab asks for) returns only what the header pill reads.
-        That is not just a smaller body: it skips the telemetry snapshot and the engine-log read inside
-        conversation_cache_view, which is up to a MiB of new log lines per call - work the Chat tab was paying
-        for once a second and never showed (todo #40)."""
+        Three tiers, because the work each costs is different and the Chat and About tabs were paying for all of
+        it to show a fraction of it (todo #40, and the About half found when asked why About got the full answer):
+          lite          {live, engine}                     - the header pill; no telemetry, no log read
+          lite + hw     + hardware, hardware_static        - About's cards; telemetry only, no log read
+          full          everything                         - the Monitor; telemetry AND the engine-log read
+        The log read is the expensive one: conv_log.poll takes up to a MiB of new engine-log lines, and only
+        conversation_cache_view needs it."""
         with self.status_lock:
             s = dict(self.status)
             tool_running = next(iter(self.mcp_running.values()), None)
@@ -3473,7 +3476,11 @@ class Service:
                   **dict(getattr(self.engine, "info", {}) or {})}
         if not full:
             # the Chat tab reads live for the pill and engine for the projection flag (app.js's projectionLoaded)
-            return {"live": live, "engine": engine, "time": now, "lite": True}
+            out = {"live": live, "engine": engine, "time": now, "lite": True}
+            if hw:                            # About's cards: the telemetry snapshot, and nothing that reads the log
+                tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+                out.update(hardware=tel["now"], hardware_static=tel["static"])
+            return out
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
@@ -5209,10 +5216,12 @@ def make_handler(svc: Service):
                     return
                 if self._authorized():
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35);
-                    # `?lite=1` only what the header pill reads (todo #40 - the Chat tab has no cards to fill)
+                    # `?lite=1` only what the header pill reads, `&hw=1` adds the two hardware blocks About
+                    # draws (todo #40 - neither asks for the sparkline history, the request table or the log read)
                     q = parse_qs(urlsplit(self.path).query)
+                    on = lambda k: q.get(k, ["0"])[0] in ("1", "true")
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path,
-                                                full=q.get("lite", ["0"])[0] not in ("1", "true")))
+                                                full=not on("lite"), hw=on("hw")))
                 return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():

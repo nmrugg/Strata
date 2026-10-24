@@ -198,6 +198,42 @@ class LiteMetrics(Server):
         # answer is smaller and that the card-only keys are gone (checked above by name, which is the real claim).
         self.assertLess(len(body), full, "the lite answer has to actually be smaller")
 
+    def test_lite_plus_hw_adds_the_two_hardware_blocks_and_nothing_else(self):
+        # About draws three cards: engine facts (already in lite) plus hardware and hardware_static. It has no
+        # sparklines, no request table and no conversation cache, so it must not pay for those.
+        m = json.loads(get(self.conn, "/metrics?lite=1&hw=1")[2])
+        self.assertTrue(m["lite"])
+        self.assertIn("state", m["live"])
+        self.assertIn("max_context", m["engine"])
+        self.assertIn("hardware", m)
+        self.assertIn("hardware_static", m)
+        for key in ("history", "conversation_cache", "totals", "requests"):
+            self.assertNotIn(key, m)
+        self.assertLess(len(json.dumps(m).encode()), len(get(self.conn, "/metrics")[2]))
+
+    def test_lite_plus_hw_skips_the_engine_log_read(self):
+        # the tier that matters: About pays for the telemetry snapshot, never for the log read. Counted as a
+        # delta per request, not against an accumulated list: other threads touch these too.
+        svc = self.svc
+        counts = {"telemetry": 0, "conv_log": 0}
+        real_tel, real_log = svc.telemetry.snapshot, svc.conv_log.poll
+        svc.telemetry.snapshot = lambda *a, **k: (counts.__setitem__("telemetry", counts["telemetry"] + 1), real_tel())[1]
+        svc.conv_log.poll = lambda *a, **k: (counts.__setitem__("conv_log", counts["conv_log"] + 1), real_log(*a, **k))[1]
+
+        def delta(path):
+            before = dict(counts)
+            get(self.conn, path)
+            return {k: counts[k] - before[k] for k in counts}
+
+        try:
+            self.assertEqual(delta("/metrics?lite=1"), {"telemetry": 0, "conv_log": 0},
+                             "a pill-only answer did server work nothing shows")
+            self.assertEqual(delta("/metrics?lite=1&hw=1"), {"telemetry": 1, "conv_log": 0},
+                             "About pays for telemetry and nothing else")
+            self.assertEqual(delta("/metrics"), {"telemetry": 1, "conv_log": 1}, "only the full answer reads the log")
+        finally:
+            svc.telemetry.snapshot, svc.conv_log.poll = real_tel, real_log
+
     def test_lite_still_reports_a_running_tool(self):
         # todo #35 and #40 meet here: the pill is the whole reason the Chat tab polls, so a tool must be named
         # in the lite answer too
