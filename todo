@@ -146,7 +146,7 @@ against the mapping; there are no dangling ones.
     turn stays identical turn to turn and the pinned root checkpoint keeps matching.
     Editing it LATER is the only case that re-reads the chat once - worth a confirm dialog,
     same as the tool-thinking toggle.
-    This is the prerequisite for item 77 (dynamic system prompt) and it makes item 70's
+    This is the prerequisite for item 78 (dynamic system prompt) and it makes item 70's
     prefix pin actually useful, so it is worth doing early despite being small.
 
 
@@ -194,7 +194,7 @@ against the mapping; there are no dangling ones.
     the two it is about to do, in token terms if the numbers are available (item 56 already
     computes them).
     Message-level identity is a prerequisite for any of this being safe: messages have no ids
-    today, only array position and `time`. See item 75.
+    today, only array position and `time`. See item 76.
 
 NEED RENUMBERING
 
@@ -277,25 +277,46 @@ NEED RENUMBERING
 
 
 72.  reasoning_loop_recovery "recover" fires and then the turn freezes at the same token count. [py] [eng] MEDIUM
-    Written up in strata-slow-death.txt at the repo root (240 lines, uncommitted). The shape, twice in one
-    run: "repeated reasoning detected at 2560 tokens (coverage=0.555); resuming the same output with the
-    low-effort instruction (reasoning_loop_recovery)", after which the thinking counter sits at exactly
-    2560 for minutes while the reported rate decays 88.5 -> 77.8 -> ... -> 29.3 tok/s. The turn neither
-    advances nor ends, and the client eventually gives up. This is the slow death, distinct from the fast
-    one where a boundary tag in quoted text cuts a turn.
-    The same file records a SECOND, separate failure: focused_recovery_prompt() looks for the xhigh effort
-    sentence, which the template does not put in the prompt when reasoning_effort is low or medium and
-    effort_position is the default "start". Measured there: 63-token prompt, sentence absent,
-    focused_recovery_prompt() -> None, so the recover branch cannot fire at all; with effort_position
-    "end" the sentence is present and it returns 93 ids. That file's workaround is "effort_position":
-    "end"; this box's config sets neither, so any low/medium request is in the silent no-op case.
-    NOT explained by the no-op: the freeze happens in a run where recover DID fire. Two measurements are
-    owed before any fix - why the counter stops advancing at all, and why the rate halves while it does.
-
+    Written up in strata-slow-death.txt at the repo root (untracked; it is full of literal control tags, so
+    read it but never quote from it - that is how two turns died today). The shape, twice in one run:
+    "repeated reasoning detected at 2560 tokens (coverage=0.555); resuming the same output with the
+    low-effort instruction (reasoning_loop_recovery)", after which the thinking counter sits at exactly 2560
+    for minutes while the reported rate decays 88.5 -> 77.8 -> ... -> 29.3 tok/s. The turn neither advances
+    nor ends, and the client eventually gives up. This is the SLOW death: a different death from the
+    forged-boundary one (item 83) and from the no-op one (item 73).
+    It DOES fire on this box: the web app sends reasoning_effort "high", the template maps high to xhigh
+    (serve/chat_template.jinja:59-61) and xhigh is the default, so the sentence the splice looks for is
+    present - which is why the log shows the rescue running and then the freeze following it.
+    WHY XHIGH SPECIFICALLY, and why not always: focused_recovery_prompt (serve/server.py:193) splices token
+    ids. It finds the whole-token subsequence HIGH_EFFORT (server.py:157, = EFFORT_TEXT["xhigh"]) inside the
+    first system message, swaps it for LOW_EFFORT (server.py:158), and appends every id generated so far. It
+    splices ids rather than re-rendering because the prompt is never decoded and encoded again, so a literal
+    tag or vision marker inside it stays what it was (#537, #554). It looks for xhigh because that is the
+    template's default sentence and the point of the recovery is to LOWER effort mid-turn; it has no idea
+    what level the request asked for. When the request said low or medium the xhigh sequence is not there and
+    it returns None - that is item 73, not this one. So "why not always" means: key the splice on the
+    request's own level. EFFORT_TEXT is already keyed by level (server.py:134), so that change is small.
+    TWO MEASUREMENTS OWED before fixing the freeze: why the counter stops advancing at all, and why the
+    reported rate halves while it does not. The decay alone hints at re-decoding the same window; that is a
+    guess and needs the engine side of the exchange to confirm. No engine rebuild was attempted here.
+73.  "recover" is a silent no-op for a request that asks low or medium effort. [py] TRIVIAL fix, one decision
+    focused_recovery_prompt (serve/server.py:193) looks only for the xhigh sentence. A request that asked low
+    or medium carries that level's sentence instead, so the token subsequence is absent, the function returns
+    None, and the loop is detected with "recover" configured while nothing is recovered. Measured in
+    strata-slow-death.txt: a 63-token prompt at effort_position "start" has no xhigh sentence and returns
+    None; at "end" the sentence is present and it returns 93 ids.
+    Who is bitten: not this box's own web traffic (the app sends high, mapped to xhigh at
+    chat_template.jinja:59-61), but any other client that asks low or medium - common as soon as a config or
+    an app sets reasoning_effort low. This config sets no effort_position, so it is the default "start".
+    Fix: pass the request's level into focused_recovery_prompt() and splice THAT sentence down to low
+    (EFFORT_TEXT is keyed by level already, server.py:134). Decide first what "down to low" means when the
+    request is already low: skip the recovery, or use a different nudge. Add a test that renders a low-effort
+    prompt and asserts the recovery is not None - that is the case silently missing today. And the rescue's
+    log line should not claim a recovery it did not perform.
 
 ## 4. Large - engine work, or a new subsystem (weeks)
 
-73.  Run two conversations at the SAME TIME, not queued. [eng] [py] [ui]
+74.  Run two conversations at the SAME TIME, not queued. [eng] [py] [ui]
     Distinct from 10 (which is queuing, already supported). True simultaneity is
     "parallel": N (--batch N), docs/BATCHING.md, measured +31-39% total throughput with
     2-4 clients on one GPU. Two hard caveats for this box:
@@ -306,13 +327,13 @@ NEED RENUMBERING
         each held or parked conversation costs RAM (measured here: ~19 KB per token).
     Feasible, but it is a capacity decision, not a feature flag.
 
-74.  Preload conversations when I start typing. [py] [eng]
+75.  Preload conversations when I start typing. [py] [eng]
     Restoring a parked or on-disk conversation before the request lands needs conversation
     identity (see 16) and a restore path that is not tied to a slot. Also speculative
     loading competes with the request that is actually coming. Worth revisiting after 16
     and 17 exist.
 
-75.  Back the conversation cache with NVMe instead of RAM. [eng]
+76.  Back the conversation cache with NVMe instead of RAM. [eng]
     Your drive measured 2.3 GB/s write, 3.2 GB/s cold read (FireCuda 520, ext4, oflag=direct,
     3 GiB). A 3.5 GiB snapshot of this conversation is ~1.5 s to write and ~1.1 s to read,
     against ~100 s to re-read 195K tokens - roughly 90x faster than the current fallback, and
@@ -322,7 +343,7 @@ NEED RENUMBERING
     eviction policy. Note the docs warn a parked conversation being paged is itself a stall
     cause (#2049, #2065), so this needs the same care the expert tier got.
 
-76.  Dynamic elements in the system prompt (date, system info) - frozen at chat start. [ui] [py]
+77.  Dynamic elements in the system prompt (date, system info) - frozen at chat start. [ui] [py]
     With 18 done, this is a one-time fill: compute the date and system info when a chat is
     created, store them in the chat's system prompt, and never recompute them. Then the
     system turn is byte-identical for the whole chat and the pinned root keeps matching.
@@ -334,7 +355,7 @@ NEED RENUMBERING
     varying text in a short turn right before the answer, after the checkpoint.
 
 
-77.  Warm the conversation while I type, and cancel the warming when I switch.
+78.  Warm the conversation while I type, and cancel the warming when I switch.
     [py] [eng] [ui] HARD, and the description here replaced a wrong one (it used to say
     "cancel when switching", which is a different, much smaller feature).
 
@@ -390,7 +411,7 @@ NEED RENUMBERING
 
 ## 5. Added 2026-10-23: MCP servers from the front end
 
-78.  Add and remove MCP servers in the web app. [ui] [py] MEDIUM
+79.  Add and remove MCP servers in the web app. [ui] [py] MEDIUM
     Reading is done: GET /mcp returns every server, its state and its tools, and the Monitor
     lists them (app.js:402-432, the mcp-card). What is missing is writing.
     The plumbing exists: the Settings view already edits the run config (#564, svc.config_path,
@@ -403,7 +424,7 @@ NEED RENUMBERING
     other devices. Starting/stopping a server also restarts the engine's tool list, which
     changes the system turn and costs every chat one re-read (see 18's note).
 
-79.  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM
+80.  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM
     Nothing today: McpHub offers every tool of an enabled server as <server>__<tool> and
     routes a call back to whichever server has it (serve/mcp.py). Needs a per-tool exclusion
     list in the config, filtered in McpHub.template_tools(exclude=...) - that parameter is
@@ -415,7 +436,7 @@ NEED RENUMBERING
 
 ## 6. Bug: the turn that delivers nothing, and the leaking tags
 
-80.  Leaked markup in the answer: literal backslash-n pairs, closing think tags, closing
+81.  Leaked markup in the answer: literal backslash-n pairs, closing think tags, closing
     thinking tags. [py] [ui] - this is the one you are seeing in the window
     All three symptoms are one event: text that LOOKS like structure being READ as
     structure, by whichever layer is consuming the stream. Three layers have done it to me
@@ -447,7 +468,7 @@ NEED RENUMBERING
     those IDs on T lines (UNVERIFIED - check generate.cpp:11818; if it filters them, add a
     small C++ change plus a CUDA/HIP/SYCL rebuild per AGENTS.md).
 
-81.  The model stopping before or while writing tool calls.
+82.  The model stopping before or while writing tool calls.
     Same failure as 28. Measured on this box over 200 rounds: 5 turns ended giving the
     client neither answer text nor a completed call, and 13 turns were rescued by
     reasoning_close_retry. The engine finished everything and the parser dropped nothing,
@@ -480,7 +501,7 @@ NEED RENUMBERING
     already counted in abandoned_tool_calls) and correlate it with what the window shows.
 
 
-82.  Nothing notices a turn that ends without usable output, and nothing continues it. [py] [ui] MEDIUM
+83.  Nothing notices a turn that ends without usable output, and nothing continues it. [py] [ui] MEDIUM
     Asked as "you should never stop without a final output - surely the backend or the front end could see
     that and continue you". All three recovery flags are already on here (strata-iq3_s.json:
     reasoning_close_retry true, reasoning_loop_recovery "recover", tool_call_recovery true) and sessions
@@ -494,12 +515,13 @@ NEED RENUMBERING
       - 19 logged "the reply ended inside its thinking with no answer" (reasoning_close_retry rescued
         them), 5 logged "tool calls inside the thinking", and 0 logged EMPTY TURN. The counter built for
         this cannot see the failure, and a counter that cannot see the bug is worse than none (LESSONS.md).
-      - Why the flags do not help is item 72: recover cannot build its nudge for low/medium effort at the
-        default effort_position, and when it does fire the turn can freeze at the same token count.
+      - The recovery flags are not the answer to this one. "recover" fires on this box and then the turn
+        freezes at the same token count (item 72); it does nothing at all for a request that asked low or
+        medium (item 73); and neither shape is what killed today's turns.
 
     WHAT KILLED TWO TURNS TODAY, observed live: the agent quoted a line of raw model output while
     investigating this bug, that text contained a literal closing thinking tag, a consumer read it as a
-    real boundary, and the turn ended mid-sentence with no final output. Same failure as item 80 -
+    real boundary, and the turn ended mid-sentence with no final output. Same failure as item 81 -
     boundaries represented as text can be forged by the content - reached from the other side: not the
     model forging one, the agent quoting one. It raised no EMPTY TURN line, because it is not an empty
     turn: it is a turn that ends early with plausible text.
@@ -508,18 +530,26 @@ NEED RENUMBERING
       1. The client that runs the agent: detect "turn ended with no final text and no tool call" and
          re-prompt. Needs no Strata change, and it is the only one that covers the quoted-tag death, where
          the truncation is between the model and its consumer rather than in the parser.
+         THE FRONT END CAN ALREADY TELL. app.js:1342 computes exactly this predicate -
+         `hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error` - and item 34 uses it only to
+         hide the bubble and the meta row. Nothing acts on it. So the web app could re-prompt, or at least
+         offer a Continue control, from that one boolean. Two things to decide before building: the web app
+         is a chat UI, so an automatic re-prompt is a policy change and should be opt-in (it spends a real
+         turn and can loop), and it only covers the web app - the agent harness is a separate client, so the
+         same check has to exist there too before it would have prevented the deaths in this session. The
+         smaller, safer half is a Continue affordance the reader presses, not an automatic loop.
       2. Strata's own rescue, which covers one shape only (reasoning_close_retry, 19 rescues here). It does
-         not cover "the answer ended with a tool call that was never completed" - that is item 81's empty
+         not cover "the answer ended with a tool call that was never completed" - that is item 82's empty
          turn, counted by totals.empty_turns, which reported 0 in this log.
-      3. The structural fix, item 80: stop representing boundaries as text. The engine has them as token
+      3. The structural fix, item 81: stop representing boundaries as text. The engine has them as token
          IDs and the server discards the ID at server.py:3995. Only that makes both directions impossible.
     NOT ESTABLISHED: whether the engine forwards the special IDs on its T lines - check generate.cpp:11818
-    before sizing item 80. And any "did this turn end properly" check has to tell "short but complete" from
+    before sizing item 81. And any "did this turn end properly" check has to tell "short but complete" from
     "stopped early", which length alone cannot: these deaths ended with a plausible sentence.
 
 ## 7. Added 2026-10-23: server-side conversation log, and offline queueing
 
-83.  The server writes the conversation to disk (flag on, configurable dir, optional gzip).
+84.  The server writes the conversation to disk (flag on, configurable dir, optional gzip).
     [py] MEDIUM - and it is the instrument the glitch in section 6 actually needs
     Today the server keeps only in-memory numbers: Service.history is a deque(maxlen=500) of
     per-request stats, read by GET /metrics?requests=all. Nothing about the actual messages
@@ -544,7 +574,7 @@ NEED RENUMBERING
     guards as the other admin endpoints, a stated retention policy, and it must not write
     request bodies that carry an API key.
 
-84.  Queue a request when the server is down and send it when it is back. [ui] MEDIUM
+85.  Queue a request when the server is down and send it when it is back. [ui] MEDIUM
     Today the page just errors. The SERVER side is already right: requests queue behind the
     FIFO (docs/BATCHING.md - "By default Strata serves one request at a time: the others
     wait in the server's queue"), and a restart never hangs a waiter - it ends with a clean
@@ -553,11 +583,11 @@ NEED RENUMBERING
     and a decision about a second message arriving while one is queued. It must survive a
     reload, which is what makes it an IndexedDB problem rather than an array.
 
-85.  Related: item 71 (close the browser, keep the conversation running) is the server side of
+86.  Related: item 71 (close the browser, keep the conversation running) is the server side of
     the same wish. With 31 in place, 21 gets much easier - the output is already on disk, so
     a reconnect can read it instead of needing a live stream.
 
-86.  Multiple tabs open at once, kept in sync. [ui] MEDIUM - and it splits into two problems
+87.  Multiple tabs open at once, kept in sync. [ui] MEDIUM - and it splits into two problems
     of very different size.
     Today: nothing. app.js has no BroadcastChannel and no "storage" event listener, so two
     tabs are two independent apps over one IndexedDB. Worse, every save writes the WHOLE chat
@@ -596,7 +626,7 @@ NEED RENUMBERING
 
 ## 8. Added 2026-10-24: the drawer's buttons, the send button, the sprite, and start-up order
 
-87.  The Sampling drawer should apply itself, and its two buttons should mean different things. [ui] EASY
+88.  The Sampling drawer should apply itself, and its two buttons should mean different things. [ui] EASY
     Four changes the human asked for, all in the drawer (serve/web/app.js:1791-1885, index.html:213-274):
       - Auto-apply: no Apply press, and so no "you have unapplied changes" warning on close. That removes
         item 36 entirely - closeDrawer's confirm, drawerDirty, and the s-mcpthink/s-esp caveat that a refused
@@ -619,16 +649,16 @@ NEED RENUMBERING
     be taken from `settings` (already the applied state), not re-read from the controls after loadDrawer.
 
 
-88.  Remove the scrim: it blocks clicks on the rest of the page and the drawer should not auto-close. [ui] TRIVIAL
+89.  Remove the scrim: it blocks clicks on the rest of the page and the drawer should not auto-close. [ui] TRIVIAL
     <div class="scrim" id="scrim" hidden> is index.html:276; app.js sets $("scrim").hidden in openDrawer
     (app.js:1787) and wires $("scrim").onclick = closeDrawer (app.js:1884). LESSONS.md item 36's test pins that
     the X, the scrim and Escape all go through closeDrawer - with the scrim gone that assertion changes, and
-    with auto-apply (item 87) closeDrawer's confirm goes too, so 36's test is rewritten or deleted.
+    with auto-apply (item 88) closeDrawer's confirm goes too, so 36's test is rewritten or deleted.
     Check before deleting the element: components.css's .scrim rule, and whether anything else uses #scrim
     (grep says the drawer only). Escape still closes.
 
 
-89.  A spinner on the Send button when THIS conversation is answering. [ui] TRIVIAL
+90.  A spinner on the Send button when THIS conversation is answering. [ui] TRIVIAL
     Today: send-btn is disabled while busy (setBusy, app.js:1035-1042) and the running marker is in the sidebar
     row (item 37, chatItem). The want is the same fact on the button, but only when the running turn belongs to
     the chat you are looking at - the exact condition item 37 deliberately EXCLUDED from the row
@@ -639,7 +669,7 @@ NEED RENUMBERING
     ring - copy that, do not invent a second spinner.
 
 
-90.  Do not show tool-call__preview while the block is open. [ui] TRIVIAL
+91.  Do not show tool-call__preview while the block is open. [ui] TRIVIAL
     .tool-call__preview (app.css, and toolPreview() at app.js:1041) is the one-line summary in the summary row;
     when the block is open the arguments and result are right below it, so the line is noise. The thinking
     block already does exactly this: .st-collapse.think[open] .think-preview { display: none; } (app.css:81).
@@ -647,7 +677,7 @@ NEED RENUMBERING
     test_chat_sidebar.py's CSS checks.
 
 
-91.  Start the web server before the model loads, so the page can open while loading. [py] MEDIUM
+92.  Start the web server before the model loads, so the page can open while loading. [py] MEDIUM
     Measured and documented in LESSONS.md ("`/health`'s loaded does not mean the model is loaded"): the port
     does not listen until the model is up - httpd = serve(svc, ...) is serve/server.py:6633, AFTER "loading the
     model (the first start takes a minute or two) ..." at server.py:6448 and after the StrataEngine(...)
@@ -666,7 +696,7 @@ NEED RENUMBERING
     server must be started before it. That is the real work, and it is where the risk is.
 
 
-92.  A command to run the test suites from the command line. [py] TRIVIAL
+93.  A command to run the test suites from the command line. [py] TRIVIAL
     Today the suites are a copy-paste line in HANDOFF.md:52 (fast, 10 modules) and HANDOFF.md:56 (full server,
     313 tests, ~95 s), plus node serve/test_chat_sidebar.js for the page. Add one script that runs all three
     and prints the counts, e.g. ./test.sh (repo already has bench.sh, setup.sh, update.sh at the root, so a
@@ -882,12 +912,12 @@ NEED RENUMBERING
     PRECONDITION, and this should not ship without it: the chat write is a blind whole-record put (writeChat
     -> objectStore.put, no read, no revision) and the in-memory list is a snapshot taken once by allChats() in
     openHistory, with no BroadcastChannel and no storage listener. Two tabs on one chat already lose data
-    (item 86): tab A finishes a turn and writes three messages, tab B - still holding its old copy - writes
+    (item 87): tab A finishes a turn and writes three messages, tab B - still holding its old copy - writes
     one, and A's turn is gone from disk while still on A's screen. Eight call sites do this, and push
     multiplies the writers. The minimum is a compare-and-put inside the existing IndexedDB transaction (read
     the record's revision in the same readwrite transaction, refuse the write if it moved, re-read) - about
     40-60 lines, one file, no server change, testable against the stub IndexedDB the harness already has.
-    Message ids and merge-on-conflict stay with item 86; server-side conversation identity stays with item
+    Message ids and merge-on-conflict stay with item 87; server-side conversation identity stays with item
     16, whose design decision is still unmade. Anything that touches the prompt path is out of scope: a
     checkpoint mismatch costs a re-read of minutes, and that incident already happened once.
 

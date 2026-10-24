@@ -26,13 +26,14 @@ The file was **renumbered on 2026-10-24** and the scheme is deliberate. Do not "
 - Every `item N` cross-reference inside the file was rewritten against the mapping and
   verified to resolve. Six duplicate wants were folded out: Fork, system prompt, edit/delete
   posts, import/export and enable-disable-an-MCP-server each appeared twice, and the stalled-
-  turn item written earlier the same day was merged into item 82.
+  turn item written earlier the same day was merged into what is now item 83.
 
 Useful current numbers, because the old handoff cited the old ones:
 **70** pin one conversation (the one real design question), **69** make editing not re-read,
-**71** close the browser and keep generating, **80** leaked markup, **81** the model stops
-before or during a tool call, **72** the slow death, **82** nothing notices a dead turn,
-**58** Enter does not poll, **65** trim long tool calls, **86** multiple tabs.
+**71** close the browser and keep generating, **81** leaked markup, **82** the model stops
+before or during a tool call, **72** the slow death, **73** the recovery no-op, **83** nothing
+notices a dead turn, **58** Enter does not poll, **65** trim long tool calls, **87** multiple
+tabs, **92** start the server before the model loads.
 
 ## Your job
 
@@ -135,26 +136,38 @@ check `generate.cpp:11818` before sizing it. The 37-case corpus
 followed by a line break", so a smarter local heuristic is probably impossible. Run that
 corpus before touching the parser.
 
-**New, measured 2026-10-24.** Over 2,024 requests in `/tmp/strata-server.log`: **0** `EMPTY
-TURN` lines, 19 `reasoning_close_retry` rescues, 5 "tool calls inside the thinking", and 10
-zero-token turns that were all `finish=cancel` **mid-prefill** — the client giving up on a
-long read, not a stall. So the existing counter cannot see the failure that is killing
-sessions; a counter that cannot see the bug is worse than none.
+**New, root cause written up in `strata-slow-death.txt`** (repo root, **untracked** — it is full of
+literal control tags, so read it but never quote from it). It describes **three separate deaths**,
+and conflating them wastes time:
 
-**New, root cause written up in `strata-slow-death.txt`** (repo root, uncommitted). Two
-separate things:
-- `reasoning_loop_recovery: "recover"` **fires** and then the turn **freezes**: the thinking
-  counter sits at exactly 2560 tokens for minutes while the reported rate decays 88.5 → 29.3
-  tok/s. The turn neither advances nor ends. Why the counter stops, and why the rate halves
-  while it does, are both **unexplained and need a measurement**.
-- Separately, `focused_recovery_prompt()` looks for the xhigh effort sentence, which the
-  template does not put in the prompt when `reasoning_effort` is low or medium and
-  `effort_position` is the default `"start"` — measured: 63-token prompt, sentence absent,
-  the function returns `None`, so `recover` is a **silent no-op** for those requests. With
-  `effort_position: "end"` the sentence is present and it returns 93 ids. This box sets
-  neither, so it is in the no-op case for low/medium.
-Items **72** and **82** carry this. Do not "fix" the recovery flags by turning them up; they
-are already on.
+1. **The slow death** (todo **72**). `reasoning_loop_recovery: "recover"` *fires* — "repeated
+   reasoning detected at 2560 tokens (coverage=0.555); resuming the same output with the low-effort
+   instruction" — and then the thinking counter sits at **exactly 2560** for minutes while the
+   reported rate decays 88.5 → 29.3 tok/s. The turn neither advances nor ends. Both the freeze and
+   the decay are **unexplained**; measure before fixing.
+2. **The silent no-op** (todo **73**). `focused_recovery_prompt()` (`server.py:193`) splices token
+   ids, swapping `HIGH_EFFORT` (= `EFFORT_TEXT["xhigh"]`, `server.py:157`) for `LOW_EFFORT` (158).
+   It looks for xhigh because that is the template's **default** sentence and the rescue's job is to
+   *lower* effort; it does not know the request's level. So a request that asked **low or medium**
+   has no xhigh sequence, the function returns `None`, and nothing is recovered. This box's **own
+   web traffic is not in that case** — the app sends `high`, and `chat_template.jinja:59-61` maps
+   `high` to `xhigh`. Other clients that ask low or medium are. Fix: key the splice on the
+   request's own level.
+3. **The forged-boundary death** (todo **83**, and `LESSONS.md`). A turn cut because a boundary tag
+   appeared as text. This session died twice because the agent *quoted* a log line containing one
+   while investigating. No counter sees it: 0 `EMPTY TURN` lines across 2,024 requests.
+
+Measured over 2,024 requests in `/tmp/strata-server.log`: 0 `EMPTY TURN` lines, 19
+`reasoning_close_retry` rescues, 5 "tool calls inside the thinking", and 10 zero-token turns that
+were all `finish=cancel` **mid-prefill** — the client giving up on a long read, which is a fourth,
+unrelated thing — a client timing out on a long prefill, which is the re-read and start-up family
+(items **70** and **92**), not a parser bug. So the counter built for the stalled-turn problem
+cannot see it, and a counter that cannot see the bug is worse than none.
+
+**The front end can already detect a dead turn.** `app.js:1342` computes
+`hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error` and item 34 uses it only to
+hide the bubble. Nothing acts on it — so a Continue affordance, or an opt-in re-prompt, is one
+boolean away. It would not have saved this session, because the agent harness is a different client.
 
 ## How to behave
 

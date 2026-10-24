@@ -360,6 +360,21 @@ value - the trap that bit `from`/`to`/`runs` and `secs` before it. `tstart` does
 fixed when the run begins, and a control that tried to prove the refresh failed to fail, which is how I found
 the line was dead weight and deleted it.
 
+**Three different deaths, and naming one fixes none of the others.** A session on 2026-10-24 used
+"the stall" for all of them and wrote it into the todo that way; the human had to separate them.
+They are: (1) the **slow death** - `reasoning_loop_recovery: "recover"` fires and the thinking
+counter then sits at exactly 2560 tokens for minutes while the rate decays 88.5 -> 29.3 tok/s, so
+the turn never advances and never ends (todo 72, `strata-slow-death.txt`); (2) the **silent no-op**
+- `focused_recovery_prompt` (`serve/server.py:193`) splices `HIGH_EFFORT` (=`EFFORT_TEXT["xhigh"]`,
+`server.py:157`) down to `LOW_EFFORT`, keyed on xhigh because that is the template's *default*
+sentence, so a request that asked low or medium has no such sequence, the function returns `None`,
+and nothing is recovered (todo 73); (3) the **forged-boundary death** - a turn cut because a
+boundary tag appeared as text, twice today because the agent quoted a log line containing one
+(todo 83). This box's own web traffic is NOT in case 2: the app sends `high` and
+`serve/chat_template.jinja:59-61` maps `high` to `xhigh`, which is why the log shows the rescue
+firing and then the freeze. Check which one the evidence points at before proposing a fix, and say
+which one you mean when you write "the stall".
+
 **One colour per state, and the pill is not a separate decision.** `--st-accent` green means the engine is
 producing tokens; `--st-info` blue means it is not (reading a prompt, waiting on an MCP tool); `--st-warn`
 means queued. `components.css:20-21` already encodes that for the pill's dot and `:58-60` for the badges, so
