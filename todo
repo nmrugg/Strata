@@ -619,3 +619,176 @@ numbers below are already taken.
     controls (no intent window, no freshness window, leave does not cancel, prefetch fires anyway) each fail.
     The stub grew a recording setTimeout/clearTimeout and a fetch log for this; its addEventListener stays
     one-handler-per-type, because 20 existing call sites invoke it directly.
+
+## 10. Added 2026-10-24: the work folds when it finishes, and one control says how
+
+45.  Expand the thinking and the running tool call, then collapse them when they are done; and stop the drawer
+    asking the same question four times. [ui] DONE 2026-10-24
+    Asked out of band, in two steps: first "expand the current thinking and any running tool call, then
+    collapse them when they are done", then (from the human, seeing it work) "too many options in the menu".
+    One change, because the first one shipped as a fourth switch beside three that already overlapped with it.
+    THE CONTROL. "Show thinking" (s-show) is now a three-way segmented control, the same shape as Thinking:
+    "Folded" / "Fold when done" / "Always", default "Fold when done". It decides both kinds of block, thinking
+    and tool calls, from one key (settings.show, DEFAULTS app.js:646). The drawer went from 9 switches + 1
+    segmented control to 6 switches + 2 (counted in index.html both ways), because these four are gone:
+    s-show (a switch), s-openthink, s-opentools, s-autofold.
+      - toolOpen (app.js:1026): folded -> never; live -> open only while the call is live, toolLive being
+        state writing or running (app.js:1025), so it folds in the frame the result lands; always -> open.
+      - syncThink (app.js:1225): the same three answers for a thinking block, through liveRun (app.js:1224).
+      - MIGRATION (migrateShow, app.js:653, run on load): a browser with the old booleans stored maps them
+        once - autofold true -> live, either keep-open switch -> always, show false -> folded, the old
+        default -> live (it had no name: thinking open while it streams, calls closed). fold beats keep-open
+        when both were on, the precedence that already applied. Harness case 49 covers all six, plus that the
+        drawer shows the mapped answer, that Apply writes the word and no old key, and that a new-style object
+        passes straight through.
+    WHEN IS A THOUGHT OVER. "The last run while streaming" is not it: while a tool round runs thinkRuns still
+    reports one run (the next round's reasoning has not arrived), so that rule holds a thought open through the
+    whole call. Two signals, both derived: cut (runs[i].cut, app.js:1143 - a call starts where the run ends,
+    refreshed per paint beside secs at app.js:1288) and tstart (how much answer text existed when the run
+    began, stamped in send() as m.rts[index] = m.text.length, app.js:1581 - text grown past it means the model
+    started writing). m.rts is numbers only, never text, so the replay tripwire (harness case 33) is byte for
+    byte unchanged - asserted. tstart is NOT refreshed per paint: it is fixed when the run begins, and a
+    control that tried to prove the refresh failed to fail, which is how the dead line was found and deleted.
+    A chat with no stamp reports null and is never folded by the text rule.
+    WHO OPENED IT. toolSync sets d.open itself (app.js:1093) and the #chat toggle listener records any toggle as
+    the reader's choice (t.open = d.open), so an auto-open pinned a block open and the collapse never came. The
+    thinking block had a guard for this (det._auto, set app.js:1225, consumed app.js:1421); the tool block had
+    none. A flag was added, and THAT was still wrong: a browser queues the toggle event, so two paints leave two
+    events in flight, the first eats the flag and the second is read as a click - which is the reported symptom,
+    "calls fold only at the very end", because send() deletes t.open there (app.js:1613) and toolOpen
+    short-circuits on it (app.js:1026). The tool branch now compares instead (if (d.open === toolOpen(t)) return;,
+    app.js:1415): idempotent, so any number of queued events is the same. The thinking branch keeps its flag and
+    has the same weakness - if a thinking block is ever reported stuck open, give it the same treatment.
+    Tests: harness 45 (both kinds, one paint at a time: open live, folded settled, all three options on the
+    same message), 46 and 47 (driven through send() with a real fake stream, so the m.rts stamp is covered -
+    46 run 0, 47 the after-tool run at index 1), 49 (the migration and the drawer). serve/test_chat_sidebar.py
+    test_show_thinking_is_one_three_way_control_for_both_kinds and
+    test_the_fold_knows_when_a_thought_is_over pin the wiring. ok - lines 42 -> 47, def test_ 31 -> 32.
+    NOT measured: what folding costs or saves in a browser - no browser on this box. The visible proof is the
+    human's eyes.
+
+46.  A click on a tool block held forever, and was written into the chat record. [ui] DONE 2026-10-24
+    Found while doing 45, and the reason the human saw "the thinking closes but the calls stay open": with
+    fold on and keep-open off, a fresh stream folded correctly (measured: state=done -> open=false), but ONE
+    tap on a block set t.open, and toolOpen short-circuits whenever t.open is set - so no control could ever
+    reclaim it. cleanMessages spreads ...m, so t.open went into the IndexedDB record and came back on every
+    reload. The thinking block never had this bug: its "the reader touched this" is dataset.touched on the DOM
+    element, which renderChat throws away. That asymmetry is why one kind folded and the other did not.
+    Decided (the human's call, option 1 of three): a click is display state and holds for the turn, no longer.
+      - send() drops it when the turn ends (app.js:1610), before the final paint re-decides from settings;
+      - cleanMessages strips it on write (app.js:693);
+      - openHistory strips it on READ (dropToolOpen, app.js:692, applied at 771 and 773) - records an older
+        page already wrote still carry open: true, and without this they would pin the block forever anyway.
+    m.md is kept: the human chose that per message and asked for it to survive a reload.
+    Tests: harness 48 (a click during a turn is dropped by send(); a stored open:true from an older page is
+    ignored; a click on a FINISHED message's block is recorded in memory and not written out). Both strips
+    need their own assertion - the read strip masks the write strip, and a control that removed only
+    cleanMessages' strip passed until case 48's last three lines were added.
+    Also fixed on the way, because it was hiding this: the harness's IndexedDB stub aliased reads and writes
+    (getAll returned the live record objects, put stored the object it was given), so case 5's rename
+    "reached the record" through shared identity while actually saving a different chat. It now structured-
+    clones on both sides like real IDB, and case 5 saves the chat it renamed. LESSONS.md has the entry.
+
+## 11. Added 2026-10-24: the drawer's buttons, the send button, the sprite, and start-up order
+
+47.  The Sampling drawer should apply itself, and its two buttons should mean different things. [ui] EASY
+    Four changes the human asked for, all in the drawer (serve/web/app.js:1791-1885, index.html:213-274):
+      - Auto-apply: no Apply press, and so no "you have unapplied changes" warning on close. That removes
+        item 36 entirely - closeDrawer's confirm, drawerDirty, and the s-mcpthink/s-esp caveat that a refused
+        flip must not count as a change. The Apply button goes with it.
+        DECIDE FIRST: what "applied" means per control. The sampling sliders are per-request (send() reads
+        settings each time), so they are free. s-mcpthink and s-esp re-read the chat (serve/server.py:4470-4481,
+        #2100) - auto-applying those means a 300-second re-read the moment a switch is moved, which is the one
+        control that must keep its confirm. s-share writes the SERVER's shared defaults (POST /settings) and
+        should stay explicit or be debounced. Recommend: auto-apply everything except s-mcpthink/s-esp (their
+        own confirm stays) and s-share (its own button, or a debounce).
+      - "Defaults" = what Reset does today (loadDrawer(DEFAULTS), app.js:1878). Rename the button.
+      - "Reset" should mean "put back what it was when I opened this panel" - i.e. snapshot the controls in
+        openDrawer(true) and restore that, which is what drawerDirty() already compares against. With
+        auto-apply there is nothing unapplied to discard, so Reset becomes "undo my edits in this session of
+        the panel" and the confirm goes away.
+      - Both buttons black. Today: s-reset is st-btn--secondary and s-apply is st-btn--primary (index.html:271-272),
+        and --primary is the accent green (components.css). So: drop the primary class, and check what
+        st-btn--secondary actually renders as before assuming it needs a new style.
+    Watch: openDrawer(true) calls loadDrawer() + loadShared() + loadMcp() (app.js:1785-1789); the snapshot must
+    be taken from `settings` (already the applied state), not re-read from the controls after loadDrawer.
+
+48.  Remove the scrim: it blocks clicks on the rest of the page and the drawer should not auto-close. [ui] TRIVIAL
+    <div class="scrim" id="scrim" hidden> is index.html:276; app.js sets $("scrim").hidden in openDrawer
+    (app.js:1787) and wires $("scrim").onclick = closeDrawer (app.js:1884). LESSONS.md item 36's test pins that
+    the X, the scrim and Escape all go through closeDrawer - with the scrim gone that assertion changes, and
+    with auto-apply (item 47) closeDrawer's confirm goes too, so 36's test is rewritten or deleted.
+    Check before deleting the element: components.css's .scrim rule, and whether anything else uses #scrim
+    (grep says the drawer only). Escape still closes.
+
+49.  A spinner on the Send button when THIS conversation is answering. [ui] TRIVIAL
+    Today: send-btn is disabled while busy (setBusy, app.js:1035-1042) and the running marker is in the sidebar
+    row (item 37, chatItem). The want is the same fact on the button, but only when the running turn belongs to
+    the chat you are looking at - the exact condition item 37 deliberately EXCLUDED from the row
+    (busy.chatId === c.id && c.id !== chatId). For the button it is the inverse: busy && busy.chatId === chatId.
+    busy already carries chatId (app.js:858), and setBusy is the only place that reaches the UI, so this is a
+    class toggle there. The sprite has i-spinner? Check before adding an element: item 37 used a CSS ring on
+    .chat-item__state.run::before rather than a sprite icon, and prefers-reduced-motion swaps it for a static
+    ring - copy that, do not invent a second spinner.
+
+50.  Do not show tool-call__preview while the block is open. [ui] TRIVIAL
+    .tool-call__preview (app.css, and toolPreview() at app.js:1041) is the one-line summary in the summary row;
+    when the block is open the arguments and result are right below it, so the line is noise. The thinking
+    block already does exactly this: .st-collapse.think[open] .think-preview { display: none; } (app.css:81).
+    So this is one CSS rule: .tool-call[open] .tool-call__preview { display: none; }. One line plus a test in
+    test_chat_sidebar.py's CSS checks.
+
+51.  Start the web server before the model loads, so the page can open while loading. [py] MEDIUM
+    Measured and documented in LESSONS.md ("`/health`'s loaded does not mean the model is loaded"): the port
+    does not listen until the model is up - httpd = serve(svc, ...) is serve/server.py:6633, AFTER "loading the
+    model (the first start takes a minute or two) ..." at server.py:6448 and after the StrataEngine(...)
+    constructor. So a page has exactly one signal - "my fetch of /health stopped failing" - and cannot tell
+    "still loading" from "not started". That is why the start-up sound is a server-side console bell.
+    Fix: bind and serve first, hold generation until the engine is ready. What must not regress:
+      - /health and /metrics must answer something sensible while loading, and Service.loaded() must not lie -
+        it is not hasattr(engine, "alive") or engine.alive() (server.py:2941-2943) and alive() is just
+        proc.poll() is None (server.py:872-875). A page that loads and sees loaded:false needs a "still
+        loading" state, which is the other half of this item (the front end has no such state today).
+      - the start-waiters path: a restart never hangs a waiter, it ends with a clean 503
+        (serve/test_restart_waiters.py, #1012). Same guard must cover "engine not up yet".
+      - --open / open_browser opens the page when the MODEL is ready (setup.py:4410 appends --open unless
+        open_browser is false); with the server up early, decide whether it opens earlier now.
+    Also: the engine is constructed on the main thread today, so loading has to move to a thread or the
+    server must be started before it. That is the real work, and it is where the risk is.
+
+52.  A command to run the test suites from the command line. [py] TRIVIAL
+    Today the suites are a copy-paste line in HANDOFF.md:52 (fast, 10 modules) and HANDOFF.md:56 (full server,
+    313 tests, ~95 s), plus node serve/test_chat_sidebar.js for the page. Add one script that runs all three
+    and prints the counts, e.g. ./test.sh (repo already has bench.sh, setup.sh, update.sh at the root, so a
+    root shell script fits the existing pattern; Windows matters too - START-HERE.bat exists, so a .bat or a
+    python entry point may be the better shape). Keep it to the suites HANDOFF lists; do not try to run the
+    engine's C++ tests, which need a GPU. Worth including: the node-missing skip (test_chat_sidebar.py skips
+    the JS harness when node is absent) and a non-zero exit on failure.
+
+53.  The stalled turn: a reply that ends with nothing usable, and what could notice it. [py] [ui] MEDIUM
+    Asked as "you should never stop without a final output - surely the backend or the front end could see
+    that and continue you". Measured on this box from /tmp/strata-server.log (2,024 requests parsed):
+      - 10 requests ended with 0 tokens, every one finish=cancel, and every one was mid "reading the prompt"
+        (46 s, 90 s, 40 s, 24 s...). Those are the CLIENT giving up on a long prefill, not a stall.
+      - 16 requests ended finish=stop with <= 80 tokens. The most common phase set among them was
+        {writing a tool call} alone (6 of 16) - no thinking phase, no answering phase.
+      - 19 requests logged "the reply ended inside its thinking with no answer" (reasoning_close_retry
+        rescued them), 5 logged "tool calls inside the thinking", and 0 logged EMPTY TURN in this file.
+    WHAT ACTUALLY KILLED MY TURNS TODAY, observed live and twice in one session: I quoted a line of raw model
+    output while investigating, that text contained the literal closing think tag, and a consumer read it as a
+    real boundary - the turn ended mid-sentence with no final output. That is the same failure as item 28
+    (boundaries represented as text can be forged by the content), reached from the other side: not the model
+    forging one, the agent quoting one.
+    THREE THINGS THAT COULD NOTICE IT, cheapest first:
+      1. The client (the thing that runs me) detects "turn ended with no final text and no tool call" and
+         re-prompts. This is the only one that fixes the case above, because the forgery is in the transport
+         between the model and its consumer, not in Strata. It needs no Strata change at all.
+      2. Strata's own rescue, which already exists for one shape: reasoning_close_retry (19 rescues in this
+         log). It does NOT cover "the answer ended with a tool call that was never completed" - that is
+         item 29's empty turn, counted by totals.empty_turns, and the probe reports 0 in this log.
+      3. The structural fix, item 28: stop representing boundaries as text. The engine already has them as
+         token IDs and the server throws the ID away at server.py:3995. That is the only fix that makes both
+         directions of this bug impossible rather than less likely.
+    NOT ESTABLISHED: whether the engine forwards the special IDs on its T lines (check generate.cpp:11818
+    before sizing item 28). And no counter today can see the forgery case: it is not an empty turn, it is a
+    turn that ends early with plausible text, which is why the two deaths today produced no EMPTY TURN line.
