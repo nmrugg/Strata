@@ -926,7 +926,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   await wait();
   assert.ok(rowHtml("a").includes('class="chat-item__title draft"'), "chat a is marked: it has unsent text");
   assert.ok(!rowHtml("b").includes('class="chat-item__title draft"'), "chat b is not");
-  assert.ok(rowHtml("a").includes("you have text typed here that has not been sent"), "and the tooltip says why");
+  assert.ok(rowHtml("a").includes("(has draft)"), "and the tooltip says why");
   mk.s.openChat("a");
   await wait();
   assert.strictEqual(mk.s.el("input").value, "typing in a", "and opening it gives the text back");

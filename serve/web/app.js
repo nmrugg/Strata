@@ -706,7 +706,7 @@ function chatItem(c) {
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
   row.innerHTML = `<button class="chat-item__title${drafted ? " draft" : ""}" data-open-chat` +
-    ` title="${esc(t)}${drafted ? " - you have text typed here that has not been sent" : ""}">${esc(t)}</button>` +
+    ` title="${esc(t)}${drafted ? " (has draft)" : ""}">${esc(t)}</button>` +
     `<span class="chat-item__actions">` +
     `<button class="st-btn st-btn--icon" data-rename aria-label="Rename this chat" title="Rename">${icon("edit")}</button>` +
     `<button class="st-btn st-btn--icon" data-delete aria-label="Delete this chat" title="Delete">${icon("trash")}</button>` +
