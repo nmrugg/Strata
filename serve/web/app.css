@@ -134,12 +134,23 @@ main { flex: 1; min-height: 0; display: flex; }
                     padding: 8px; color: var(--st-ink-soft); font: 500 var(--st-fs-sm)/1.35 var(--st-font);
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item:hover .chat-item__title { color: var(--st-ink); }
-/* a chat whose composer still holds text you have not sent (app.js keeps a draft per conversation).  The
-   current row does not need it - you are looking at the box - so it is only drawn where the list is redrawn.
-   No colour: it inherits the row's own ink, so it is quiet and follows the hover/selected colour of the name.
-   The accent is deliberately NOT used here - it is reserved for an unread reply (todo #37): "go read this"
-   outranks "you left text here", and a chat that has both should show the accent marker and drop this one. */
-.chat-item__title.draft::before { content: "*"; margin-right: 4px; }
+/* One state slot per row, before the name: a fixed 12px so names line up whether or not there is a marker, and
+   on the left so it never collides with the edit/delete buttons that appear on hover (and never reflows the
+   name).  Three states, one at a time, in priority order (chatItem in app.js):
+     run   - a turn answering in that conversation right now        (accent green, spinning)
+     new   - a reply that landed while you were somewhere else      (info blue)
+     draft - text you typed there and never sent                    (the row's own ink: quiet)
+   Green and blue are deliberate: green means happening, blue means happened, go read it. */
+.chat-item__state { flex: none; width: 12px; height: 12px; margin-left: 8px; position: relative; }
+.chat-item__state.draft::before { content: "*"; font-weight: 700; line-height: 12px; }
+.chat-item__state.new::before { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--st-info); }
+.chat-item__state.run::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
+                                 border: 2px solid var(--st-line); border-top-color: var(--st-accent);
+                                 animation: st-spin 0.9s linear infinite; }
+@keyframes st-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {        /* a static ring still reads as "in progress" */
+  .chat-item__state.run::before { animation: none; border-color: var(--st-accent); }
+}
 .chat-item.on .chat-item__title { color: var(--st-ink); font-weight: var(--st-fw-bold); }
 /* the edit and delete buttons take no room until they are shown: they are two 30px buttons, a 2px gap and the
    row's own 2px gap = 64px, which in the 260px rail (228px of content, 16px of the title's own padding) left the

@@ -39,16 +39,24 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
-    def test_a_chat_with_unsent_text_is_marked_in_the_list(self):
+    def test_a_chat_row_marks_what_is_happening_in_it(self):
+        # one state slot per row, before the name: run (a turn answering there now), new (a reply that landed
+        # while you were elsewhere), draft (text you typed and never sent). One at a time, that priority.
         css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
-        # the draft marker is the row's own ink - no colour of its own.  The accent is deliberately free for the
-        # unread-reply marker (todo #37), which should win when a chat has both.
-        rule = re.search(r"\.chat-item__title\.draft::before \{([^}]*)\}", css).group(1)
-        self.assertIn('content: "*"', rule)
-        self.assertNotIn("color", rule)
+        draft_rule = re.search(r"\.chat-item__state\.draft::before \{([^}]*)\}", css).group(1)
+        self.assertIn('content: "*"', draft_rule)
+        self.assertNotIn("color", draft_rule)             # the row's own ink; colour means something else here
+        self.assertIn(".chat-item__state.run::before", css)
+        self.assertIn("animation: st-spin 0.9s linear infinite", css)     # happening now: accent, spinning
+        self.assertIn(".chat-item__state.new::before", css)
+        self.assertIn("background: var(--st-info)", css)                  # happened: blue, go read it
+        self.assertIn("@media (prefers-reduced-motion: reduce)", css)     # the spinner does not have to spin
         item = self.body("chatItem")
-        self.assertIn('draftKeyOf(c.id, !c.messages.length)', item)     # the same key the composer writes
-        self.assertIn('class="chat-item__title${drafted ? " draft" : ""}"', item)
+        self.assertIn("busy.chatId === c.id", item)                       # the spinner follows the turn's chat
+        self.assertIn('running ? "run" : c.unread ? "new" : drafted ? "draft" : ""', item)
+        self.assertIn("if (historyOn) renderSidebar();", self.body("setBusy"))   # the list follows turn start/end
+        self.assertIn("turn.chat.unread = true;", self.body("send"))
+        self.assertIn("c.unread = false;", self.body("showChat"))
 
     def test_a_long_code_line_cannot_push_the_page_wide(self):
         # a bubble is a flex item sized to its content, so one long line in a <pre> made a user's post wider than

@@ -924,13 +924,13 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
                   b: {id: "b", title: "chat b", time: Date.now(), messages: [msg("second")]}});
   await wait();
   const rowHtml = (id) => mk.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
-  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "nothing marked yet");
+  assert.ok(!rowHtml("a").includes('class="chat-item__state draft"'), "nothing marked yet");
   mk.s.el("input").value = "typing in a";
   mk.s.el("input")._l["input"]();
   mk.s.openChat("b");
   await wait();
-  assert.ok(rowHtml("a").includes('class="chat-item__title draft"'), "chat a is marked: it has unsent text");
-  assert.ok(!rowHtml("b").includes('class="chat-item__title draft"'), "chat b is not");
+  assert.ok(rowHtml("a").includes('class="chat-item__state draft"'), "chat a is marked: it has unsent text");
+  assert.ok(!rowHtml("b").includes('class="chat-item__state draft"'), "chat b is not");
   assert.ok(rowHtml("a").includes("(has draft)"), "and the tooltip says why");
   mk.s.openChat("a");
   await wait();
@@ -939,7 +939,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   mk.s.el("input")._l["input"]();
   mk.s.openChat("b");
   await wait();
-  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "an emptied draft clears the marker");
+  assert.ok(!rowHtml("a").includes('class="chat-item__state draft"'), "an emptied draft clears the marker");
   done.push("chat list: a conversation with unsent text is marked with an asterisk");
 
   // 33. the final layout, after two tries at nesting: everything top level, in the order it happened.
@@ -1135,6 +1135,48 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
                      "and it was saved into chat A's record");
   assert.strictEqual(sw.records["B"].messages.length, 1, "chat B's record was never written to");
   done.push("switching chats mid-answer: the turn keeps its conversation and paints the rebuilt row");
+
+  // 39. the row says what is happening in it: a spinner while a turn answers there, and a dot when a reply
+  // lands in a conversation you are not looking at.  One slot, one marker, priority run > new > draft.
+  const ctl39 = {step: null, flush: null}, q39 = [];
+  const read39 = () => new Promise((res) => {
+    ctl39.step = () => {
+      if (ctl39.flush) ctl39.flush();
+      res(q39.length ? {done: false, value: new TextEncoder().encode(q39.shift())} : {done: true});
+    };
+  });
+  const mk39 = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: read39})}})},
+    {"strata.history": "true", "strata.chatId": JSON.stringify("A")},
+    {A: {id: "A", title: "chat A", time: Date.now(), messages: [msg("ask A")]},
+     B: {id: "B", title: "chat B", time: Date.now(), messages: [msg("ask B")]}});
+  await wait();
+  ctl39.flush = mk39.flush;
+  const stateOf = (id) => {
+    const html = mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
+    const m = /class="chat-item__state([^"]*)"/.exec(html);
+    return m ? m[1].trim() : "(none)";
+  };
+  assert.strictEqual(stateOf("A"), "", "nothing running, nothing unread, no draft: no marker");
+  const f39 = (o) => "data: " + JSON.stringify(o) + "\n\n";
+  q39.push(f39({choices: [{delta: {content: "half"}}]}), f39({choices: [{delta: {content: " the rest"}}]}));
+  mk39.s.el("input").value = "go";
+  const run39 = mk39.s.send();
+  await wait();
+  assert.strictEqual(stateOf("A"), "run", "the answering conversation shows the spinner");
+  assert.strictEqual(stateOf("B"), "", "and the other row does not");
+  mk39.s.openChat("B"); await wait();
+  ctl39.step(); await wait();                          // "half" lands while B is on screen
+  ctl39.step(); await wait();                          // "the rest"
+  ctl39.step(); await wait();                          // the stream ends here
+  await run39;
+  assert.strictEqual(stateOf("A"), "new", "A gets the unread dot, not the spinner");
+  assert.strictEqual(stateOf("B"), "", "the conversation you were reading is not marked");
+  assert.strictEqual(mk39.s.chats.find((c) => c.id === "A").unread, true, "and it is on the chat record");
+  assert.strictEqual(mk39.records["A"].unread, true, "and saved with it, so a reload still knows");
+  mk39.s.openChat("A"); await wait();
+  assert.strictEqual(stateOf("A"), "", "opening it clears the mark");
+  assert.strictEqual(mk39.s.chats.find((c) => c.id === "A").unread, false, "on the object too");
+  done.push("chat list: a spinner for the conversation that is answering, a dot for one with a reply you have not read");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

@@ -699,14 +699,17 @@ function groupName(t) {
 }
 function chatItem(c) {
   const t = chatTitle(c);
-  // a chat whose composer still holds unsent text.  Only the other rows need it: you are looking at the box of
-  // the chat you are in.  The list is redrawn on every switch, create, rename and delete, and a reload draws it
-  // from the store, so the marker is current wherever it matters.
+  // one state marker per row, in priority order: a turn answering right now, else a reply you have not seen,
+  // else text you typed and never sent. One slot, one marker at a time - a row with three of them is noise, and
+  // "go read this" outranks "you left text here" (the draft is visible the moment the chat opens anyway).
+  const running = !!busy && busy.chatId === c.id;
   const drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
+  const state = running ? "run" : c.unread ? "new" : drafted ? "draft" : "";
+  const tip = running ? "answering" : c.unread ? "unread reply" : drafted ? "has draft" : "";
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
-  row.innerHTML = `<button class="chat-item__title${drafted ? " draft" : ""}" data-open-chat` +
-    ` title="${esc(t)}${drafted ? " (has draft)" : ""}">${esc(t)}</button>` +
+  row.innerHTML = `<span class="chat-item__state${state ? ` ${state}` : ""}"${tip ? ` title="${esc(tip)}"` : ""} aria-hidden="true"></span>` +
+    `<button class="chat-item__title" data-open-chat title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}">${esc(t)}</button>` +
     `<span class="chat-item__actions">` +
     `<button class="st-btn st-btn--icon" data-rename aria-label="Rename this chat" title="Rename">${icon("edit")}</button>` +
     `<button class="st-btn st-btn--icon" data-delete aria-label="Delete this chat" title="Delete">${icon("trash")}</button>` +
@@ -738,6 +741,7 @@ function showChat(c) {
   if (c.id !== chatId) saveDraft();            // what you typed belongs to the chat you are leaving
   chat = c; chatId = c.id; messages = c.messages;
   store.set("chatId", chatId);
+  c.unread = false;           // opening it is how a reply stops being unread
   writeChat(chat);            // renderChat renders the list, so the write here does not render it again
   loadDraft();                // and the box takes on the text that belongs to the chat you are entering
   renderChat();
@@ -1337,6 +1341,7 @@ function setBusy(on) {
   $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
   if (on) window.addEventListener("beforeunload", warnOnLeave);
   else window.removeEventListener("beforeunload", warnOnLeave);
+  if (historyOn) renderSidebar();      // the list shows which conversation is answering (chatItem reads busy)
 }
 
 async function send() {
@@ -1446,7 +1451,10 @@ async function send() {
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
   const turn = busy;                                // which conversation this turn belonged to
   busy = null;
-  setBusy(false);
+  // a reply that landed in a conversation you are not looking at is worth a mark (todo #37); set it before
+  // setBusy(false), which is what redraws the list
+  if (historyOn && turn.chat && turn.chatId !== chatId) turn.chat.unread = true;
+  setBusy(false);                                   // the spinner clears; elsewhere a dot appears
   if (frame) cancelAnimationFrame(frame);
   const fin = rowOf(m);
   if (fin) { updateAssistant(fin, m, false); scrollDown(); }
