@@ -48,6 +48,7 @@ is section 8, items 34-36.
     reader was already there. When the finished call lands, arguments wins and argsText is dropped, so the
     record does not carry both.
     test_mcp asserts the pieces reassemble into the finished arguments and belong to that call.
+    Confirmed working in the browser by the human, 2026-10-24.
 
 12.  New thinking blocks after each tool call instead of one bubble at the top. [ui] DONE
     2026-10-23, final shape in the commit after 956a9631 - it was [ui] only, not [py] [ui]: the
