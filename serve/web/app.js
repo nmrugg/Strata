@@ -1510,9 +1510,14 @@ function turnText(m, level) {                       // 0 = answer, 1 = + thinkin
 // A title can carry anything the model or the user typed, so drop what a filesystem refuses, trim the tail
 // Windows dislikes (dots and spaces), and cap the length.
 function safeFileName(t) {
-  const s = String(t || "").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim()
-    .replace(/[. ]+$/, "").slice(0, 48).trim();
-  return s || "strata-chat";
+  let s = String(t || "").replace(/[<>:"/\\|?*\u0000-\u001f\u0060]/g, " ")   // \u0060 = backtick: titles carry them
+    .replace(/\s+/g, " ").trim().replace(/[. ]+$/, "");
+  if (s.length > 48) {                                  // cut at a word boundary, not mid-word
+    s = s.slice(0, 48);
+    const cut = s.lastIndexOf(" ");
+    if (cut >= 24) s = s.slice(0, cut);
+  }
+  return s.trim() || "strata-chat";
 }
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }

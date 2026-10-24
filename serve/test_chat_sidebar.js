@@ -1075,6 +1075,10 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(cp.s.safeFileName("trailing dots and spaces...  "), "trailing dots and spaces");
   assert.strictEqual(cp.s.safeFileName("a\nnewline\tand    runs"), "a newline and runs");
   assert.strictEqual(cp.s.safeFileName("x".repeat(120)).length, 48, "capped so the path stays sane");
+  assert.strictEqual(cp.s.safeFileName("You are working on Strata at /programs/Strata (branch fork)"),
+                     "You are working on Strata at programs Strata", "cut at a word boundary, not mid-word");
+  assert.strictEqual(cp.s.safeFileName("You are working on Strata at `/programs/Strata` (branch `fork`, remote Niko1221/Strata)."),
+                     "You are working on Strata at programs Strata", "this chat's own title, backticks and slashes gone");
   assert.strictEqual(cp.s.safeFileName("///"), "strata-chat", "a name with nothing left falls back");
   assert.strictEqual(cp.s.safeFileName(""), "strata-chat", "and an empty one does too");
   done.push("copy: plain, Shift (+thinking), Ctrl+Shift (everything); export named for the conversation");
