@@ -17,7 +17,7 @@ function makeEl() {
     dataset: {}, attrs: {}, children: [], value: "", hidden: false, className: "", textContent: "",
     classList: {add() {}, remove() {}, toggle() {}}, style: {},
     scrollHeight: 0, scrollTop: 0, clientHeight: 0,
-    addEventListener(t, f) { (this._l = this._l || {})[t] = f; },
+    addEventListener(t, f) { (this._l = this._l || {})[t] = f; },   // one handler per type: tests call it directly
     appendChild(c) { this.children.push(c); c._parent = this; return c; },
     get lastElementChild() { return this.children.length ? this.children[this.children.length - 1] : null; },
     get nextElementSibling() {
@@ -173,16 +173,20 @@ function run(hooks, stored, seed) {
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
   const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
                removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); }};
-  const confirms = [], confirmAnswer = {yes: true}, copied = [], raf = [];
+  const confirms = [], confirmAnswer = {yes: true}, copied = [], raf = [], timers = [], fetches = [];
+  const answer = async () => ({ok: true, json: async () => ({}), text: async () => ""});
   // requestAnimationFrame is queued, not swallowed: a stream that never paints cannot be tested at all, and
-  // flush() gives a test the same "one paint per frame" interleaving the browser gives the page
+  // flush() gives a test the same "one paint per frame" interleaving the browser gives the page.
+  // setTimeout is recorded rather than discarded, so a test can arm a timer and fire the one it cares about
+  // (the hover intent window) without running every other pending timeout in the page.
   const env = {                                        // guard and the discard guard - record and answer both
     document, localStorage: {getItem: (k) => (k in stored ? stored[k] : null), setItem: (k, v) => { stored[k] = v; }},
     indexedDB: idb, location: {hash: "", pathname: "/", origin: "http://127.0.0.1"},
     history: {replaceState() {}}, matchMedia: () => ({matches: false, addEventListener() {}}),
-    fetch: hooks.fetch || (async () => ({ok: true, json: async () => ({}), text: async () => ""})),
+    fetch: (...a) => { fetches.push(a[0]); return ((hooks.fetch || answer)(...a)); },
     confirm: (m) => { confirms.push(m); return confirmAnswer.yes; },
-    setTimeout: () => 0, clearTimeout: () => 0,
+    setTimeout: (f, ms) => { timers.push({f, ms}); return timers.length; },
+    clearTimeout: (id) => { if (id) timers[id - 1] = {f: null, ms: 0}; },
     requestAnimationFrame: (f) => { raf.push(f); return raf.length; }, cancelAnimationFrame: () => {},
     navigator: {clipboard: {writeText: async (t) => { copied.push(t); }}},   // what the page put on the clipboard
     innerWidth: 1200, innerHeight: 800, window: win, queueMicrotask,
@@ -193,13 +197,18 @@ function run(hooks, stored, seed) {
     "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
-    "pollUrl, pollDelay, renderPill, renderLite, setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
+    "pollUrl, pollDelay, renderPill, renderLite, hoverTab, leaveTab, prefetchFull, " +
+    "getLastFullAt: () => lastFullAt, setLastFullAt: (t) => { lastFullAt = t; }, " +
+    "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
-               flush: () => { while (raf.length) raf.shift()(); }};
+               fetches, flush: () => { while (raf.length) raf.shift()(); },
+               // fire the pending timeout armed with this delay (the hover intent timer), ignoring the rest
+               fire: (ms) => { const t = timers.find((x) => x.f && x.ms === ms); if (!t) return false; const f = t.f; t.f = null; f(); return true; },
+               pending: (ms) => timers.some((x) => x.f && (ms === undefined || x.ms === ms))};
   return api;
 }
 
@@ -1278,6 +1287,48 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   pl2.s.renderPill({live: {state: "idle"}});
   assert.strictEqual(pl2.s.el("pill-text").textContent, "Idle", "and it follows the state");
   done.push("polling: ?lite=1 off the Monitor, 15 s when idle, a minute when the window is hidden");
+
+  // 43. hovering the Monitor tab prefetches the full answer, so the cards paint at once on the click - and the
+  // three guards that stop a mouse sweep from becoming a request storm.
+  const hv = run({}, {});
+  await wait();
+  hv.fetches.length = 0;
+  hv.s.hoverTab("monitor");
+  assert.deepStrictEqual(hv.fetches, [], "hovering alone sends nothing: the intent window has to pass first");
+  assert.ok(hv.pending(250), "an intent timer is armed for 250 ms");
+  hv.s.leaveTab();                                   // moved off inside the window
+  hv.fire(250);
+  assert.deepStrictEqual(hv.fetches, [], "leaving inside the window cancels it: a sweep past the tabs is free");
+  hv.s.hoverTab("monitor");
+  assert.ok(hv.fire(250), "the intent timer fires");
+  await wait();
+  assert.deepStrictEqual(hv.fetches, ["metrics"], "and exactly one full answer is fetched");
+  hv.s.hoverTab("monitor");
+  hv.fire(250); await wait();
+  assert.strictEqual(hv.fetches.length, 1, "hovering again within the freshness window costs nothing");
+  hv.s.setLastFullAt(0);                             // pretend the last full answer is old
+  hv.s.hoverTab("monitor");
+  hv.fire(250); await wait();
+  assert.strictEqual(hv.fetches.length, 2, "once it is stale again, a hover fetches once more");
+  hv.s.setTab("monitor");                            // already there: the poll loop covers it, no extra request
+  hv.s.setLastFullAt(0);
+  hv.s.hoverTab("about");
+  hv.fire(250); await wait();
+  assert.strictEqual(hv.fetches.length, 2, "hovering another tab while on the Monitor sends nothing");
+  // hovering About prefetches nothing: that tab already polls its own tier, so its data is at most one
+  // interval old when you land on it. Only Monitor gets nothing while you are elsewhere.
+  const hv2 = run({}, {});
+  await wait();
+  hv2.s.setTab("chat");
+  hv2.fetches.length = 0;
+  hv2.s.hoverTab("about");
+  hv2.fire(250); await wait();
+  assert.deepStrictEqual(hv2.fetches, [], "hovering About sends no prefetch: it already polls lite+hw");
+  assert.strictEqual(hv2.s.pollUrl(), "metrics?lite=1", "and the Chat tab still asks its own tier");
+  assert.strictEqual(hv2.s.pollDelay({live: {state: "idle"}}), 15000, "Chat backs off; Monitor keeps 1 s");
+  hv2.s.setTab("monitor");
+  assert.strictEqual(hv2.s.pollDelay({live: {state: "idle"}}), 1000, "the Monitor's own cadence is unchanged");
+  done.push("hover: the Monitor prefetches once, after 250ms of intent, and not again while the answer is fresh");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

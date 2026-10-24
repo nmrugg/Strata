@@ -587,3 +587,35 @@ numbers below are already taken.
     symbol-free page left alone, and the sprite file itself still served byte for byte as it is on disk.
     The human deleted the C2PA manifest from sprite.svg afterwards; the guard stays so that if provenance ever
     comes back to the file it does not ride into every page.
+
+43.  Context fill reads 0% while the pill says Waiting. [py] DONE 2026-10-24
+    Same root as item 35, one layer further down. live.prompt_tokens / generated / max_tokens / elapsed_s were
+    each gated on status["busy"], and busy is False between engine rounds - so during a tool wait the Monitor's
+    gauge computed used = 0 while status still held prompt_tokens=2297, generated=5, max_tokens=5887. Measured
+    before and after with a probe against the fake MCP server: all four fields None, then populated.
+    Fix: `shown = busy or tool_running` gates those fields - the tool wait is part of the turn, so its numbers
+    belong to the turn's status. tok_s stays gated on state == "generating": there is no token rate during a
+    wait, and inventing one would be worse than showing none.
+    Test: serve/test_mcp.py catches a live running-tool sample and asserts prompt_tokens and elapsed_s are not
+    None. Control: gating on busy alone reproduces it - "unexpectedly None".
+
+44.  Hovering the Monitor tab prefetches its answer, so the cards paint at once. [ui] DONE 2026-10-24
+    Monitor is the one tab that gets nothing while you are elsewhere - Chat and About already poll their own
+    tiers, so their data is at most one interval old when you land on them. So only Monitor is prefetched, on
+    mouseenter; the human's own note ("prefetch is only necessary for Monitor, as it's already polling for
+    lite") is what narrowed my first per-tab version down to this.
+    Three guards, because a mouse crossing a tab bar is not a request:
+      - 250 ms of intent (HOVER_INTENT_MS): a sweep past never fires, and leaving inside the window cancels the
+        armed timer, so changing your mind costs nothing
+      - a 10 s freshness window (FULL_FRESH_MS) against lastFullAt, which the ordinary poll chain also sets -
+        so while the Monitor is open its 1 s poll makes hovering free
+      - one at a time: `prefetching` is held for the life of the request, so repeated hovers do not stack
+    It fetches outside the poll scheduler (schedulePoll owns that chain) so it cannot fork a second one - the
+    bug item 40 had to fix. A failed prefetch is swallowed: it is a warm-up, not a source of truth, and the
+    poll chain retries on its own cadence.
+    Tests: serve/test_chat_sidebar.py case 44 drives hoverTab/leaveTab against the recorded setTimeout queue -
+    no fetch on hover alone, none if you leave inside the window, exactly one when it fires, none on a second
+    hover while fresh, one more once stale, none while already on the Monitor, and none for About. Four
+    controls (no intent window, no freshness window, leave does not cancel, prefetch fires anyway) each fail.
+    The stub grew a recording setTimeout/clearTimeout and a fetch log for this; its addEventListener stays
+    one-handler-per-type, because 20 existing call sites invoke it directly.
