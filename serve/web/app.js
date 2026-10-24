@@ -708,8 +708,11 @@ function chatItem(c) {
   const tip = running ? "answering" : c.unread ? "unread reply" : drafted ? "has draft" : "";
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
-  row.innerHTML = `<span class="chat-item__state${state ? ` ${state}` : ""}"${tip ? ` title="${esc(tip)}"` : ""} aria-hidden="true"></span>` +
-    `<button class="chat-item__title" data-open-chat title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}">${esc(t)}</button>` +
+  // the slot is only emitted when there is something to show: a row with no marker keeps its full title width,
+  // and only the one that is answering (or unread, or drafted) gives up ~14px - the same shape as the
+  // edit/delete buttons, which only take room when that row is hovered
+  row.innerHTML = `<button class="chat-item__title" data-open-chat title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}">${esc(t)}</button>` +
+    (state ? `<span class="chat-item__state ${state}" title="${esc(tip)}" aria-hidden="true"></span>` : "") +
     `<span class="chat-item__actions">` +
     `<button class="st-btn st-btn--icon" data-rename aria-label="Rename this chat" title="Rename">${icon("edit")}</button>` +
     `<button class="st-btn st-btn--icon" data-delete aria-label="Delete this chat" title="Delete">${icon("trash")}</button>` +

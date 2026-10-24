@@ -134,14 +134,16 @@ main { flex: 1; min-height: 0; display: flex; }
                     padding: 8px; color: var(--st-ink-soft); font: 500 var(--st-fs-sm)/1.35 var(--st-font);
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item:hover .chat-item__title { color: var(--st-ink); }
-/* One state slot per row, before the name: a fixed 12px so names line up whether or not there is a marker, and
-   on the left so it never collides with the edit/delete buttons that appear on hover (and never reflows the
-   name).  Three states, one at a time, in priority order (chatItem in app.js):
+/* One state marker per row, at the right, and app.js only emits the slot when there is something to show - so a
+   row with no marker keeps its full title width and only the one that is answering (or unread, or drafted) gives
+   up about 14px. That is the same shape as the edit/delete buttons, which only take room on that one hovered
+   row; a fixed slot on the left cost every title in the list.
+   Three states, one at a time, in priority order (chatItem in app.js):
      run   - a turn answering in that conversation right now        (accent green, spinning)
      new   - a reply that landed while you were somewhere else      (info blue)
      draft - text you typed there and never sent                    (the row's own ink: quiet)
-   Green and blue are deliberate: green means happening, blue means happened, go read it. */
-.chat-item__state { flex: none; width: 12px; height: 12px; margin-left: 8px; position: relative; }
+   Green means happening, blue means happened, go read it. */
+.chat-item__state { flex: none; width: 12px; height: 12px; margin-right: 2px; position: relative; }
 .chat-item__state.draft::before { content: "*"; font-weight: 700; line-height: 12px; }
 .chat-item__state.new::before { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--st-info); }
 .chat-item__state.run::before { content: ""; position: absolute; inset: 0; border-radius: 50%;

@@ -47,6 +47,9 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('content: "*"', draft_rule)
         self.assertNotIn("color", draft_rule)             # the row's own ink; colour means something else here
         self.assertIn(".chat-item__state.run::before", css)
+        # the slot is only emitted when there is a marker, so an ordinary row keeps its full title width
+        self.assertIn('(state ? `<span class="chat-item__state ${state}"', self.body("chatItem"))
+        self.assertNotIn("margin-left: 8px", css)                     # no fixed left slot costing every row width
         self.assertIn("animation: st-spin 0.9s linear infinite", css)     # happening now: accent, spinning
         self.assertIn(".chat-item__state.new::before", css)
         self.assertIn("background: var(--st-info)", css)                  # happened: blue, go read it

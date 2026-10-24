@@ -1153,10 +1153,12 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   ctl39.flush = mk39.flush;
   const stateOf = (id) => {
     const html = mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
-    const m = /class="chat-item__state([^"]*)"/.exec(html);
-    return m ? m[1].trim() : "(none)";
+    const m = /class="chat-item__state ?([\w-]*)"/.exec(html);
+    return m ? m[1] : "";
   };
   assert.strictEqual(stateOf("A"), "", "nothing running, nothing unread, no draft: no marker");
+  assert.ok(!mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === "A")._html.includes("chat-item__state"),
+            "and no slot at all: that row keeps its full title width (the human's reason for moving it right)");
   const f39 = (o) => "data: " + JSON.stringify(o) + "\n\n";
   q39.push(f39({choices: [{delta: {content: "half"}}]}), f39({choices: [{delta: {content: " the rest"}}]}));
   mk39.s.el("input").value = "go";
