@@ -2,86 +2,221 @@
 
 Sorted easiest first. Tags: [config] = flag or setting only, no code. [ui] = web app only.
 [py] = serve/server.py. [eng] = C++ engine. [exists] = already works, just not obvious.
-Checked against the tree on 2026-10-23 (engine 0.1.43.1).
-Numbers are kept for cross-reference, so they are not renumbered when work finishes.
-Items 1-8 (the whole Trivial tier) were done and removed on 2026-10-23: 513721b8 (leave
-warning), ae1598b0 ("start_beep"), 78d2a8d1 (keep-thinking/keep-tool-calls open, and tool
-blocks opening on the click), 19aca0c2 (the answer updated in place), 86c61adb and 3ebbb7fe
-(markdown per author, the per-message "md" switch, and its colours). The live Trivial work
-is section 8, items 34-36.
+Reorganised and reclassified 2026-10-24, with eight new items added; renumbered the same day
+(see NUMBERING below) and three more added: the Enter/polling gap, the slow-death log, and the
+turn that ends without usable output.
 
-## 2. Small - one file, clear scope (a few hours each)
+NUMBERING. Renumbered 2026-10-24. Open items run 54 up, in difficulty order, in one sequence
+with no gaps and no repeats. DONE and SHELVED items keep the numbers code comments cite and
+live in the final section (9, 11, 12, 34-46). Numbers below 54 are therefore historical: they
+appear only in the Done section, or they name work that was done and removed - serve/web/app.js,
+serve/server.py, serve/*.py, serve/web/app.css and LESSONS.md cite 3, 4, 5, 6, 7, 8, 9, 11, 12,
+34, 35, 36, 37, 38, 40 and 46, and 3-8 name items no longer in this file at all. That is why open
+work was moved ABOVE that band rather than renumbered from 1: reusing those numbers would point
+forty code comments at the wrong want. Every "item N" cross-reference in this file was rewritten
+against the mapping; there are no dangling ones.
 
-9.  Read and switch to another conversation while one is running. [ui] DONE 2026-10-23
-    Shipped in 85084ba6. It was NOT the three-line change this entry once claimed - the entry was corrected
-    first, and the correction was right: showChat calls renderChat(), which removes every .st-msg, while send()
-    had captured one element ($("chat").lastElementChild) and painted into it for the whole turn, so simply
-    dropping the guard would have made the answer vanish mid-stream, silently.
-    What it took instead: the turn carries the conversation it belongs to (busy = {controller, msg, chat,
-    chatId}); rowOf(m) resolves the row by the message's index in the chat on screen, every frame (no row means
-    another chat is open - the turn keeps running, it just does not paint); and saveChat(c) writes the turn's own
-    chat rather than whichever one happens to be open.
-    Guards now: openChat and startChat are free (switching is the point); deleteChat still refuses for the chat
-    that OWNS a live turn (c.id === busy.chatId); and with the sidebar off, "New chat" still refuses, because
-    there it CLEARS the one chat instead of switching.
-    Unlocked by this: item 10 (queue another conversation) and item 37 (mark a chat whose reply finished while
-    you were not looking at it) - both were impossible while switching was refused.
+## 1. Trivial - minutes to an hour, one file, no design decision
 
-10.  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
+54.  Auto-scroll stops following when a big block lands (a tool call, a table). [ui] BUG
+    The human's diagnosis is correct, and the code shows why. `paint()` at
+    serve/web/app.js:1491 does `updateAssistant(el, m, true); scrollDown();` - so
+    `nearBottom()` measures the gap AFTER the DOM has already grown. A chunk that adds
+    thousands of pixels in one frame leaves the reader more than 120 px from the bottom, so
+    the follow switches itself off and never comes back.
+    The thinking block already gets this right (app.js:1187 measures `nearEnd(body, 48)`
+    before assigning `textContent`), which is why thinking follows and the chat does not.
+    Fix: measure before mutating, the same way - `const follow = nearBottom(); ...update...;
+    if (follow) s.scrollTop = s.scrollHeight;`. One line moved, plus a test that grows the
+    content by more than the slack in one step.
+    The slack of 120 px is also worth revisiting: a table row or a code fence is easily
+    taller than that.
+
+
+55.  The sidebar's "Yesterday" is arithmetic, not a calendar day. [ui] BUG
+    `groupName` (serve/web/app.js) does `Math.floor((Date.now() - t) / 86400000)`, so a chat
+    from 23:00 yesterday read at 01:00 today is "Today", and nothing is ever "Yesterday"
+    unless it is 24-48 hours old. The human's report is right.
+    Fix: compare calendar dates for Today/Yesterday (local midnight, not UTC - the app shows
+    local times elsewhere). "Previous 7 days" and "Previous 30 days" can stay arithmetic if
+    preferred, but the same diff makes them calendar-correct for free.
+
+
+56.  Show the context percent on each message's meta line, with a hover breakdown. [ui]
+    Wanted shape: `4,040 tokens · 52.7 tok/s · 5 tool calls (54% context)`, and hovering the
+    percentage gives a popup with the parts.
+    The data already exists: the stream's final usage chunk carries `prompt_tokens` and
+    `completion_tokens` (serve/server.py:4632; app.js:1517 stores it in `usage`), and
+    `engine.max_context` is already polled for the gauge. So store `m.usage` on the message
+    when the turn ends and add one span to `m.meta`.
+    Worth putting in the popup: prompt tokens, how much of the prompt was reused from the
+    cache (`reused`, already in the request records), output tokens, and reasoning tokens -
+    because "54% full" is much more actionable when you can see that 40 points of it was a
+    cached prefix.
+
+
+57.  A blue dot when a reply finishes in the chat you are on but are not looking at. [ui]
+    Item 37 marks a chat you are not in. This is the other half: you are on the right chat,
+    scrolled up reading an earlier answer, and the turn finishes below the fold. Today
+    nothing tells you.
+    Shape: `unread` already exists on the chat record; make it a per-message "not seen"
+    derived from whether the reader was at the bottom when the turn ended (the follow
+    decision from item 54 is the same measurement - reuse it). Show the dot in the gutter
+    slot item 37 added, and clear it when the reader reaches the bottom.
+    Careful: do not mark unread just because the reader scrolled up deliberately. That is
+    the difference between "you missed this" and "you are reading something else".
+
+
+58.  Pressing Enter does not poll, so the pill can read Idle for 15 s into a turn. [ui] TRIVIAL
+    Measured: neither send() nor setBusy() calls pollNow(). The chain is armed by the previous poll's
+    pollDelay (app.js:223 and 232), and with nothing running pollDelay returns POLL_IDLE_MS = 15000
+    (app.js:164, 177). So after Enter the next /metrics is whatever was already scheduled, up to 15 s
+    away, and the pill still says Idle while the engine reads the prompt. showTab already solves exactly
+    this for a tab change (app.js:87). Fix: setBusy(true) calls pollNow(); one scheduler already means it
+    cannot fork a second chain (item 40's lesson). Test: drive setBusy(true) in the harness and assert the
+    recorded setTimeout delay is 0, and that a second send does not start a second chain.
+
+
+## 2. Small - a few hours, one or two files, no design decision
+
+59.  A notification sound when a turn finishes and the window is not visible. [ui]
+    The want: hear it, the way item 55 ("start_beep") does for the server, but for a finished
+    conversation. Gate it on the same condition as the blue dot from item 37 - the turn ended
+    in a chat you were not looking at, or the window was hidden.
+    Nothing exists today: `grep -c "AudioContext" serve/web/app.js` is 0, and the browser
+    blocks autoplay before a first gesture, so it needs the click-armed pattern item 55 hit
+    head-on (the rejected client-side attempt for start_beep is in LESSONS.md). A short
+    WebAudio oscillator is a few lines; a file asset is not needed.
+    Two decisions before building: a sound for "finished while hidden" only, or also for
+    "finished in another chat while this window is visible"? And should it be one setting or
+    follow the blue dot exactly? Recommend: follow the dot, one setting, off by default.
+    Do NOT use the Notification API for the first version - it needs a permission prompt and
+    behaves differently on Windows/TDE. Sound first, badge later if wanted.
+
+
+60.  A three-dot menu on each chat row: Rename, Copy, Export, Delete. [ui]
+    Replaces the two hover buttons (`.chat-item__actions`, app.css) with one overflow button
+    that opens a menu.
+    Cheap parts: Rename and Delete already exist (renameChat, deleteChat) and just move into
+    the menu. Copy is a new function but trivial - `navigator.clipboard.writeText(JSON.stringify(chat))`,
+    which is also the seed of item 66's machine format.
+    The cost is the menu itself: a popover positioned in a 260 px rail that is `overflow-y:
+    auto`, so it can be clipped by the sidebar's scroll container. That needs either a
+    fixed-position popover or flipping the row's direction near the bottom. Budget more time
+    for that than for the actions.
+    Watch: the actions already only appear on hover and reserve no width (they are
+    `display: none` until hovered, and the state markers live in the left gutter) - keep that
+    property, or the titles shrink again.
+
+
+61.  ETAs while a prompt is being read. [ui] probably, [py] maybe
+    Honest assessment: the raw material is there and it is cheap to approximate, but a good
+    ETA is not. `live.state === "reading"` with `prompt_read` / `prompt_total` already drives
+    the percentage in the pill (app.js renderPill), and prefill rate is measured
+    (`prefill_tok_s_mean`). So `(prompt_total - prompt_read) / prefill_rate` is a tooltip away.
+    Why it is rough: the read rate is not constant (chunk sizes ramp, the expert cache warms,
+    a parked conversation skips the read entirely), and a reused prefix is not read at all,
+    so the naive number overshoots on warm chats. Measured on this box: cold reads run
+    ~2,000 tok/s and a 533,954-token prompt took 332 s.
+    Recommendation: do the tooltip, label it an estimate, and show it only once at least a
+    few thousand tokens have been read so the rate is real. Cheap, and the pill already has
+    the space. Not worth a server change.
+
+
+62.  Enable and disable a whole MCP server from the front end. [ui] [py] EASY
+    The config already supports "disabled": true per entry, and the server leaves it out with
+    one log line. So this is a checkbox that writes that flag - the smallest item in the
+    MCP set.
+    Care: it writes the run config, so it needs the same origin guard as GET/POST /config,
+    and it takes effect only on restart. Say so in the UI.
+
+
+63.  Fork a conversation (clone, not nested). [ui]
+    A chat is an object with a messages array in IndexedDB; a deep copy is short.
+    Needs the same care as item 60's Copy: a new id, and `unread`/draft state should not
+    carry over.
+
+
+64.  Add and edit a system prompt, set ONCE when the conversation starts. [ui] [py] EASY
+    There is no system-prompt field in the web app today (no system_prompt anywhere in
+    app.js), and the server already supports one: a leading system/developer message is
+    merged into the template's system turn (chat_template.jinja). So this is a per-chat
+    field stored with the chat object in IndexedDB, sent as the first message on every
+    request of that chat. Because it never changes mid-chat, it costs nothing: the system
+    turn stays identical turn to turn and the pinned root checkpoint keeps matching.
+    Editing it LATER is the only case that re-reads the chat once - worth a confirm dialog,
+    same as the tool-thinking toggle.
+    This is the prerequisite for item 77 (dynamic system prompt) and it makes item 70's
+    prefix pin actually useful, so it is worth doing early despite being small.
+
+
+65.  Trim long tool calls before they reach the DOM. [py] [ui] - decide the policy first
+    The question "do we trim?" has a measured answer for this box: `max_result_chars` is
+    **500,000** in strata-iq3_s.json (the code default is 20,000), and `max_rounds` is 900.
+    So one call can put 500 KB of text into the page, and a long agent turn can do that many
+    times. The DOM cap is only visual: `.tool-call__pre` has `max-height: 320px; overflow:
+    auto` (app.css:113), which bounds the *box*, not the text node inside it.
+    So yes, this can overwhelm the page, and it is partly mitigated already: an open block's
+    body is built lazily and only while open (syncToolBody), so a closed call costs nothing.
+    The exposure is (a) a call the reader opens, and (b) every result kept in the message
+    object and written to IndexedDB.
+    Options, in order of preference:
+      - cap what goes into the DOM per open block (say 100 KB) with an explicit
+        "showing the first 100 KB of 500 KB - Download / Copy full" affordance. Keeps the
+        full text for copy and export, bounds the render.
+      - keep only a preview in the message object and store the full result once, keyed by
+        call id, fetched on demand. Bigger change, but it is the one that fixes IndexedDB
+        growth too.
+      - lower `max_result_chars` in the config. Cheapest, but it changes what the MODEL
+        sees, which is a different decision from what the browser renders - do not conflate
+        them.
+    Measure before building: how big is a real chat record here, and how many open blocks
+    does a 900-round turn actually produce?
+
+
+66.  Import and export conversations. [ui] [py]
+    Export exists but only as human-readable Markdown (the export button). Needs a machine
+    format. llama.cpp's chat format is JSONL with a "messages" array - a reader for that is
+    small. Import is easy for text; images and tool rounds need care to round-trip.
+    Note: tool rounds carry `at` and `rat` offsets that the replay depends on
+    (assistantMessages, and serve/server.py:4470-4481 on why they must match). An import
+    that loses them re-creates the re-read bug. Round-trip those or refuse the import.
+
+
+67.  Edit and delete posts in a conversation, mine and the model's. [ui] [py]
+    Chat-level rename and delete exist (renameChat, deleteChat); message-level do not.
+    Straightforward to build. See item 69 for the cost.
+    The delete wants a modal, not a confirm(): "delete this message", a warning that it
+    cannot be undone and that the conversation must be re-read (until item 69 lands), and a
+    checkbox, **checked by default**, "delete all messages below". Unchecked means delete
+    only that one and leave the rest - which is the case that changes the prompt mid-stream
+    and therefore the one that re-reads everything after it. The modal should say which of
+    the two it is about to do, in token terms if the numbers are available (item 56 already
+    computes them).
+    Message-level identity is a prerequisite for any of this being safe: messages have no ids
+    today, only array position and `time`. See item 75.
+
+NEED RENUMBERING
+
+68.  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
     The SERVER ALREADY DOES THIS: docs/BATCHING.md - "By default Strata serves one request
     at a time: the others wait in the server's queue." Nothing engine-side is missing, and
     --batch N would run them at once instead of queued.
     What is missing is entirely in the page: one busy flag, one send button disabled
     (app.js:1015), one stream reader. Needs per-request state (controller, target message,
     chat id) so two streams can be tracked and painted into the right chat.
-11.  Show what the model is typing inside a tool call instead of "(being written)". [py] [ui] DONE 2026-10-23
-    Shipped in 43fb9845. The half-built plumbing the entry described was exactly right: the parser already
-    emits tool_start and tool_args pieces, and the MCP loop threw the pieces away with a bare `continue`
-    ("its argument pieces are not streamed to the client").
-    Server: run_with_mcp takes stream_args and, only then, yields {"event": "args", "id", "text"} per piece.
-    The flag comes from the request (Service.mcp_stream_args, mirroring mcp_keep_thinking), so a client that
-    does not ask gets byte-identical chunks - test_mcp's existing test still asserts start/call/result
-    exactly. The pieces never enter the OpenAI-style deltas either, so nothing is duplicated.
-    Page: sends strata_mcp_args, accumulates the pieces on the tool (t.argsText), and shows them in the
-    arguments pre and in the collapsed summary line as they arrive - so you can watch a big call being
-    written without opening it. The args box follows the bottom the same way the thinking does, only if the
-    reader was already there. When the finished call lands, arguments wins and argsText is dropped, so the
-    record does not carry both.
-    test_mcp asserts the pieces reassemble into the finished arguments and belong to that call.
-    Confirmed working in the browser by the human, 2026-10-24.
-
-12.  New thinking blocks after each tool call instead of one bubble at the top. [ui] DONE
-    2026-10-23, final shape in the commit after 956a9631 - it was [ui] only, not [py] [ui]: the
-    round boundaries were already in the data (`at` and `rat` on each tool), and `assistantMessages()`
-    already sliced the reasoning per round for the replay. What shipped: the reasoning is drawn as one
-    thinking block per round, in the order it happened - think, text, call, think, text, call, answer -
-    all top level inside the bubble.
-    Two nesting attempts were built and removed. (1) A container per round holding that round's text and
-    calls: the human's objection was that narration between calls is part of the answer, it was hidden
-    behind a click while the copy button still copied it, and it cost one rebuild per round because the
-    text had to move into the container. (2) A container holding only the calls: still one click too
-    many to read a call. Both are gone; `WORK_SHELL`, `syncWork` and the `.st-work` CSS were deleted
-    rather than left behind a flag.
-    It did NOT need a list of thinking runs in the message model - deriving them from at/rat at render
-    time is enough, and storing a second copy of the reasoning is the wrong shape (see LESSONS.md).
-13.  Import and export conversations. [ui] [py]
-    Export exists but only as human-readable Markdown (app.js:1145). Needs a machine format.
-    llama.cpp's chat format is JSONL with a "messages" array - a reader for that is small.
-    Import is easy for text; images and tool rounds need care to round-trip.
 
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
-14.  Edit and delete posts in a conversation, mine and the model's. [ui] [py]
-    Chat-level rename and delete exist (renameChat, deleteChat); message-level do not.
-    Straightforward to build. See 15 for the cost.
-15.  Make editing or deleting not re-read everything. [eng] [py]
+69.  Make editing or deleting not re-read everything. [eng] [py]
     Partly possible today: STRATA_CACHE_MESSAGE_BOUNDARY=1 saves a checkpoint at the previous
     turn boundary so a replaced final message reuses the history before it. Limits from
     docs/MESSAGE_BOUNDARY_CACHE.md: prefixes of at least 8,192 tokens, a tail of at most
     1,024, off for layer splits, opt-in, and it can split prefill chunks. Editing near the
     end is cheap; editing early in a long chat is not, because every later token changes.
     Real feasibility: good for the last few messages, no help in the middle.
-16.  Pin one conversation so it is always fast to open: in RAM while Strata runs, on disk
+
+70.  Pin one conversation so it is always fast to open: in RAM while Strata runs, on disk
     when it does not. [py] [eng] [ui] HARD - and the one item here that needs a decision
     before code. This absorbs three earlier items that turned out to be the same want
     (keep the last conversation on disk / pin one so it is never evicted / always fast to
@@ -132,27 +267,35 @@ is section 8, items 34-36.
     promise (impossible at that size here)? That answer drives all three steps, and it
     belongs in docs/ before it belongs in serve/.
 
-17.  Fork a conversation (clone, not nested). [ui]
-    A chat is an object with a messages array in IndexedDB; a deep copy is short.
-18.  Add and edit a system prompt, set ONCE when the conversation starts. [ui] [py] EASY
-    There is no system-prompt field in the web app today (no system_prompt anywhere in
-    app.js), and the server already supports one: a leading system/developer message is
-    merged into the template's system turn (chat_template.jinja). So this is a per-chat
-    field stored with the chat object in IndexedDB, sent as the first message on every
-    request of that chat. Because it never changes mid-chat, it costs nothing: the system
-    turn stays identical turn to turn and the pinned root checkpoint keeps matching.
-    Editing it LATER is the only case that re-reads the chat once - worth a confirm dialog,
-    same as the tool-thinking toggle.
-19.  Close the browser and keep the conversation running. [py] [ui]
+
+71.  Close the browser and keep the conversation running. [py] [ui]
     Today a disconnect ends the request: GeneratorExit at server.py:4171 settles it, and the
     docs advertise that closing the connection really stops the model. Needs generation
     detached from the HTTP response, a server-side buffer of what it produced, and a way to
     re-attach. Also interacts with the idle-unload and watchdog paths. This is the biggest
     item in this tier.
 
+
+72.  reasoning_loop_recovery "recover" fires and then the turn freezes at the same token count. [py] [eng] MEDIUM
+    Written up in strata-slow-death.txt at the repo root (240 lines, uncommitted). The shape, twice in one
+    run: "repeated reasoning detected at 2560 tokens (coverage=0.555); resuming the same output with the
+    low-effort instruction (reasoning_loop_recovery)", after which the thinking counter sits at exactly
+    2560 for minutes while the reported rate decays 88.5 -> 77.8 -> ... -> 29.3 tok/s. The turn neither
+    advances nor ends, and the client eventually gives up. This is the slow death, distinct from the fast
+    one where a boundary tag in quoted text cuts a turn.
+    The same file records a SECOND, separate failure: focused_recovery_prompt() looks for the xhigh effort
+    sentence, which the template does not put in the prompt when reasoning_effort is low or medium and
+    effort_position is the default "start". Measured there: 63-token prompt, sentence absent,
+    focused_recovery_prompt() -> None, so the recover branch cannot fire at all; with effort_position
+    "end" the sentence is present and it returns 93 ids. That file's workaround is "effort_position":
+    "end"; this box's config sets neither, so any low/medium request is in the silent no-op case.
+    NOT explained by the no-op: the freeze happens in a run where recover DID fire. Two measurements are
+    owed before any fix - why the counter stops advancing at all, and why the rate halves while it does.
+
+
 ## 4. Large - engine work, or a new subsystem (weeks)
 
-20.  Run two conversations at the SAME TIME, not queued. [eng] [py] [ui]
+73.  Run two conversations at the SAME TIME, not queued. [eng] [py] [ui]
     Distinct from 10 (which is queuing, already supported). True simultaneity is
     "parallel": N (--batch N), docs/BATCHING.md, measured +31-39% total throughput with
     2-4 clients on one GPU. Two hard caveats for this box:
@@ -162,12 +305,14 @@ is section 8, items 34-36.
       - Slots share the engine context: 4 chats x 200K tokens = 800K of a 1M context, and
         each held or parked conversation costs RAM (measured here: ~19 KB per token).
     Feasible, but it is a capacity decision, not a feature flag.
-21.  Preload conversations when I start typing. [py] [eng]
+
+74.  Preload conversations when I start typing. [py] [eng]
     Restoring a parked or on-disk conversation before the request lands needs conversation
     identity (see 16) and a restore path that is not tied to a slot. Also speculative
     loading competes with the request that is actually coming. Worth revisiting after 16
     and 17 exist.
-22.  Back the conversation cache with NVMe instead of RAM. [eng]
+
+75.  Back the conversation cache with NVMe instead of RAM. [eng]
     Your drive measured 2.3 GB/s write, 3.2 GB/s cold read (FireCuda 520, ext4, oflag=direct,
     3 GiB). A 3.5 GiB snapshot of this conversation is ~1.5 s to write and ~1.1 s to read,
     against ~100 s to re-read 195K tokens - roughly 90x faster than the current fallback, and
@@ -176,7 +321,8 @@ is section 8, items 34-36.
     so the plumbing pattern exists; a file tier for the park cache is new engine code plus
     eviction policy. Note the docs warn a parked conversation being paged is itself a stall
     cause (#2049, #2065), so this needs the same care the expert tier got.
-23.  Dynamic elements in the system prompt (date, system info) - frozen at chat start. [ui] [py]
+
+76.  Dynamic elements in the system prompt (date, system info) - frozen at chat start. [ui] [py]
     With 18 done, this is a one-time fill: compute the date and system info when a chat is
     created, store them in the chat's system prompt, and never recompute them. Then the
     system turn is byte-identical for the whole chat and the pinned root keeps matching.
@@ -187,7 +333,8 @@ is section 8, items 34-36.
     must change mid-chat, "effort_position": "end" is the existing pattern to copy: put the
     varying text in a short turn right before the answer, after the checkpoint.
 
-24.  Warm the conversation while I type, and cancel the warming when I switch.
+
+77.  Warm the conversation while I type, and cancel the warming when I switch.
     [py] [eng] [ui] HARD, and the description here replaced a wrong one (it used to say
     "cancel when switching", which is a different, much smaller feature).
 
@@ -224,7 +371,7 @@ is section 8, items 34-36.
         193,453 tokens, 3.55 GiB) versus ~330 s to re-read. So for a PARKED chat, warming is
         already fast; the gap is that parking happens on switch-AWAY, not on focus.
       - --conversation-cache-min-tokens decides which chats get a slot at all (see 16/17).
-      - Session files (save/restore) already put a conversation on disk - item 16 automates
+      - Session files (save/restore) already put a conversation on disk - item 70 automates
         that, and 16 is therefore a prerequisite for the "stored on hard drive" half.
       - The pinned system-prompt root (6,606 tokens here) means a new chat in the same app
         already reuses the common prefix without any warming.
@@ -240,9 +387,10 @@ is section 8, items 34-36.
       Order I would build: 17 (auto save/restore) -> 18 (pin one chat) -> this prefetch ->
       then the engine-side "read, hold, generate nothing" verb if the prefetch is not enough.
 
+
 ## 5. Added 2026-10-23: MCP servers from the front end
 
-25.  Add and remove MCP servers in the web app. [ui] [py] MEDIUM
+78.  Add and remove MCP servers in the web app. [ui] [py] MEDIUM
     Reading is done: GET /mcp returns every server, its state and its tools, and the Monitor
     lists them (app.js:402-432, the mcp-card). What is missing is writing.
     The plumbing exists: the Settings view already edits the run config (#564, svc.config_path,
@@ -254,10 +402,8 @@ is section 8, items 34-36.
     the MCP tools already use (_own_page), and an API key when the server is reachable from
     other devices. Starting/stopping a server also restarts the engine's tool list, which
     changes the system turn and costs every chat one re-read (see 18's note).
-26.  Enable and disable a whole MCP server from the front end. [ui] [py] EASY
-    The config already supports "disabled": true per entry, and the server leaves it out with
-    one log line. So this is a checkbox that writes that flag - the smallest item in this tier.
-27.  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM
+
+79.  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM
     Nothing today: McpHub offers every tool of an enabled server as <server>__<tool> and
     routes a call back to whichever server has it (serve/mcp.py). Needs a per-tool exclusion
     list in the config, filtered in McpHub.template_tools(exclude=...) - that parameter is
@@ -266,9 +412,10 @@ is section 8, items 34-36.
     tools the model can actually see.
 
 
+
 ## 6. Bug: the turn that delivers nothing, and the leaking tags
 
-28.  Leaked markup in the answer: literal backslash-n pairs, closing think tags, closing
+80.  Leaked markup in the answer: literal backslash-n pairs, closing think tags, closing
     thinking tags. [py] [ui] - this is the one you are seeing in the window
     All three symptoms are one event: text that LOOKS like structure being READ as
     structure, by whichever layer is consuming the stream. Three layers have done it to me
@@ -299,7 +446,8 @@ is section 8, items 34-36.
     later (serve/server.py:3995). Roughly 80-120 lines, two files, IF the engine forwards
     those IDs on T lines (UNVERIFIED - check generate.cpp:11818; if it filters them, add a
     small C++ change plus a CUDA/HIP/SYCL rebuild per AGENTS.md).
-29.  The model stopping before or while writing tool calls.
+
+81.  The model stopping before or while writing tool calls.
     Same failure as 28. Measured on this box over 200 rounds: 5 turns ended giving the
     client neither answer text nor a completed call, and 13 turns were rescued by
     reasoning_close_retry. The engine finished everything and the parser dropped nothing,
@@ -331,9 +479,47 @@ is section 8, items 34-36.
     turns are NOT counted by it today. Add that (a call abandoned in state call/json is
     already counted in abandoned_tool_calls) and correlate it with what the window shows.
 
+
+82.  Nothing notices a turn that ends without usable output, and nothing continues it. [py] [ui] MEDIUM
+    Asked as "you should never stop without a final output - surely the backend or the front end could see
+    that and continue you". All three recovery flags are already on here (strata-iq3_s.json:
+    reasoning_close_retry true, reasoning_loop_recovery "recover", tool_call_recovery true) and sessions
+    still die.
+
+    Measured over 2,024 requests in /tmp/strata-server.log:
+      - 10 ended with 0 tokens, every one finish=cancel and every one mid "reading the prompt" (46 s,
+        90 s, 40 s, 24 s). The client giving up on a long prefill, not a stall.
+      - 16 ended finish=stop with <= 80 tokens; the most common phase set among them was
+        {writing a tool call} alone (6 of 16) - no thinking phase, no answering phase.
+      - 19 logged "the reply ended inside its thinking with no answer" (reasoning_close_retry rescued
+        them), 5 logged "tool calls inside the thinking", and 0 logged EMPTY TURN. The counter built for
+        this cannot see the failure, and a counter that cannot see the bug is worse than none (LESSONS.md).
+      - Why the flags do not help is item 72: recover cannot build its nudge for low/medium effort at the
+        default effort_position, and when it does fire the turn can freeze at the same token count.
+
+    WHAT KILLED TWO TURNS TODAY, observed live: the agent quoted a line of raw model output while
+    investigating this bug, that text contained a literal closing thinking tag, a consumer read it as a
+    real boundary, and the turn ended mid-sentence with no final output. Same failure as item 80 -
+    boundaries represented as text can be forged by the content - reached from the other side: not the
+    model forging one, the agent quoting one. It raised no EMPTY TURN line, because it is not an empty
+    turn: it is a turn that ends early with plausible text.
+
+    THREE THINGS THAT COULD NOTICE IT, cheapest first:
+      1. The client that runs the agent: detect "turn ended with no final text and no tool call" and
+         re-prompt. Needs no Strata change, and it is the only one that covers the quoted-tag death, where
+         the truncation is between the model and its consumer rather than in the parser.
+      2. Strata's own rescue, which covers one shape only (reasoning_close_retry, 19 rescues here). It does
+         not cover "the answer ended with a tool call that was never completed" - that is item 81's empty
+         turn, counted by totals.empty_turns, which reported 0 in this log.
+      3. The structural fix, item 80: stop representing boundaries as text. The engine has them as token
+         IDs and the server discards the ID at server.py:3995. Only that makes both directions impossible.
+    NOT ESTABLISHED: whether the engine forwards the special IDs on its T lines - check generate.cpp:11818
+    before sizing item 80. And any "did this turn end properly" check has to tell "short but complete" from
+    "stopped early", which length alone cannot: these deaths ended with a plausible sentence.
+
 ## 7. Added 2026-10-23: server-side conversation log, and offline queueing
 
-30.  The server writes the conversation to disk (flag on, configurable dir, optional gzip).
+83.  The server writes the conversation to disk (flag on, configurable dir, optional gzip).
     [py] MEDIUM - and it is the instrument the glitch in section 6 actually needs
     Today the server keeps only in-memory numbers: Service.history is a deque(maxlen=500) of
     per-request stats, read by GET /metrics?requests=all. Nothing about the actual messages
@@ -357,7 +543,8 @@ is section 8, items 34-36.
     Care: this stores full conversation text on disk. It needs the same origin and host
     guards as the other admin endpoints, a stated retention policy, and it must not write
     request bodies that carry an API key.
-31.  Queue a request when the server is down and send it when it is back. [ui] MEDIUM
+
+84.  Queue a request when the server is down and send it when it is back. [ui] MEDIUM
     Today the page just errors. The SERVER side is already right: requests queue behind the
     FIFO (docs/BATCHING.md - "By default Strata serves one request at a time: the others
     wait in the server's queue"), and a restart never hangs a waiter - it ends with a clean
@@ -365,10 +552,12 @@ is section 8, items 34-36.
     Needs: an outbox in IndexedDB (the store already exists), a health poll, ordering rules,
     and a decision about a second message arriving while one is queued. It must survive a
     reload, which is what makes it an IndexedDB problem rather than an array.
-32.  Related: item 19 (close the browser, keep the conversation running) is the server side of
+
+85.  Related: item 71 (close the browser, keep the conversation running) is the server side of
     the same wish. With 31 in place, 21 gets much easier - the output is already on disk, so
     a reconnect can read it instead of needing a live stream.
-33.  Multiple tabs open at once, kept in sync. [ui] MEDIUM - and it splits into two problems
+
+86.  Multiple tabs open at once, kept in sync. [ui] MEDIUM - and it splits into two problems
     of very different size.
     Today: nothing. app.js has no BroadcastChannel and no "storage" event listener, so two
     tabs are two independent apps over one IndexedDB. Worse, every save writes the WHOLE chat
@@ -397,14 +586,146 @@ is section 8, items 34-36.
     tab's fetch and AbortController; the other tab cannot attach to it, and if the owning tab
     closes, the generator's GeneratorExit (serve/server.py:4171) ends the request. So a
     second tab shows nothing until a reload.
-    That is item 19 wearing a different hat: the generation has to be detached from the
+    That is item 71 wearing a different hat: the generation has to be detached from the
     connection that started it, buffered server-side, and re-attachable. Do 21 (and 31, which
     puts the output on disk) first and this becomes a poll - much smaller than building it
     now.
     Order I would take: fix the clobbering (revision + tombstones) -> BroadcastChannel for
     the list -> 21/31 -> shared stream.
 
-## 8. Added 2026-10-23: the streaming look, and the settings drawer (all Trivial)
+
+## 8. Added 2026-10-24: the drawer's buttons, the send button, the sprite, and start-up order
+
+87.  The Sampling drawer should apply itself, and its two buttons should mean different things. [ui] EASY
+    Four changes the human asked for, all in the drawer (serve/web/app.js:1791-1885, index.html:213-274):
+      - Auto-apply: no Apply press, and so no "you have unapplied changes" warning on close. That removes
+        item 36 entirely - closeDrawer's confirm, drawerDirty, and the s-mcpthink/s-esp caveat that a refused
+        flip must not count as a change. The Apply button goes with it.
+        DECIDE FIRST: what "applied" means per control. The sampling sliders are per-request (send() reads
+        settings each time), so they are free. s-mcpthink and s-esp re-read the chat (serve/server.py:4470-4481,
+        #2100) - auto-applying those means a 300-second re-read the moment a switch is moved, which is the one
+        control that must keep its confirm. s-share writes the SERVER's shared defaults (POST /settings) and
+        should stay explicit or be debounced. Recommend: auto-apply everything except s-mcpthink/s-esp (their
+        own confirm stays) and s-share (its own button, or a debounce).
+      - "Defaults" = what Reset does today (loadDrawer(DEFAULTS), app.js:1878). Rename the button.
+      - "Reset" should mean "put back what it was when I opened this panel" - i.e. snapshot the controls in
+        openDrawer(true) and restore that, which is what drawerDirty() already compares against. With
+        auto-apply there is nothing unapplied to discard, so Reset becomes "undo my edits in this session of
+        the panel" and the confirm goes away.
+      - Both buttons black. Today: s-reset is st-btn--secondary and s-apply is st-btn--primary (index.html:271-272),
+        and --primary is the accent green (components.css). So: drop the primary class, and check what
+        st-btn--secondary actually renders as before assuming it needs a new style.
+    Watch: openDrawer(true) calls loadDrawer() + loadShared() + loadMcp() (app.js:1785-1789); the snapshot must
+    be taken from `settings` (already the applied state), not re-read from the controls after loadDrawer.
+
+
+88.  Remove the scrim: it blocks clicks on the rest of the page and the drawer should not auto-close. [ui] TRIVIAL
+    <div class="scrim" id="scrim" hidden> is index.html:276; app.js sets $("scrim").hidden in openDrawer
+    (app.js:1787) and wires $("scrim").onclick = closeDrawer (app.js:1884). LESSONS.md item 36's test pins that
+    the X, the scrim and Escape all go through closeDrawer - with the scrim gone that assertion changes, and
+    with auto-apply (item 87) closeDrawer's confirm goes too, so 36's test is rewritten or deleted.
+    Check before deleting the element: components.css's .scrim rule, and whether anything else uses #scrim
+    (grep says the drawer only). Escape still closes.
+
+
+89.  A spinner on the Send button when THIS conversation is answering. [ui] TRIVIAL
+    Today: send-btn is disabled while busy (setBusy, app.js:1035-1042) and the running marker is in the sidebar
+    row (item 37, chatItem). The want is the same fact on the button, but only when the running turn belongs to
+    the chat you are looking at - the exact condition item 37 deliberately EXCLUDED from the row
+    (busy.chatId === c.id && c.id !== chatId). For the button it is the inverse: busy && busy.chatId === chatId.
+    busy already carries chatId (app.js:858), and setBusy is the only place that reaches the UI, so this is a
+    class toggle there. The sprite has i-spinner? Check before adding an element: item 37 used a CSS ring on
+    .chat-item__state.run::before rather than a sprite icon, and prefers-reduced-motion swaps it for a static
+    ring - copy that, do not invent a second spinner.
+
+
+90.  Do not show tool-call__preview while the block is open. [ui] TRIVIAL
+    .tool-call__preview (app.css, and toolPreview() at app.js:1041) is the one-line summary in the summary row;
+    when the block is open the arguments and result are right below it, so the line is noise. The thinking
+    block already does exactly this: .st-collapse.think[open] .think-preview { display: none; } (app.css:81).
+    So this is one CSS rule: .tool-call[open] .tool-call__preview { display: none; }. One line plus a test in
+    test_chat_sidebar.py's CSS checks.
+
+
+91.  Start the web server before the model loads, so the page can open while loading. [py] MEDIUM
+    Measured and documented in LESSONS.md ("`/health`'s loaded does not mean the model is loaded"): the port
+    does not listen until the model is up - httpd = serve(svc, ...) is serve/server.py:6633, AFTER "loading the
+    model (the first start takes a minute or two) ..." at server.py:6448 and after the StrataEngine(...)
+    constructor. So a page has exactly one signal - "my fetch of /health stopped failing" - and cannot tell
+    "still loading" from "not started". That is why the start-up sound is a server-side console bell.
+    Fix: bind and serve first, hold generation until the engine is ready. What must not regress:
+      - /health and /metrics must answer something sensible while loading, and Service.loaded() must not lie -
+        it is not hasattr(engine, "alive") or engine.alive() (server.py:2941-2943) and alive() is just
+        proc.poll() is None (server.py:872-875). A page that loads and sees loaded:false needs a "still
+        loading" state, which is the other half of this item (the front end has no such state today).
+      - the start-waiters path: a restart never hangs a waiter, it ends with a clean 503
+        (serve/test_restart_waiters.py, #1012). Same guard must cover "engine not up yet".
+      - --open / open_browser opens the page when the MODEL is ready (setup.py:4410 appends --open unless
+        open_browser is false); with the server up early, decide whether it opens earlier now.
+    Also: the engine is constructed on the main thread today, so loading has to move to a thread or the
+    server must be started before it. That is the real work, and it is where the risk is.
+
+
+92.  A command to run the test suites from the command line. [py] TRIVIAL
+    Today the suites are a copy-paste line in HANDOFF.md:52 (fast, 10 modules) and HANDOFF.md:56 (full server,
+    313 tests, ~95 s), plus node serve/test_chat_sidebar.js for the page. Add one script that runs all three
+    and prints the counts, e.g. ./test.sh (repo already has bench.sh, setup.sh, update.sh at the root, so a
+    root shell script fits the existing pattern; Windows matters too - START-HERE.bat exists, so a .bat or a
+    python entry point may be the better shape). Keep it to the suites HANDOFF lists; do not try to run the
+    engine's C++ tests, which need a GPU. Worth including: the node-missing skip (test_chat_sidebar.py skips
+    the JS harness when node is absent) and a non-zero exit on failure.
+
+
+
+## 9. Done and shelved - numbers kept, because serve/web/app.js, serve/server.py, serve/test_* and LESSONS.md cite them
+
+9.  Read and switch to another conversation while one is running. [ui] DONE 2026-10-23
+    Shipped in 85084ba6. It was NOT the three-line change this entry once claimed - the entry was corrected
+    first, and the correction was right: showChat calls renderChat(), which removes every .st-msg, while send()
+    had captured one element ($("chat").lastElementChild) and painted into it for the whole turn, so simply
+    dropping the guard would have made the answer vanish mid-stream, silently.
+    What it took instead: the turn carries the conversation it belongs to (busy = {controller, msg, chat,
+    chatId}); rowOf(m) resolves the row by the message's index in the chat on screen, every frame (no row means
+    another chat is open - the turn keeps running, it just does not paint); and saveChat(c) writes the turn's own
+    chat rather than whichever one happens to be open.
+    Guards now: openChat and startChat are free (switching is the point); deleteChat still refuses for the chat
+    that OWNS a live turn (c.id === busy.chatId); and with the sidebar off, "New chat" still refuses, because
+    there it CLEARS the one chat instead of switching.
+    Unlocked by this: item 68 (queue another conversation) and item 37 (mark a chat whose reply finished while
+    you were not looking at it) - both were impossible while switching was refused.
+
+
+11.  Show what the model is typing inside a tool call instead of "(being written)". [py] [ui] DONE 2026-10-23
+    Shipped in 43fb9845. The half-built plumbing the entry described was exactly right: the parser already
+    emits tool_start and tool_args pieces, and the MCP loop threw the pieces away with a bare `continue`
+    ("its argument pieces are not streamed to the client").
+    Server: run_with_mcp takes stream_args and, only then, yields {"event": "args", "id", "text"} per piece.
+    The flag comes from the request (Service.mcp_stream_args, mirroring mcp_keep_thinking), so a client that
+    does not ask gets byte-identical chunks - test_mcp's existing test still asserts start/call/result
+    exactly. The pieces never enter the OpenAI-style deltas either, so nothing is duplicated.
+    Page: sends strata_mcp_args, accumulates the pieces on the tool (t.argsText), and shows them in the
+    arguments pre and in the collapsed summary line as they arrive - so you can watch a big call being
+    written without opening it. The args box follows the bottom the same way the thinking does, only if the
+    reader was already there. When the finished call lands, arguments wins and argsText is dropped, so the
+    record does not carry both.
+    test_mcp asserts the pieces reassemble into the finished arguments and belong to that call.
+    Confirmed working in the browser by the human, 2026-10-24.
+
+
+12.  New thinking blocks after each tool call instead of one bubble at the top. [ui] DONE
+    2026-10-23, final shape in the commit after 956a9631 - it was [ui] only, not [py] [ui]: the
+    round boundaries were already in the data (`at` and `rat` on each tool), and `assistantMessages()`
+    already sliced the reasoning per round for the replay. What shipped: the reasoning is drawn as one
+    thinking block per round, in the order it happened - think, text, call, think, text, call, answer -
+    all top level inside the bubble.
+    Two nesting attempts were built and removed. (1) A container per round holding that round's text and
+    calls: the human's objection was that narration between calls is part of the answer, it was hidden
+    behind a click while the copy button still copied it, and it cost one rebuild per round because the
+    text had to move into the container. (2) A container holding only the calls: still one click too
+    many to read a call. Both are gone; `WORK_SHELL`, `syncWork` and the `.st-work` CSS were deleted
+    rather than left behind a flag.
+    It did NOT need a list of thinking runs in the message model - deriving them from at/rat at render
+    time is enough, and storing a second copy of the reasoning is the wrong shape (see LESSONS.md).
 
 34.  No "Writing", no fake caret, and no answer bubble until there is real output. [ui] DONE
     2026-10-23 in f453c192: the placeholder branch and the caret class are gone from
@@ -427,6 +748,7 @@ is section 8, items 34-36.
     keeps stable element references and the thinking block is the only thing on screen while the
     model thinks.
 
+
 35.  A "Waiting" state while an MCP tool runs, instead of Idle. [py] [ui] DONE 2026-10-24
     Measured first, on this box: during a 7 s MCP call, GET /metrics answered live.state = "idle" in 3 of 3
     samples. The cause is structural, not a missing label - live_reqs (the per-request status that carries
@@ -444,6 +766,7 @@ is section 8, items 34-36.
     the pill text. test_mcp_round_history.py's FakeSvc had to grow status_lock and mcp_running - a stand-in for
     Service has to carry what Service carries.
 
+
 36.  The settings drawer should warn when it is closed with changes not applied. [ui] DONE
     2026-10-23 in 73e775ae: `closeDrawer()` asks once when `drawerDirty()`, and the X, the
     scrim and Escape all go through it; `drawerSettings()` is now the single read of the
@@ -456,6 +779,7 @@ is section 8, items 34-36.
     an aria-checked string) and, if any differ, confirm before openDrawer(false).
     Care: `s-mcpthink` already fires its own confirm when flipped (:1466) because it re-reads a chat, and
     `s-share` writes the SERVER's shared defaults (:1512) - the discard warning must not re-trigger either.
+
 
 37.  Mark a conversation whose reply finished while you were not looking at it. [ui] DONE 2026-10-23
     Shipped in d4a2290b, together with the "which chat is running" indicator the human asked for in the same
@@ -475,8 +799,9 @@ is section 8, items 34-36.
     itself the indicator there (`busy.chatId === c.id && c.id !== chatId`).
     Green means happening, blue means happened - the two colours the human asked to keep separate. A
     prefers-reduced-motion rule swaps the spin for a static ring.
-    Worth trying someday: the slot could carry a count ("3 unread"), and item 10 (several streams at once)
+    Worth trying someday: the slot could carry a count ("3 unread"), and item 68 (several streams at once)
     makes run/new far more common than one stream at a time allows.
+
 
 38.  Copy the whole turn - thinking and tool calls included - from the copy button. [ui] DONE
     2026-10-23 in 54698d98, exactly as suggested: plain click = the answer (unchanged), Shift+click = the
@@ -492,11 +817,6 @@ is section 8, items 34-36.
     `m.text` straight from the caller), and it goes through `bubbleParts()` like the bubble does - if you want a
     fourth size or a different format, change that function, not the callers.
 
-## 9. Added 2026-10-24: the metrics and caching overhaul (decided, in order)
-
-Decided: no WebSockets (overkill for one-way state, and serve() is stdlib http.server). Validators and
-smaller, less frequent polling first; SSE only if a poll still isn't enough. No measuring phase - the
-numbers below are already taken.
 
 39.  Static assets: a validator, so a revalidation is a 304 and not the whole file. [py] DONE 2026-10-24
     `Cache-Control: no-cache` on /web/* with NO ETag or Last-Modified meant every revalidation was a full
@@ -508,6 +828,7 @@ numbers below are already taken.
     request with no restart and the disk is not read once per asset per tab per second. no-cache is kept on
     purpose: a developer editing app.js must see it immediately.
     Tests: serve/test_static_cache.py (11), added to the fast suite list in HANDOFF.md.
+
 
 40.  Metrics: ask for less, and less often. [py] [ui] DONE 2026-10-24
     Measured before the change: /metrics is 7,317 bytes per call, polled once a second unconditionally -
@@ -546,13 +867,14 @@ numbers below are already taken.
     Lesson worth keeping: I had asserted "About draws cards, so it needs the full answer" without reading which
     keys renderAbout() touches. It touches three.
 
+
 41.  SSE /events: push state transitions instead of polling for them. [py] [ui] SHELVED 2026-10-24 - the
     human's call, and the numbers support it: after items 39-42 the Chat tab asks ~404 bytes every 15 s when
     idle and nothing at all when the window is hidden, so the case for a pushed connection is much weaker than
-    it looked. Revisit only if the Monitor tab's own 1 s full poll becomes a problem, or if item 10 (several
+    it looked. Revisit only if the Monitor tab's own 1 s full poll becomes a problem, or if item 68 (several
     streams) makes state changes too frequent to poll for.
     One connection per tab pushing small frames on a state change and when a turn finishes - which is also
-    what makes item 37 (an unread reply in another conversation) and item 10 (queued conversations) solid
+    what makes item 37 (an unread reply in another conversation) and item 68 (queued conversations) solid
     rather than polling-driven. The cost to accept: serve() is a ThreadingHTTPServer, so a stream that never
     ends parks a thread for the life of the tab, and it interacts with the idle-unload timer and the watchdog,
     both of which reason about live connections. protocol_version is HTTP/1.0 (SSE ends by closing), so the
@@ -560,14 +882,15 @@ numbers below are already taken.
     PRECONDITION, and this should not ship without it: the chat write is a blind whole-record put (writeChat
     -> objectStore.put, no read, no revision) and the in-memory list is a snapshot taken once by allChats() in
     openHistory, with no BroadcastChannel and no storage listener. Two tabs on one chat already lose data
-    (item 33): tab A finishes a turn and writes three messages, tab B - still holding its old copy - writes
+    (item 86): tab A finishes a turn and writes three messages, tab B - still holding its old copy - writes
     one, and A's turn is gone from disk while still on A's screen. Eight call sites do this, and push
     multiplies the writers. The minimum is a compare-and-put inside the existing IndexedDB transaction (read
     the record's revision in the same readwrite transaction, refuse the write if it moved, re-read) - about
     40-60 lines, one file, no server change, testable against the stub IndexedDB the harness already has.
-    Message ids and merge-on-conflict stay with item 33; server-side conversation identity stays with item
+    Message ids and merge-on-conflict stay with item 86; server-side conversation identity stays with item
     16, whose design decision is still unmade. Anything that touches the prompt path is out of scope: a
     checkpoint mismatch costs a re-read of minutes, and that incident already happened once.
+
 
 
 42.  The icon sprite is inlined into the pages that use it. [py] [ui] DONE 2026-10-24
@@ -588,6 +911,7 @@ numbers below are already taken.
     The human deleted the C2PA manifest from sprite.svg afterwards; the guard stays so that if provenance ever
     comes back to the file it does not ride into every page.
 
+
 43.  Context fill reads 0% while the pill says Waiting. [py] DONE 2026-10-24
     Same root as item 35, one layer further down. live.prompt_tokens / generated / max_tokens / elapsed_s were
     each gated on status["busy"], and busy is False between engine rounds - so during a tool wait the Monitor's
@@ -598,6 +922,7 @@ numbers below are already taken.
     wait, and inventing one would be worse than showing none.
     Test: serve/test_mcp.py catches a live running-tool sample and asserts prompt_tokens and elapsed_s are not
     None. Control: gating on busy alone reproduces it - "unexpectedly None".
+
 
 44.  Hovering the Monitor tab prefetches its answer, so the cards paint at once. [ui] DONE 2026-10-24
     Monitor is the one tab that gets nothing while you are elsewhere - Chat and About already poll their own
@@ -620,7 +945,6 @@ numbers below are already taken.
     The stub grew a recording setTimeout/clearTimeout and a fetch log for this; its addEventListener stays
     one-handler-per-type, because 20 existing call sites invoke it directly.
 
-## 10. Added 2026-10-24: the work folds when it finishes, and one control says how
 
 45.  Expand the thinking and the running tool call, then collapse them when they are done; and stop the drawer
     asking the same question four times. [ui] DONE 2026-10-24
@@ -667,6 +991,7 @@ numbers below are already taken.
     NOT measured: what folding costs or saves in a browser - no browser on this box. The visible proof is the
     human's eyes.
 
+
 46.  A click on a tool block held forever, and was written into the chat record. [ui] DONE 2026-10-24
     Found while doing 45, and the reason the human saw "the thinking closes but the calls stay open": with
     fold on and keep-open off, a fresh stream folded correctly (measured: state=done -> open=false), but ONE
@@ -688,107 +1013,3 @@ numbers below are already taken.
     (getAll returned the live record objects, put stored the object it was given), so case 5's rename
     "reached the record" through shared identity while actually saving a different chat. It now structured-
     clones on both sides like real IDB, and case 5 saves the chat it renamed. LESSONS.md has the entry.
-
-## 11. Added 2026-10-24: the drawer's buttons, the send button, the sprite, and start-up order
-
-47.  The Sampling drawer should apply itself, and its two buttons should mean different things. [ui] EASY
-    Four changes the human asked for, all in the drawer (serve/web/app.js:1791-1885, index.html:213-274):
-      - Auto-apply: no Apply press, and so no "you have unapplied changes" warning on close. That removes
-        item 36 entirely - closeDrawer's confirm, drawerDirty, and the s-mcpthink/s-esp caveat that a refused
-        flip must not count as a change. The Apply button goes with it.
-        DECIDE FIRST: what "applied" means per control. The sampling sliders are per-request (send() reads
-        settings each time), so they are free. s-mcpthink and s-esp re-read the chat (serve/server.py:4470-4481,
-        #2100) - auto-applying those means a 300-second re-read the moment a switch is moved, which is the one
-        control that must keep its confirm. s-share writes the SERVER's shared defaults (POST /settings) and
-        should stay explicit or be debounced. Recommend: auto-apply everything except s-mcpthink/s-esp (their
-        own confirm stays) and s-share (its own button, or a debounce).
-      - "Defaults" = what Reset does today (loadDrawer(DEFAULTS), app.js:1878). Rename the button.
-      - "Reset" should mean "put back what it was when I opened this panel" - i.e. snapshot the controls in
-        openDrawer(true) and restore that, which is what drawerDirty() already compares against. With
-        auto-apply there is nothing unapplied to discard, so Reset becomes "undo my edits in this session of
-        the panel" and the confirm goes away.
-      - Both buttons black. Today: s-reset is st-btn--secondary and s-apply is st-btn--primary (index.html:271-272),
-        and --primary is the accent green (components.css). So: drop the primary class, and check what
-        st-btn--secondary actually renders as before assuming it needs a new style.
-    Watch: openDrawer(true) calls loadDrawer() + loadShared() + loadMcp() (app.js:1785-1789); the snapshot must
-    be taken from `settings` (already the applied state), not re-read from the controls after loadDrawer.
-
-48.  Remove the scrim: it blocks clicks on the rest of the page and the drawer should not auto-close. [ui] TRIVIAL
-    <div class="scrim" id="scrim" hidden> is index.html:276; app.js sets $("scrim").hidden in openDrawer
-    (app.js:1787) and wires $("scrim").onclick = closeDrawer (app.js:1884). LESSONS.md item 36's test pins that
-    the X, the scrim and Escape all go through closeDrawer - with the scrim gone that assertion changes, and
-    with auto-apply (item 47) closeDrawer's confirm goes too, so 36's test is rewritten or deleted.
-    Check before deleting the element: components.css's .scrim rule, and whether anything else uses #scrim
-    (grep says the drawer only). Escape still closes.
-
-49.  A spinner on the Send button when THIS conversation is answering. [ui] TRIVIAL
-    Today: send-btn is disabled while busy (setBusy, app.js:1035-1042) and the running marker is in the sidebar
-    row (item 37, chatItem). The want is the same fact on the button, but only when the running turn belongs to
-    the chat you are looking at - the exact condition item 37 deliberately EXCLUDED from the row
-    (busy.chatId === c.id && c.id !== chatId). For the button it is the inverse: busy && busy.chatId === chatId.
-    busy already carries chatId (app.js:858), and setBusy is the only place that reaches the UI, so this is a
-    class toggle there. The sprite has i-spinner? Check before adding an element: item 37 used a CSS ring on
-    .chat-item__state.run::before rather than a sprite icon, and prefers-reduced-motion swaps it for a static
-    ring - copy that, do not invent a second spinner.
-
-50.  Do not show tool-call__preview while the block is open. [ui] TRIVIAL
-    .tool-call__preview (app.css, and toolPreview() at app.js:1041) is the one-line summary in the summary row;
-    when the block is open the arguments and result are right below it, so the line is noise. The thinking
-    block already does exactly this: .st-collapse.think[open] .think-preview { display: none; } (app.css:81).
-    So this is one CSS rule: .tool-call[open] .tool-call__preview { display: none; }. One line plus a test in
-    test_chat_sidebar.py's CSS checks.
-
-51.  Start the web server before the model loads, so the page can open while loading. [py] MEDIUM
-    Measured and documented in LESSONS.md ("`/health`'s loaded does not mean the model is loaded"): the port
-    does not listen until the model is up - httpd = serve(svc, ...) is serve/server.py:6633, AFTER "loading the
-    model (the first start takes a minute or two) ..." at server.py:6448 and after the StrataEngine(...)
-    constructor. So a page has exactly one signal - "my fetch of /health stopped failing" - and cannot tell
-    "still loading" from "not started". That is why the start-up sound is a server-side console bell.
-    Fix: bind and serve first, hold generation until the engine is ready. What must not regress:
-      - /health and /metrics must answer something sensible while loading, and Service.loaded() must not lie -
-        it is not hasattr(engine, "alive") or engine.alive() (server.py:2941-2943) and alive() is just
-        proc.poll() is None (server.py:872-875). A page that loads and sees loaded:false needs a "still
-        loading" state, which is the other half of this item (the front end has no such state today).
-      - the start-waiters path: a restart never hangs a waiter, it ends with a clean 503
-        (serve/test_restart_waiters.py, #1012). Same guard must cover "engine not up yet".
-      - --open / open_browser opens the page when the MODEL is ready (setup.py:4410 appends --open unless
-        open_browser is false); with the server up early, decide whether it opens earlier now.
-    Also: the engine is constructed on the main thread today, so loading has to move to a thread or the
-    server must be started before it. That is the real work, and it is where the risk is.
-
-52.  A command to run the test suites from the command line. [py] TRIVIAL
-    Today the suites are a copy-paste line in HANDOFF.md:52 (fast, 10 modules) and HANDOFF.md:56 (full server,
-    313 tests, ~95 s), plus node serve/test_chat_sidebar.js for the page. Add one script that runs all three
-    and prints the counts, e.g. ./test.sh (repo already has bench.sh, setup.sh, update.sh at the root, so a
-    root shell script fits the existing pattern; Windows matters too - START-HERE.bat exists, so a .bat or a
-    python entry point may be the better shape). Keep it to the suites HANDOFF lists; do not try to run the
-    engine's C++ tests, which need a GPU. Worth including: the node-missing skip (test_chat_sidebar.py skips
-    the JS harness when node is absent) and a non-zero exit on failure.
-
-53.  The stalled turn: a reply that ends with nothing usable, and what could notice it. [py] [ui] MEDIUM
-    Asked as "you should never stop without a final output - surely the backend or the front end could see
-    that and continue you". Measured on this box from /tmp/strata-server.log (2,024 requests parsed):
-      - 10 requests ended with 0 tokens, every one finish=cancel, and every one was mid "reading the prompt"
-        (46 s, 90 s, 40 s, 24 s...). Those are the CLIENT giving up on a long prefill, not a stall.
-      - 16 requests ended finish=stop with <= 80 tokens. The most common phase set among them was
-        {writing a tool call} alone (6 of 16) - no thinking phase, no answering phase.
-      - 19 requests logged "the reply ended inside its thinking with no answer" (reasoning_close_retry
-        rescued them), 5 logged "tool calls inside the thinking", and 0 logged EMPTY TURN in this file.
-    WHAT ACTUALLY KILLED MY TURNS TODAY, observed live and twice in one session: I quoted a line of raw model
-    output while investigating, that text contained the literal closing think tag, and a consumer read it as a
-    real boundary - the turn ended mid-sentence with no final output. That is the same failure as item 28
-    (boundaries represented as text can be forged by the content), reached from the other side: not the model
-    forging one, the agent quoting one.
-    THREE THINGS THAT COULD NOTICE IT, cheapest first:
-      1. The client (the thing that runs me) detects "turn ended with no final text and no tool call" and
-         re-prompts. This is the only one that fixes the case above, because the forgery is in the transport
-         between the model and its consumer, not in Strata. It needs no Strata change at all.
-      2. Strata's own rescue, which already exists for one shape: reasoning_close_retry (19 rescues in this
-         log). It does NOT cover "the answer ended with a tool call that was never completed" - that is
-         item 29's empty turn, counted by totals.empty_turns, and the probe reports 0 in this log.
-      3. The structural fix, item 28: stop representing boundaries as text. The engine already has them as
-         token IDs and the server throws the ID away at server.py:3995. That is the only fix that makes both
-         directions of this bug impossible rather than less likely.
-    NOT ESTABLISHED: whether the engine forwards the special IDs on its T lines (check generate.cpp:11818
-    before sizing item 28). And no counter today can see the forgery case: it is not an empty turn, it is a
-    turn that ends early with plausible text, which is why the two deaths today produced no EMPTY TURN line.
