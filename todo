@@ -68,6 +68,23 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Care: it writes the run config, so it needs the same origin guard as GET/POST /config,
     and it takes effect only on restart. Say so in the UI.
 
+
+`block-reload-while-editing`  Ask before a reload/navigation while a message edit box is open. [ui]
+    Raised with item edit-posts.  There is already a beforeunload guard while a live turn runs (warnOnLeave,
+    attached in setBusy(true), removed in setBusy(false); LESSONS.md explains why it must not be permanent - it
+    costs the browser's back/forward cache).  Do the same while an inline edit box is open: add the guard when
+    the box opens, remove it when it closes.  Cheap, one file.  Pairs with edit-posts' "confirm only if you
+    changed something" discard rule (Escape/Cancel with edits asks, without edits closes silently).
+
+
+`meta-time-model`  Put the time and model in a model message's meta line, with a condensed toggle and a hover popup. [ui]
+    Today an assistant message's meta (updateAssistant, serve/web/app.js) carries the token count, tok/s, tool
+    calls and the (NN.N% context) span (item context-percent), but not when it happened or which model produced
+    it.  Add the time (timeStr, already used on the user row) and health.model.
+    The human's ask: a toggle for condensed vs full info, with the detail on a hover popup - same shape as
+    context-percent's title breakdown.  Store the model per message when the turn ends (a model can change across
+    a chat's life), so a reloaded record shows the model that actually answered it.
+
 ## 2. Small - a few hours, one or two files, no design decision
 
 `sidebar-load-more`  Paginate the sidebar: render recent chats, "Show older" loads the rest. [ui]
@@ -161,6 +178,30 @@ all: fold-control replaced them, and the four overlapping switches became one co
     same as the tool-thinking toggle.
     This is the prerequisite for item warm-then-cancel (dynamic system prompt) and it makes item pin-conversation's
     prefix pin actually useful, so it is worth doing early despite being small.
+
+
+`store-full-attachments`  Keep the original bytes of attached files/pictures in IndexedDB. [ui]
+    cleanMessages today strips images/files to names only (no data URL) so a record stays small; that is why a
+    reloaded post cannot show or re-edit its attachments - the bytes are gone (item edit-posts hit this).
+    Decide the retention/size policy first: raw data URLs bloat the store fast (LESSONS.md: a chat can be
+    megabytes).  Options: store bytes keyed by id and fetch on demand (like the trim-tool-results full-result idea),
+    or cap by size, or keep bytes only for the recent window.  Then edit-posts can re-attach originals on reload.
+
+
+`chat-size-stats`  Show a conversation's size, and sort the sidebar by size or name. [ui]
+    Hover a sidebar row -> a popup with the name and its size, e.g. "Chat name (10.4 KB)".  And a way to sort the
+    list by size and a-z, not only newest-first (renderSidebar sorts by time today).
+    Size: measure the serialized record (JSON.stringify(chat).length, or the stored bytes).  Sorting by size needs
+    it computed per chat; sorting a-z is chatTitle.  Related to sidebar-load-more / sidebar-capped-load (how many
+    rows are even rendered).
+
+
+`cull-old-chats`  Free space: delete chats older than a time, or the largest. [ui]
+    The human's framing: cull old chats after a certain age, or let the user delete large chats to free space.
+    Needs chat-size-stats (to rank by size) and a retention affordance (a "older than N days" / "largest first"
+    view with a delete).  Keep it a deliberate user action with a confirm, not automatic deletion - deleting a
+    conversation is destructive and there is no undo across a reload.  Related to item import-export (export before
+    culling) and pin-conversation (which chats are worth keeping).
 
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
