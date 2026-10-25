@@ -103,10 +103,12 @@ main { flex: 1; min-height: 0; display: flex; }
 /* the inline edit box (todo #edit-posts): a textarea in place of the bubble, with its own action bar.  Sized
    like the composer so it reads as "the same kind of box". */
 .msg-edit { display: flex; flex-direction: column; gap: 8px; }
-.msg-edit__ta { width: 100%; min-height: 64px; font: var(--st-fs-base)/1.55 var(--st-font); color: var(--st-ink-soft);
+.msg-edit__ta { width: 100%; min-height: 160px; font: var(--st-fs-base)/1.55 var(--st-font); color: var(--st-ink-soft);
                 background: var(--st-surface); border: 1px solid var(--st-line); border-radius: var(--st-r-md);
                 padding: 10px 12px; resize: vertical; box-sizing: border-box; }
 .msg-edit__bar { display: flex; gap: 8px; justify-content: flex-end; }
+/* while a post is being edited, hide its own Edit button so it cannot be opened twice (todo #edit-posts) */
+.st-msg.editing [data-msg-edit] { display: none; }
 /* todo #no-placeholder: the fake caret rule is gone - the page no longer draws anything that pretends to be output while
    only thinking has arrived, and that caret also stayed at the end of a finished answer.  The blink keyframes
    stay: the Running/Writing badge on a tool block uses them (below). */

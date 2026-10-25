@@ -264,9 +264,21 @@ all: fold-control replaced them, and the four overlapping switches became one co
       - DONE (increment 2): Submit on a user post - send(editOf) saves the edit, drops every message after it, and
         resends a fresh turn; the box shows Save / Submit / Cancel for user posts and Save / Cancel for assistant
         posts.  (The inline re-read warning is not shown yet.)
-      - TODO: an Attach button and remove-attachment in the edit box (user posts only); the tool-call assistant
-        modal (Edit entire + drop tool calls / Edit final output only / Cancel) to unlock editing those;
-        delete-a-post; the inline re-read warning on Submit; keyboard consolidation (see configurable-send-keys).
+      - DONE (increment 3): the tool-call edit modal.  Editing a turn that made calls opens a mode menu (a fixed
+        popover, like the row menu) with "Edit final output only" (keeps the tool rounds and their at/rat offsets,
+        edits only the text after the last call), "Edit entire (drops its tool calls)" (replaces the text, clears
+        m.tools), or Cancel.  The Edit button is now offered on every post.
+      - TODO: an Attach button and remove-attachment in the edit box (user posts only); delete-a-post; the inline
+        re-read warning on Submit; keyboard consolidation (see configurable-send-keys).
+      - FIXED (bug reports from the human): "Edit entire" left the tool blocks on screen until a reload - the
+        redraw now rebuilds the whole bubble, not incrementally; only one edit box at a time (clicking Edit on
+        another post asks to discard, a second click on the same post is a no-op, and the editing row hides its
+        own Edit button); clicking Edit during a live turn now says "Stop the answer first" instead of doing
+        nothing; the edit box scrolls its buttons into view.
+      - OPEN DECISION (the human asked): what happens to the model's THINKING (reasoning) when a turn is edited?
+        It currently stays. Options: (a) leave it; (b) a keep/delete toggle like the tool calls; (c) let the user
+        edit the thinking too (risky - the per-round thinking offsets rat are replay-critical, same class as the
+        tool-call offsets).  Decide before building.
       - Assistant posts: Save only (no Submit, no attach).  User posts: Save + Submit + attach.
     Chat-level rename and delete exist (renameChat, deleteChat); message-level delete does not yet.
     Straightforward to build. See item edit-no-reread for the cost.

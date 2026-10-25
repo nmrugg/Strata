@@ -210,7 +210,7 @@ function run(hooks, stored, seed) {
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
-    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return chatMenu; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
                fetches, timers, body: document.body, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
@@ -1991,10 +1991,16 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const cB56 = ep56.confirms.length;
   clickEdit(uel56); btnOf(uel56, 2).onclick();
   assert.strictEqual(ep56.confirms.length, cB56, "Cancel with nothing changed asks nothing");
-  // a tool-call turn is locked: Edit opens no box
+  // a tool-call turn opens the edit-MODE menu (not an inline box): its rounds are offsets into its own text
   clickEdit(tel56);
-  assert.ok(!tel56.children.some((c) => (c.className || "").includes("msg-edit")), "a turn with tool calls cannot be edited yet");
-  done.push("edit-posts increment 1: Edit opens an inline box; Save rewrites the post and keeps everything below; Cancel confirms only if changed; tool-call turns locked");
+  const modeMenu56 = ep56.s.chatMenu;
+  assert.ok(modeMenu56, "a tool-call turn opens a mode menu instead of editing directly");
+  assert.deepStrictEqual(modeMenu56.children.map((b) => b.textContent),
+                         ["Edit final output only", "Edit entire (drops its tool calls)", "Cancel"], "the three mode options");
+  assert.ok(!tel56.children.some((c) => (c.className || "").includes("msg-edit")), "and no inline box until a mode is chosen");
+  ep56.fireDoc("keydown", {key: "Escape"});
+  assert.strictEqual(ep56.s.chatMenu, null, "Escape closes the mode menu");
+  done.push("edit-posts increment 1: Edit opens an inline box; Save rewrites the post and keeps everything below; Cancel confirms only if changed; a tool-call turn opens a mode menu");
 
   // 57. Submit on an edited user post (todo #edit-posts increment 2): the box's Submit saves the edit, deletes
   // every message after it, and resends - a fresh answer streams in.  Driven through the real Edit button and the
@@ -2043,6 +2049,107 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const abox57 = ael57.children.find((c) => (c.className || "").includes("msg-edit"));
   assert.deepStrictEqual(abox57.querySelector(".msg-edit__bar").children.map((b) => b.textContent), ["Save", "Cancel"], "an assistant post's box has no Submit");
   done.push("edit-posts increment 2: Submit saves the edit, deletes every message after it, and resends a fresh answer; assistant posts have no Submit");
+
+  // 58. editing a tool-call turn (todo #edit-posts increment 3): the mode menu offers "Edit final output only"
+  // (keeps the tool rounds and their at/rat offsets, edits only the text after the last call) or "Edit entire"
+  // (replaces the whole text and drops the calls, turning it into a plain answer).
+  const tc = run({}, {});
+  await wait();
+  const tm58 = {id: "tc1", role: "assistant", text: "HEADTAIL", reasoning: "", time: Date.now(),
+              tools: [{id: "t1", name: "x", state: "done", at: 4, rat: 0, result: "r", round: 0}]};
+  tc.s.messages.push(tm58);
+  const tel58 = tc.s.msgEl(tm58, 0); tc.s.el("chat").appendChild(tel58);
+  const editT58 = (row) => { const o = {closest: (s) => s === "[data-msg-edit]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  const actT58 = (act) => { const o = {closest: (s) => s === "[data-chat-act]" ? o : null, getAttribute: () => act}; return o; };
+  const pickMode = (act) => tc.s.chatMenu._l["click"]({target: actT58(act)});
+  const box58 = () => tel58.children.find((c) => (c.className || "").includes("msg-edit"));
+
+  tc.s.el("chat")._l["click"]({target: editT58(tel58)});          // open the mode menu
+  assert.ok(tc.s.chatMenu, "a tool-call turn opens the mode menu");
+  pickMode("final");
+  assert.ok(box58(), "'Edit final output only' opens the box");
+  assert.strictEqual(box58().querySelector(".msg-edit__ta").value, "TAIL", "the box holds only the text after the last call");
+  box58().querySelector(".msg-edit__ta").value = "NEWTAIL";
+  box58().querySelector(".msg-edit__bar").children[0].onclick();   // Save (assistant box: Save, Cancel)
+  assert.strictEqual(tm58.text, "HEADNEWTAIL", "the tool rounds' text is kept; only the final answer changed");
+  assert.strictEqual(tm58.tools.length, 1, "the tool call is kept (its at offset still points into the unchanged head)");
+
+  tc.s.el("chat")._l["click"]({target: editT58(tel58)});          // mode menu again
+  pickMode("entire");
+  assert.ok(box58(), "'Edit entire' opens the box");
+  assert.strictEqual(box58().querySelector(".msg-edit__ta").value, "HEADNEWTAIL", "the whole text is editable");
+  box58().querySelector(".msg-edit__ta").value = "a plain replacement";
+  box58().querySelector(".msg-edit__bar").children[0].onclick();   // Save
+  assert.strictEqual(tm58.text, "a plain replacement", "the whole turn was replaced");
+  assert.strictEqual(tm58.tools.length, 0, "'Edit entire' dropped the tool calls");
+  done.push("edit-posts increment 3: a tool-call turn's mode menu - 'final' keeps the rounds and edits the tail; 'entire' replaces the text and drops the calls");
+
+  // 59. only one edit box at a time (todo #edit-posts): clicking Edit on another post asks to discard the current
+  // edit; clicking Edit again on the post already being edited does nothing; the editing row hides its own button.
+  const gd = run({}, {});
+  await wait();
+  const gg1 = {id: "g1", role: "user", text: "one", time: Date.now()};
+  const gg2 = {id: "g2", role: "user", text: "two", time: Date.now()};
+  gd.s.messages.push(gg1, gg2);
+  const geA = gd.s.msgEl(gg1, 0), geB = gd.s.msgEl(gg2, 1);
+  gd.s.el("chat").appendChild(geA); gd.s.el("chat").appendChild(geB);
+  const gEdit = (row) => { const o = {closest: (s) => s === "[data-msg-edit]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  const clickEdit59 = (row) => gd.s.el("chat")._l["click"]({target: gEdit(row)});
+  const hasBox = (row) => row.children.some((c) => (c.className || "").includes("msg-edit"));
+  const editing = (row) => (row.className || "").split(/\s+/).includes("editing");
+
+  clickEdit59(geA);
+  assert.ok(hasBox(geA), "first Edit opens a box on post 1");
+  assert.ok(editing(geA), "the editing row is marked (CSS hides its own Edit button)");
+  clickEdit59(geA);                                    // same post again -> no-op, no prompt
+  assert.strictEqual(gd.confirms.length, 0, "a second Edit on the same post does nothing");
+  assert.strictEqual(geA.children.filter((c) => (c.className || "").includes("msg-edit")).length, 1,
+                     "still exactly ONE box - the guard stops a second opening on the same post");
+  gd.confirmAnswer.yes = false;
+  clickEdit59(geB);                                    // different post, refuse the discard
+  assert.strictEqual(gd.confirms.length, 1, "switching posts asks to discard the current edit");
+  assert.ok(hasBox(geA) && !hasBox(geB), "refusing keeps post 1's box and does not open post 2");
+  gd.confirmAnswer.yes = true;
+  clickEdit59(geB);                                    // accept the discard
+  assert.strictEqual(gd.confirms.length, 2, "it asked again");
+  assert.ok(!hasBox(geA) && hasBox(geB), "accepting closed post 1 and opened post 2");
+  assert.ok(!editing(geA), "post 1 is no longer marked editing");
+
+  // 60. clicking Edit while a turn is running says so instead of opening a box (todo #edit-posts).
+  let release60;
+  const bz = run({fetch: async () => ({ok: true, json: async () => ({}), body: {getReader: () => ({
+    n: 0,
+    read() { if (!this.n++) return Promise.resolve({done: false, value: new TextEncoder()
+      .encode("data: " + JSON.stringify({choices: [{delta: {content: "hi"}}]}) + "\n\n")});
+      return new Promise((res) => { release60 = () => res({done: true}); }); }})}})}, {});
+  await wait();
+  bz.s.el("input").value = "go";
+  const run60 = bz.s.send();
+  await wait();                                        // a turn is now running (busy set)
+  const bel60 = bz.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--assistant"));
+  bz.s.el("chat")._l["click"]({target: gEdit(bel60)});
+  const toastTitles = bz.s.el("toasts").children.map((t) => (t.querySelector(".st-toast__title").textContent || ""));
+  assert.ok(toastTitles.some((x) => x.includes("Can't edit yet")), "Edit during a live turn says to stop it first");
+  assert.ok(!bel60.children.some((c) => (c.className || "").includes("msg-edit")), "and no edit box opens");
+  release60(); await run60;
+
+  // 61. after "Edit entire" drops the tool calls, the tool blocks are gone from the DOM too, not just the model -
+  // the bubble is rebuilt in full so no stale block lingers until a reload (todo #edit-posts).
+  const lg = run({}, {});
+  await wait();
+  const lgm = {id: "lg", role: "assistant", text: "HEADTAIL", reasoning: "thought", time: Date.now(),
+               tools: [{id: "t1", name: "x", state: "done", at: 4, rat: 0, result: "r", round: 0}]};
+  lg.s.messages.push(lgm);
+  const lgEl = lg.s.msgEl(lgm, 0); lg.s.el("chat").appendChild(lgEl);
+  const lgAct = (a) => { const o = {closest: (s) => s === "[data-chat-act]" ? o : null, getAttribute: () => a}; return o; };
+  lg.s.el("chat")._l["click"]({target: gEdit(lgEl)});
+  lg.s.chatMenu._l["click"]({target: lgAct("entire")});
+  const lgBox = lgEl.children.find((c) => (c.className || "").includes("msg-edit"));
+  lgBox.querySelector(".msg-edit__ta").value = "plain now";
+  lgBox.querySelector(".msg-edit__bar").children[0].onclick();      // Save
+  assert.ok(!lgEl.querySelector(".st-bubble").children.some((c) => (c.className || "").includes("tool-call")),
+            "no tool block left in the bubble after 'Edit entire'");
+  done.push("edit-posts: one edit box at a time (discard prompt; same-post re-click is a no-op; button hidden), Edit during a live turn says stop it, and dropped tool blocks leave the DOM");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

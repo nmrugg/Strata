@@ -942,39 +942,54 @@ function exportChatMd(c) {
 // the row's three-dot menu (todo #chat-row-menu).  A fixed-position popover appended to <body>, not a child of
 // the row: #sidebar-list is a scroll container and would clip a menu placed inside a row.  openChatMenu anchors
 // it under the button and flips it above when it would run past the bottom of the viewport.
-let chatMenu = null;
-function closeChatMenu() { if (chatMenu) chatMenu.remove(); chatMenu = null; }
+// A single fixed-position popover on <body> (todo #chat-row-menu, #edit-posts).  #sidebar-list and #chat-scroll
+// are scroll containers that would clip a menu placed inside a row, so the popover lives on <body> and is
+// positioned at the anchor's rect, flipping above when it would run past the bottom of the viewport.  Only one is
+// open at a time; a click outside it or Escape closes it.
+let activePopover = null;
+function closePopover() { if (activePopover) activePopover.remove(); activePopover = null; }
+function openPopover(anchor, items, onPick) {
+  closePopover();
+  const menu = node("div", "chat-menu");
+  menu.setAttribute("role", "menu");
+  for (const [act, label, danger] of items) {
+    const b = node("button", danger ? "danger" : "", label);
+    b.setAttribute("data-chat-act", act); b.setAttribute("role", "menuitem");
+    menu.appendChild(b);
+  }
+  menu.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-chat-act]");
+    if (b) { closePopover(); onPick(b.getAttribute("data-chat-act")); }
+  });
+  document.body.appendChild(menu);
+  activePopover = menu;
+  if (anchor.getBoundingClientRect) {               // the harness stub has no layout; skip geometry (verified in the browser)
+    const r = anchor.getBoundingClientRect();
+    const h = menu.offsetHeight || 0, w = menu.offsetWidth || 168;
+    menu.style.left = `${Math.max(4, Math.min(r.left, (innerWidth || 0) - w - 4))}px`;
+    menu.style.top = (r.bottom + h > (innerHeight || 0) && r.top - h > 0) ? `${r.top - h - 4}px` : `${r.bottom + 4}px`;
+  }
+  return menu;
+}
 function chatMenuAction(act, row, c) {
-  closeChatMenu();
   if (act === "rename") renameChat(row, c);
   else if (act === "copy") cloneChat(c);
   else if (act === "export") exportChatMd(c);
   else if (act === "delete") deleteChat(c);
 }
 function openChatMenu(row, c, btn) {
-  closeChatMenu();
-  const menu = node("div", "chat-menu");
-  menu.setAttribute("role", "menu");
-  for (const [act, label, danger] of [["rename", "Rename", false], ["copy", "Duplicate", false],
-                                      ["export", "Export", false], ["delete", "Delete", true]]) {
-    const b = node("button", danger ? "danger" : "", label);
-    b.setAttribute("data-chat-act", act); b.setAttribute("role", "menuitem");
-    menu.appendChild(b);
-  }
-  // the menu is on <body>, not in the row, so it carries its own click handler (the sidebar-list handler only
-  // opens it, from the overflow button, which IS inside the row)
-  menu.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-chat-act]");
-    if (b) chatMenuAction(b.getAttribute("data-chat-act"), row, c);
-  });
-  document.body.appendChild(menu);
-  chatMenu = menu;
-  if (btn.getBoundingClientRect) {                 // the harness stub has no layout; skip geometry there (verified in the browser)
-    const r = btn.getBoundingClientRect();
-    const h = menu.offsetHeight || 0, w = menu.offsetWidth || 168;
-    menu.style.left = `${Math.max(4, Math.min(r.left, (innerWidth || 0) - w - 4))}px`;
-    menu.style.top = (r.bottom + h > (innerHeight || 0) && r.top - h > 0) ? `${r.top - h - 4}px` : `${r.bottom + 4}px`;
-  }
+  openPopover(btn, [["rename", "Rename", false], ["copy", "Duplicate", false],
+                    ["export", "Export", false], ["delete", "Delete", true]],
+              (act) => chatMenuAction(act, row, c));
+}
+// the edit-mode choice for a turn that made tool calls (todo #edit-posts): editing its text would break the
+// per-round offsets (at/rat), so offer two safe modes - keep the tool rounds and edit only the final answer, or
+// replace the whole turn and drop the calls.
+function openEditModeMenu(m, el, anchor) {
+  openPopover(anchor, [["final", "Edit final output only", false],
+                       ["entire", "Edit entire (drops its tool calls)", true],
+                       ["cancel", "Cancel", false]],
+              (act) => { if (act === "final") openEditBox(el, m, "final"); else if (act === "entire") openEditBox(el, m, "entire"); });
 }
 // rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
 function renameChat(row, c) {
@@ -1016,12 +1031,14 @@ $("sidebar-list").addEventListener("click", (e) => {
   if (e.target.closest("[data-chat-menu]")) { openChatMenu(row, c, e.target.closest("[data-chat-menu]")); return; }
   openChat(c.id);
 });
-// a click anywhere outside the open row menu, or Escape, dismisses it (todo #chat-row-menu).  The menu lives on
-// <body> (not in the clipped #sidebar-list), so this listener is on document.
+// a click anywhere outside an open popover, or Escape, dismisses it (todo #chat-row-menu, #edit-posts).  The
+// popover lives on <body> (not in a clipped scroll container), so this listener is on document.  A click on an
+// opener (the row overflow, or a message Edit button) is not an outside click.
 document.addEventListener("click", (e) => {
-  if (chatMenu && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]")) closeChatMenu();
+  if (activePopover && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]") &&
+      !e.target.closest("[data-msg-edit]")) closePopover();
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && chatMenu) closeChatMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && activePopover) closePopover(); });
 
 // the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
 function setHistory(on, save, fromScreen) {
@@ -1042,29 +1059,49 @@ $("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute(
 const msgMd = (m) => (m.md === undefined ? (m.role === "user" ? settings.mdmine === true : settings.mdtheirs !== false) : !!m.md);
 const mdBtn = (m) => `<button class="st-btn st-btn--md" data-md-toggle role="switch" aria-checked="${msgMd(m)}"` +
   ` title="Render this message as markdown (${msgMd(m) ? "on" : "off"})">md</button>`;
-// editing a post (todo #edit-posts).  A turn that made tool calls is locked for now: its rounds are stored as
-// offsets into its own text (at/rat) and editing that text breaks the replay - the tool-call edit modal is a
-// later increment.  So Edit is offered for user posts and for plain (no-tool) answers.
-const canEditMsg = (m) => m.role === "user" || !(m.tools && m.tools.length);
-const editBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-edit aria-label="Edit this message"` +
-  ` title="${canEditMsg(m) ? "Edit" : "Editing a turn with tool calls is coming soon"}"${canEditMsg(m) ? "" : " disabled"}>${icon("edit")}</button>`;
-// the inline edit box (todo #edit-posts).  Increment 1: Save edits the post's text in place and keeps every
-// message below it (the "edit only, do not resubmit" path).  Submit (delete-after-and-resend), attach/remove, and
-// the tool-call modal come in later increments.  Cancel/Escape confirm only when the text actually changed.
-function openEditBox(el, m) {
+// editing a post (todo #edit-posts).  Every post is editable; a turn that made tool calls opens a mode menu first
+// (openEditModeMenu) because its rounds are offsets into its own text (at/rat) and editing the whole text would
+// break the replay - so it offers "edit final output only" (rounds kept) or "edit entire" (rounds dropped).
+const editBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-edit aria-label="Edit this message" title="Edit">${icon("edit")}</button>`;
+// only one edit box at a time (todo #edit-posts): opening another asks to discard the current one, and the
+// editing row hides its own Edit button so it cannot be pressed twice.
+let activeEdit = null;
+// the inline edit box (todo #edit-posts).  mode: "full" = the whole text (user post or a plain answer);
+// "final" = only the answer after the last tool call (the tool rounds and their at/rat offsets stay valid);
+// "entire" = the whole text, and saving drops the tool calls (a tool turn becomes a plain answer).  Save edits
+// in place and keeps everything below it; Submit (user posts only) deletes after it and resends; Cancel/Escape
+// confirm only when the text changed.
+function openEditBox(el, m, mode) {
+  mode = mode || "full";
+  el.classList.add("editing");                          // CSS hides this row's Edit button while its box is open
   const bubble = el.querySelector(".st-bubble");
   if (bubble) bubble.hidden = true;
+  // the text being edited and the part that stays fixed (the tool rounds' text, for "final")
+  const finalStart = mode === "final" ? (m.tools || []).reduce((mx, t) => Math.max(mx, t.at || 0), 0) : 0;
+  const head = mode === "final" ? (m.text || "").slice(0, finalStart) : "";
+  const editable = mode === "final" ? (m.text || "").slice(finalStart) : (m.text || "");
   const form = node("div", "msg-edit");
   const ta = document.createElement("textarea");
-  ta.className = "st-input msg-edit__ta"; ta.value = m.text || ""; ta.setAttribute("aria-label", "Edit message");
+  ta.className = "st-input msg-edit__ta"; ta.value = editable; ta.setAttribute("aria-label", "Edit message");
+  // grow with the text like the composer does, so the box is never smaller than what it holds (capped so it
+  // cannot push the whole chat off screen); the CSS gives it a roomy minimum to start.
+  const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, (innerHeight || 800) * 0.6) + "px"; };
+  ta.addEventListener("input", grow);
   const bar = node("div", "msg-edit__bar");
   const save = node("button", "st-btn st-btn--secondary", "Save"); save.type = "button";
   const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button";
   // close() uses the closure's own form/bubble, not a re-query: reopening a box replaces the node, and a
   // querySelector (or the harness's cached one) could grab the wrong one.
-  const close = () => { form.remove(); if (bubble) { bubble.hidden = false; redrawBubble(el, m, bubble); } };
-  save.onclick = () => { const t = ta.value.trim(); if (!t) return; m.text = t; close(); saveChat(); };
-  cancel.onclick = () => { if (ta.value.trim() !== (m.text || "") && !confirm("Discard your changes?")) return; close(); };
+  const close = () => { form.remove(); el.classList.remove("editing"); if (activeEdit && activeEdit.m === m) activeEdit = null;
+    if (bubble) { bubble.hidden = false; redrawBubble(el, m, bubble); } };
+  activeEdit = {m, el, close};
+  save.onclick = () => {
+    const t = ta.value.trim();
+    if (mode === "final") { if (!t && !head.trim()) return; m.text = head + t; }
+    else { if (!t) return; m.text = t; if (mode === "entire") m.tools = []; }
+    close(); saveChat();
+  };
+  cancel.onclick = () => { if (ta.value.trim() !== (editable || "").trim() && !confirm("Discard your changes?")) return; close(); };
   bar.appendChild(save);
   // Submit (user posts only): save the edit, delete every message after it, and resend to the model.  Assistant
   // posts get Save only - there is nothing to resend them as.
@@ -1077,6 +1114,8 @@ function openEditBox(el, m) {
   form.appendChild(ta); form.appendChild(bar);
   el.appendChild(form);
   ta.focus();
+  grow();                                              // size to the existing text on open
+  if (form.scrollIntoView) form.scrollIntoView({block: "nearest"});   // keep the whole box (incl. its buttons) in view
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.preventDefault(); cancel.onclick(); }
     else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save.onclick(); }
@@ -1084,7 +1123,10 @@ function openEditBox(el, m) {
 }
 function redrawBubble(el, m, bubble) {
   if (m.role === "user") { if (msgMd(m)) bubble.innerHTML = markdown(m.text || ""); else bubble.textContent = m.text; }
-  else updateAssistant(el, m, false);
+  // force a full rebuild for the assistant: an edit can add or remove parts (e.g. "Edit entire" drops the tool
+  // calls), and the incremental parts-sync can leave a removed block on screen until a reload.  Clearing the
+  // parts makes renderBubble rebuild every part from the current message.
+  else { bubble.innerHTML = ""; bubble._parts = null; bubble._blocks = []; updateAssistant(el, m, false); }
 }
 
 function msgEl(m, i) {
@@ -1547,9 +1589,16 @@ $("chat").addEventListener("click", (e) => {
   }
   const me = e.target.closest("[data-msg-edit]");
   if (me) {
-    if (busy) return;                                   // no editing while a turn runs
+    if (busy) { toast("info", "Can't edit yet", "Stop the answer first."); return; }   // editing mid-turn would fight the stream
     const el = me.closest(".st-msg"), m = messages[+el.dataset.i];
-    if (m && canEditMsg(m)) openEditBox(el, m);
+    if (!m) return;
+    if (activeEdit && activeEdit.m === m) return;       // this post is already being edited - a second click does nothing
+    if (activeEdit) {                                   // another box is open: ask to discard it before switching
+      if (!confirm("Discard the edit you are working on?")) return;
+      activeEdit.close();
+    }
+    if (m.role === "assistant" && m.tools && m.tools.length) openEditModeMenu(m, el, me);
+    else openEditBox(el, m, "full");
     return;
   }
   // tool blocks are not opened here: a click handler that prevented the default and asked for a rebuild lost the
