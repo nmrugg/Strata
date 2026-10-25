@@ -261,9 +261,12 @@ all: fold-control replaced them, and the four overlapping switches became one co
         keeps every message below it (the "edit only, do not resubmit" path); Cancel/Escape confirm only when the
         text changed; a turn that made tool calls is LOCKED (canEditMsg) because its rounds are offsets into its own
         text (at/rat) and editing that breaks the replay.
-      - TODO: Submit on a user post (delete all messages after it, then resend - inline re-read warning); an Attach
-        button and remove-attachment in the edit box (user posts only); the tool-call assistant modal (Edit entire +
-        drop tool calls / Edit final output only / Cancel) to unlock editing those; delete-a-post.
+      - DONE (increment 2): Submit on a user post - send(editOf) saves the edit, drops every message after it, and
+        resends a fresh turn; the box shows Save / Submit / Cancel for user posts and Save / Cancel for assistant
+        posts.  (The inline re-read warning is not shown yet.)
+      - TODO: an Attach button and remove-attachment in the edit box (user posts only); the tool-call assistant
+        modal (Edit entire + drop tool calls / Edit final output only / Cancel) to unlock editing those;
+        delete-a-post; the inline re-read warning on Submit; keyboard consolidation (see configurable-send-keys).
       - Assistant posts: Save only (no Submit, no attach).  User posts: Save + Submit + attach.
     Chat-level rename and delete exist (renameChat, deleteChat); message-level delete does not yet.
     Straightforward to build. See item edit-no-reread for the cost.

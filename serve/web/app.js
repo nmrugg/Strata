@@ -1058,14 +1058,22 @@ function openEditBox(el, m) {
   const ta = document.createElement("textarea");
   ta.className = "st-input msg-edit__ta"; ta.value = m.text || ""; ta.setAttribute("aria-label", "Edit message");
   const bar = node("div", "msg-edit__bar");
-  const save = node("button", "st-btn st-btn--primary", "Save"); save.type = "button";
+  const save = node("button", "st-btn st-btn--secondary", "Save"); save.type = "button";
   const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button";
   // close() uses the closure's own form/bubble, not a re-query: reopening a box replaces the node, and a
   // querySelector (or the harness's cached one) could grab the wrong one.
   const close = () => { form.remove(); if (bubble) { bubble.hidden = false; redrawBubble(el, m, bubble); } };
   save.onclick = () => { const t = ta.value.trim(); if (!t) return; m.text = t; close(); saveChat(); };
   cancel.onclick = () => { if (ta.value.trim() !== (m.text || "") && !confirm("Discard your changes?")) return; close(); };
-  bar.appendChild(save); bar.appendChild(cancel);
+  bar.appendChild(save);
+  // Submit (user posts only): save the edit, delete every message after it, and resend to the model.  Assistant
+  // posts get Save only - there is nothing to resend them as.
+  if (m.role === "user") {
+    const submit = node("button", "st-btn st-btn--primary", "Submit"); submit.type = "button";
+    submit.onclick = () => { const t = ta.value.trim(); if (!t) return; m.text = t; close(); send(m); };
+    bar.appendChild(submit);
+  }
+  bar.appendChild(cancel);
   form.appendChild(ta); form.appendChild(bar);
   el.appendChild(form);
   ta.focus();
@@ -1648,17 +1656,29 @@ function setBusy(on) {
   if (historyOn) renderSidebar();      // the list shows which conversation is answering (chatItem reads busy)
 }
 
-async function send() {
-  const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy) return;
-  const key = draftKey();                    // taken before the message lands: a blank chat is keyed differently
-  messages.push({id: mid(), role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
-                 files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
-  attachments = [];
-  renderAttachments();
-  $("input").value = "";
-  autosize();
-  store.set(key, "");                                          // sent: that draft is spent
+// editOf (todo #edit-posts): resend from an edited user post.  It is changed in place, everything after it is
+// dropped (the old answer and all later turns), and a fresh turn is generated - so the edited post is the last
+// user turn the model sees.  With no editOf, send() works exactly as before (composer + attachments).
+async function send(editOf) {
+  let key;
+  if (editOf) {
+    if (busy) return;
+    if (!(editOf.text || "").trim()) return;          // the box saved the text onto editOf before calling send
+    const idx = messages.indexOf(editOf);
+    if (idx < 0) return;                             // it is no longer in this conversation
+    messages.length = idx + 1;                       // drop the old answer and everything after it
+  } else {
+    const text = $("input").value.trim();
+    if ((!text && !attachments.length) || busy) return;
+    key = draftKey();                                // taken before the message lands: a blank chat is keyed differently
+    messages.push({id: mid(), role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
+                   files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
+    attachments = [];
+    renderAttachments();
+    $("input").value = "";
+    autosize();
+    store.set(key, "");                              // sent: that draft is spent
+  }
   const m = {id: mid(), role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();

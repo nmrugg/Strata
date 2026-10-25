@@ -1965,7 +1965,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const clickEdit = (row) => ep56.s.el("chat")._l["click"]({target: editTarget(row)});
   const box56 = (row) => row.children.find((c) => (c.className || "").includes("msg-edit"));   // live children, not the querySelector cache (a reopened box replaces it)
   const taOf = (row) => box56(row).querySelector(".msg-edit__ta");
-  const btnOf = (row, i) => box56(row).querySelector(".msg-edit__bar").children[i];   // 0 Save, 1 Cancel
+  const btnOf = (row, i) => box56(row).querySelector(".msg-edit__bar").children[i];   // 0 Save, 1 Submit, 2 Cancel (user); 0 Save, 1 Cancel (assistant)
 
   clickEdit(uel56);
   assert.ok(box56(uel56) && uel56.children.includes(box56(uel56)), "Edit opens an inline box in the post's row");
@@ -1979,22 +1979,70 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   // Cancel with changed text asks first; refusing keeps the box, accepting discards the edit
   clickEdit(uel56); taOf(uel56).value = "a discarded edit";
   ep56.confirmAnswer.yes = false;
-  btnOf(uel56, 1).onclick();                              // Cancel -> refused
+  btnOf(uel56, 2).onclick();                              // Cancel -> refused
   assert.strictEqual(ep56.confirms.length, 1, "Cancel with changed text asks first");
   assert.strictEqual(um56.text, "the edited question", "refusing left the text as it was");
   ep56.confirmAnswer.yes = true;
-  btnOf(uel56, 1).onclick();                              // Cancel -> accepted
+  btnOf(uel56, 2).onclick();                              // Cancel -> accepted
   assert.strictEqual(ep56.confirms.length, 2, "it asked again");
   assert.strictEqual(um56.text, "the edited question", "accepting discarded the new edit");
   assert.ok(!uel56.children.some((c) => (c.className || "").includes("msg-edit")), "and the box closed");
   // Cancel with nothing changed does not ask (silent close)
   const cB56 = ep56.confirms.length;
-  clickEdit(uel56); btnOf(uel56, 1).onclick();
+  clickEdit(uel56); btnOf(uel56, 2).onclick();
   assert.strictEqual(ep56.confirms.length, cB56, "Cancel with nothing changed asks nothing");
   // a tool-call turn is locked: Edit opens no box
   clickEdit(tel56);
   assert.ok(!tel56.children.some((c) => (c.className || "").includes("msg-edit")), "a turn with tool calls cannot be edited yet");
   done.push("edit-posts increment 1: Edit opens an inline box; Save rewrites the post and keeps everything below; Cancel confirms only if changed; tool-call turns locked");
+
+  // 57. Submit on an edited user post (todo #edit-posts increment 2): the box's Submit saves the edit, deletes
+  // every message after it, and resends - a fresh answer streams in.  Driven through the real Edit button and the
+  // real send() with a fake stream (wire-level, per LESSONS).  An assistant post's box has no Submit.
+  const ctl57 = {step: null, flush: null}, q57 = [];
+  const read57 = () => new Promise((res) => {
+    ctl57.step = () => { if (ctl57.flush) ctl57.flush(); res(q57.length ? {done: false, value: new TextEncoder().encode(q57.shift())} : {done: true}); };
+  });
+  const su = run({fetch: async (u) => {
+    if (u === "health") return {ok: true, json: async () => ({status: "ok", model: "strata", max_context: 8192, images: false, loaded: true})};
+    if (String(u).startsWith("v1/chat/completions")) return {ok: true, body: {getReader: () => ({read: read57})}};
+    return {ok: true, json: async () => ({}), text: async () => ""};
+  }}, {});
+  await wait(); ctl57.flush = su.flush;
+  const sub0 = {id: "s0", role: "user", text: "first question", time: Date.now()};
+  const sub1 = {id: "s1", role: "assistant", text: "first answer", reasoning: "", time: Date.now()};
+  const sub2 = {id: "s2", role: "user", text: "second question", time: Date.now()};
+  su.s.messages.push(sub0, sub1, sub2);
+  const wel57 = su.s.msgEl(sub0, 0); su.s.el("chat").appendChild(wel57);
+  su.s.el("chat").appendChild(su.s.msgEl(sub1, 1)); su.s.el("chat").appendChild(su.s.msgEl(sub2, 2));
+  const editTarget57 = (row) => { const o = {closest: (s) => s === "[data-msg-edit]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  su.s.el("chat")._l["click"]({target: editTarget57(wel57)});            // open Edit on the first post
+  const wbox57 = wel57.children.find((c) => (c.className || "").includes("msg-edit"));
+  const wta57 = wbox57.querySelector(".msg-edit__ta");
+  assert.strictEqual(wta57.value, "first question", "the box starts with the post's text");
+  wta57.value = "edited first question";
+  const bar57 = wbox57.querySelector(".msg-edit__bar");
+  assert.deepStrictEqual(bar57.children.map((b) => b.textContent), ["Save", "Submit", "Cancel"], "a user post's box has Save, Submit, Cancel");
+  const f57 = (o) => "data: " + JSON.stringify(o) + "\n\n";
+  q57.push(f57({choices: [{delta: {content: "the new answer"}}]}));
+  bar57.children[1].onclick();                                         // Submit
+  await wait();
+  ctl57.step(); await wait(); su.flush();                              // the content frame
+  ctl57.step(); await wait();                                          // end of stream
+  await wait();
+  assert.strictEqual(su.s.messages.length, 2, "everything after the edited post was dropped, then one fresh answer added");
+  assert.strictEqual(su.s.messages[0], sub0, "the edited post is still first");
+  assert.strictEqual(sub0.text, "edited first question", "its edit was saved");
+  assert.strictEqual(su.s.messages[1].role, "assistant", "a new assistant turn replaced the old history");
+  assert.strictEqual(su.s.messages[1].text, "the new answer", "and it streamed the model's fresh answer");
+  // an assistant post (no tools) has Save and Cancel, but no Submit
+  const aw57 = {id: "aw", role: "assistant", text: "an answer", reasoning: "", time: Date.now()};
+  su.s.messages.push(aw57);
+  const ael57 = su.s.msgEl(aw57, 2); su.s.el("chat").appendChild(ael57);
+  su.s.el("chat")._l["click"]({target: editTarget57(ael57)});
+  const abox57 = ael57.children.find((c) => (c.className || "").includes("msg-edit"));
+  assert.deepStrictEqual(abox57.querySelector(".msg-edit__bar").children.map((b) => b.textContent), ["Save", "Cancel"], "an assistant post's box has no Submit");
+  done.push("edit-posts increment 2: Submit saves the edit, deletes every message after it, and resends a fresh answer; assistant posts have no Submit");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
