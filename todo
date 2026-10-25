@@ -231,8 +231,6 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Message-level identity is a prerequisite for any of this being safe: messages have no ids
     today, only array position and `time`. See item nvme-park.
 
-NEED RENUMBERING
-
 `queue-another-chat`  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
     The SERVER ALREADY DOES THIS: docs/BATCHING.md - "By default Strata serves one request
     at a time: the others wait in the server's queue." Nothing engine-side is missing, and
