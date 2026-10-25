@@ -19,6 +19,7 @@ function makeEl() {
     scrollHeight: 0, scrollTop: 0, clientHeight: 0,
     addEventListener(t, f) { (this._l = this._l || {})[t] = f; },   // one handler per type: tests call it directly
     appendChild(c) { this.children.push(c); c._parent = this; return c; },
+    append(...a) { for (const x of a) { if (typeof x === "string") this.children.push({nodeType: 3, textContent: x, _parent: this}); else { this.children.push(x); x._parent = this; } } },
     get lastElementChild() { return this.children.length ? this.children[this.children.length - 1] : null; },
     get nextElementSibling() {
       const p = this._parent; if (!p) return null;
@@ -180,8 +181,9 @@ function run(hooks, stored, seed) {
   // window listeners are recorded so a test can ask "is anything holding the page open right now, and what
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
   const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
-               removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); }};
-  const confirms = [], confirmAnswer = {yes: true}, copied = [], raf = [], timers = [], fetches = [];
+               removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); },
+               open: (u) => { opened.push(u); return {}; }};
+  const confirms = [], confirmAnswer = {yes: true}, copied = [], raf = [], timers = [], fetches = [], opened = [];
   const answer = async () => ({ok: true, json: async () => ({}), text: async () => ""});
   // requestAnimationFrame is queued, not swallowed: a stream that never paints cannot be tested at all, and
   // flush() gives a test the same "one paint per frame" interleaving the browser gives the page.
@@ -197,6 +199,7 @@ function run(hooks, stored, seed) {
     clearTimeout: (id) => { if (id) timers[id - 1] = {f: null, ms: 0}; },
     requestAnimationFrame: (f) => { raf.push(f); return raf.length; }, cancelAnimationFrame: () => {},
     navigator: {clipboard: {writeText: async (t) => { copied.push(t); }}},   // what the page put on the clipboard
+    URL: {createObjectURL: () => "blob:stub", revokeObjectURL: () => {}},   // the image open-in-tab path builds a blob: URL
     innerWidth: 1200, innerHeight: 800, window: win, queueMicrotask,
   };
   const names = Object.keys(env);
@@ -211,9 +214,9 @@ function run(hooks, stored, seed) {
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
-    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
-               fetches, timers, body: document.body, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
+               fetches, timers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
 }
 
@@ -367,9 +370,9 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                                 images: [{name: "photo.png", url: "data:image/png;base64,AAA"}]});
   pic.s.saveChat();
   await wait();
-  assert.deepStrictEqual(pic.records[pic.s.chat.id].messages[0].images, [{name: "photo.png"}],
-                         "no data URL in the record");
-  done.push("pictures: names only");
+  assert.deepStrictEqual(pic.records[pic.s.chat.id].messages[0].images, [{name: "photo.png", url: "data:image/png;base64,AAA"}],
+                         "the IndexedDB record keeps the image data URL, so a reload can still show it");
+  done.push("pictures: bytes kept in the IndexedDB record (stripped only for the localStorage single-chat)");
 
   // 13. the search covers the title and the message text
   const search = run({}, {"strata.history": "true"}, {
@@ -2148,8 +2151,11 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const lgBox = lgEl.children.find((c) => (c.className || "").includes("msg-edit"));
   lgBox.querySelector(".msg-edit__ta").value = "plain now";
   lgBox.querySelector(".msg-edit__bar").children[0].onclick();      // Save
-  assert.ok(!lgEl.querySelector(".st-bubble").children.some((c) => (c.className || "").includes("tool-call")),
-            "no tool block left in the bubble after 'Edit entire'");
+  // close() rebuilds the whole row, so check the row now in the chat (not the detached original)
+  const lgFresh = lg.s.el("chat").children.find((c) => +c.dataset.i === 0);
+  assert.ok(lgFresh, "the edited row was rebuilt in place");
+  assert.ok(!lgFresh.querySelector(".st-bubble").children.some((c) => (c.className || "").includes("tool-call")),
+            "no tool block left in the rebuilt bubble after 'Edit entire'");
   done.push("edit-posts: one edit box at a time (discard prompt; same-post re-click is a no-op; button hidden), Edit during a live turn says stop it, and dropped tool blocks leave the DOM");
 
   // 62. editing a turn that has thinking offers a "Delete the model's thinking" toggle (option B): kept by
@@ -2191,6 +2197,119 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   clickEd(umEl);
   assert.ok(!boxIn(umEl).children.some((c) => (c.className || "").includes("msg-edit__think")), "a user post has no thinking toggle");
   done.push("edit-posts option B: editing a thinking turn offers 'Delete the model's thinking' (keep by default; delete by default for 'Edit entire'); user posts have none");
+
+  // 63. editing a user post can remove its attachments (todo #edit-posts): the box lists the post's images and
+  // files as removable chips, plus an Attach button; removing one and saving updates the post.  (Adding through
+  // the file picker is browser-only - it needs FileReader - but it is the same addFiles path the composer uses.)
+  const at = run({}, {});
+  await wait();
+  const am63 = {id: "at1", role: "user", text: "look", time: Date.now(),
+                images: [{name: "pic.png", url: "data:image/png;base64,AAA"}],
+                files: [{name: "note.txt", text: "hi"}]};
+  at.s.messages.push(am63);
+  const atEl = at.s.msgEl(am63, 0); at.s.el("chat").appendChild(atEl);
+  const atEdit = (row) => { const o = {closest: (s) => s === "[data-msg-edit]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  at.s.el("chat")._l["click"]({target: atEdit(atEl)});
+  const atBox = atEl.children.find((c) => (c.className || "").includes("msg-edit"));
+  const attachBox = atBox.children.find((c) => (c.className || "").includes("attachments"));
+  assert.ok(atBox.children.some((c) => (c.className || "").includes("msg-edit__attach")), "the box has an Attach button");
+  assert.strictEqual(attachBox.children.length, 2, "the box lists the post's two attachments as chips");
+  assert.ok(attachBox.children[0].children.some((c) => (c.className || "").includes("chip__thumb")), "an image chip shows a thumbnail");
+  attachBox.children[0].children.find((c) => (c.className || "").includes("st-btn")).onclick();   // remove the first chip
+  assert.strictEqual(attachBox.children.length, 1, "removing a chip drops it");
+  atBox.querySelector(".msg-edit__bar").children[0].onclick();   // Save (user box: Save, Submit, Cancel)
+  assert.strictEqual(am63.images.length + am63.files.length, 1, "Save wrote back one attachment");
+  assert.strictEqual(am63.files.length, 1, "the removed image is gone, the file remains");
+  assert.strictEqual(am63.files[0].name, "note.txt", "the surviving attachment is note.txt");
+  done.push("edit-posts: editing a user post lists its attachments as removable chips + an Attach button; removing one and saving updates the post");
+
+  // 64. clicking an attachment opens a viewer (todo #edit-posts): a text file shows its contents, an image
+  // enlarges.  Escape or clicking the backdrop closes it.
+  const vw = run({}, {});
+  await wait();
+  const vm = {id: "vw1", role: "user", text: "q", time: Date.now(),
+              images: [{name: "pic.png", url: "data:image/png;base64,aGVsbG8="}],
+              files: [{name: "note.txt", text: "the file contents"}]};
+  vw.s.messages.push(vm);
+  const vmEl = vw.s.msgEl(vm, 0); vw.s.el("chat").appendChild(vmEl);
+  const wraps = vmEl.children.filter((c) => (c.className || "").includes("msg-images"));   // files wrap then images wrap
+  wraps[0].children[0].onclick();                                                          // click the file chip
+  assert.ok(vw.s.viewerEl, "clicking a file chip opens the viewer");
+  assert.strictEqual(vw.s.viewerEl.children[0].querySelector(".att-viewer__text").textContent, "the file contents",
+                     "the viewer shows the text file's contents");
+  vw.fireDoc("keydown", {key: "Escape"});
+  assert.strictEqual(vw.s.viewerEl, null, "Escape closes the viewer");
+  wraps[1].children[0].onclick();                                                          // click the image thumbnail -> in-page viewer
+  assert.ok(vw.s.viewerEl, "clicking an image opens the in-page viewer, like a text file");
+  const vimg = vw.s.viewerEl.children[0].querySelector(".att-viewer__img");
+  assert.ok(vimg, "the viewer shows the enlarged image");
+  assert.strictEqual(vw.opened.length, 0, "opening the viewer does not open a tab yet");
+  vimg.onclick();                                                                          // click the enlarged image -> new tab
+  assert.strictEqual(vw.opened.length, 1, "clicking the image in the viewer opened one tab");
+  assert.ok(vw.opened[0].startsWith("blob:"), "it opens via a blob: URL (data: URLs are blocked for top-level navigation)");
+  done.push("edit-posts: image thumbnail opens the in-page viewer; clicking the image in the viewer opens a new tab via a blob: URL");
+
+  // 65. switching chats while an edit box is open prompts to discard it, so the edit is not silently lost
+  // (todo #edit-posts).
+  const sw65 = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("A")},
+                   {A: {id: "A", title: "chat A", time: Date.now(), messages: [msg("ask A")]},
+                    B: {id: "B", title: "chat B", time: Date.now() - 1000, messages: [msg("ask B")]}});
+  await wait();
+  const editT65 = (row) => { const o = {closest: (s) => s === "[data-msg-edit]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  const userRow65 = () => sw65.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--user"));
+  sw65.s.el("chat")._l["click"]({target: editT65(userRow65())});     // open Edit on chat A's message
+  assert.ok(userRow65().children.some((c) => (c.className || "").includes("msg-edit")), "an edit box is open");
+  sw65.confirmAnswer.yes = false;
+  sw65.s.openChat("B");                                             // try to switch away
+  assert.strictEqual(sw65.confirms.length, 1, "switching while editing asks to discard");
+  assert.strictEqual(sw65.s.chatId, "A", "refusing keeps you in chat A");
+  assert.ok(userRow65().children.some((c) => (c.className || "").includes("msg-edit")), "and the edit box stays open");
+  sw65.confirmAnswer.yes = true;
+  sw65.s.openChat("B");                                             // switch, accepting the discard
+  assert.strictEqual(sw65.s.chatId, "B", "accepting switches to chat B");
+  done.push("edit-posts: switching chats while editing prompts to discard; refusing keeps the chat and the open edit box");
+
+  // 66. a streaming message's meta updates live (estimated tokens/context) and its Edit button is hidden until
+  // the turn ends (todo #edit-posts).
+  const ctl66 = {step: null, flush: null}, q66 = [];
+  const read66 = () => new Promise((res) => { ctl66.step = () => { if (ctl66.flush) ctl66.flush(); res(q66.length ? {done: false, value: new TextEncoder().encode(q66.shift())} : {done: true}); }; });
+  const lm66 = run({fetch: async (u) => {
+    if (u === "health") return {ok: true, json: async () => ({status: "ok", model: "strata", max_context: 8192, images: false, loaded: true})};
+    if (String(u).startsWith("v1/chat/completions")) return {ok: true, body: {getReader: () => ({read: read66})}};
+    return {ok: true, json: async () => ({}), text: async () => ""};
+  }}, {});
+  await wait(); ctl66.flush = lm66.flush;
+  lm66.s.el("input").value = "go";
+  const f66 = (o) => "data: " + JSON.stringify(o) + "\n\n";
+  q66.push(f66({choices: [{delta: {content: "hello there this is a longer answer"}}]}),
+         f66({choices: [{}], usage: {prompt_tokens: 100, completion_tokens: 12, total_tokens: 112, prompt_tokens_details: {cached_tokens: 50}}}));
+  const run66 = lm66.s.send();
+  await wait();
+  ctl66.step(); await wait(); lm66.flush();            // the content frame paints (live meta)
+  const row66 = lm66.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--assistant"));
+  assert.ok((row66.className || "").includes("streaming"), "the streaming row is marked (its Edit button is hidden by CSS)");
+  const meta66 = row66.querySelector(".meta-text").textContent;
+  assert.ok(meta66.includes("tokens") && meta66.includes("context"), "the meta shows a live token/context estimate: " + meta66);
+  ctl66.step(); await wait(); lm66.flush();            // the usage frame
+  ctl66.step(); await wait();                        // end of stream
+  await run66;
+  const row66b = lm66.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--assistant"));
+  assert.ok(!(row66b.className || "").includes("streaming"), "the streaming class is gone when the turn ends (Edit button back)");
+  assert.ok((row66b.querySelector(".meta-text").textContent || "").includes("12 tokens"), "the exact final meta replaces the estimate");
+
+  // 67. deleting a chat asks first (todo #edit-posts): refuse keeps it, accept deletes it.
+  const dc = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("A")},
+                 {A: {id: "A", title: "chat A", time: Date.now(), messages: [msg("a")]},
+                  B: {id: "B", title: "chat B", time: Date.now() - 1000, messages: [msg("b")]}});
+  await wait();
+  dc.confirmAnswer.yes = false;
+  dc.s.deleteChat(dc.s.chats.find((c) => c.id === "B"));
+  assert.strictEqual(dc.confirms.length, 1, "delete asks first");
+  assert.ok(dc.s.chats.some((c) => c.id === "B") && "B" in dc.records, "refusing keeps the chat and its record");
+  dc.confirmAnswer.yes = true;
+  dc.s.deleteChat(dc.s.chats.find((c) => c.id === "B"));
+  assert.ok(!dc.s.chats.some((c) => c.id === "B"), "accepting deletes it");
+  done.push("edit-posts: streaming meta updates live (tokens/context) with the Edit button hidden until done; deleting a chat asks first");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

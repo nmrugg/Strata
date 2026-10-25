@@ -102,7 +102,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-bubble .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 /* the inline edit box (todo #edit-posts): a textarea in place of the bubble, with its own action bar.  Sized
    like the composer so it reads as "the same kind of box". */
-.msg-edit { display: flex; flex-direction: column; gap: 8px; }
+.msg-edit { display: flex; flex-direction: column; gap: 8px; min-width: 100%; }
 .msg-edit__ta { width: 100%; min-height: 160px; font: var(--st-fs-base)/1.55 var(--st-font); color: var(--st-ink-soft);
                 background: var(--st-surface); border: 1px solid var(--st-line); border-radius: var(--st-r-md);
                 padding: 10px 12px; resize: vertical; box-sizing: border-box; }
@@ -112,6 +112,26 @@ main { flex: 1; min-height: 0; display: flex; }
                    color: var(--st-ink-muted); cursor: pointer; }
 /* while a post is being edited, hide its own Edit button so it cannot be opened twice (todo #edit-posts) */
 .st-msg.editing [data-msg-edit] { display: none; }
+/* no Edit button on a message that is still streaming - editing mid-turn would fight the stream (todo #edit-posts) */
+.st-msg.streaming [data-msg-edit] { display: none; }
+/* while editing, the message's own read-only attachment display is replaced by the editable chips in the box,
+   so the attachments appear once (with trash icons), not twice (todo #edit-posts) */
+.st-msg.editing .msg-images { display: none; }
+.st-msg--user.editing { width: 100%; align-items: stretch; }   /* a user row is content-width; give the box room */
+/* attachment viewer (todo #edit-posts): a backdrop with a panel; images enlarge, text files show in a scrollable
+   box.  Chips/thumbnails that open it get cursor: pointer (set inline where they are built). */
+.att-viewer { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center;
+              padding: 24px; background: rgba(0,0,0,.55); }
+.att-viewer__panel { max-width: min(92vw, 900px); max-height: 90vh; display: flex; flex-direction: column; gap: 10px;
+                     padding: 14px; background: var(--st-surface); border: 1px solid var(--st-line);
+                     border-radius: var(--st-r-lg); overflow: hidden; }
+.att-viewer__head { display: flex; align-items: center; gap: 10px; }
+.att-viewer__name { flex: 1; min-width: 0; font: 600 var(--st-fs-sm) var(--st-font); color: var(--st-ink);
+                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-viewer__img { max-width: 100%; max-height: 78vh; object-fit: contain; border-radius: var(--st-r-md); }
+.att-viewer__text { margin: 0; overflow: auto; max-height: 78vh; white-space: pre-wrap; overflow-wrap: anywhere;
+                    font: var(--st-fs-sm)/1.5 var(--st-font-mono); color: var(--st-ink-soft); }
+.att-viewer__open { align-self: flex-start; color: var(--st-accent); font: 600 var(--st-fs-sm) var(--st-font); }
 /* todo #no-placeholder: the fake caret rule is gone - the page no longer draws anything that pretends to be output while
    only thinking has arrived, and that caret also stayed at the end of a finished answer.  The blink keyframes
    stay: the Running/Writing badge on a tool block uses them (below). */
@@ -208,6 +228,8 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-composer.dragging { outline: 2px dashed var(--st-accent); outline-offset: 3px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px 0 10px; border-radius: var(--st-r-pill);
         background: var(--st-surface-2); border: 1px solid var(--st-line); font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
+.chip[data-att-index] { cursor: pointer; }                     /* a clickable (viewable) chip gets the hand cursor */
+.chip__thumb { width: 22px; height: 22px; object-fit: cover; border-radius: 4px; flex: none; }
 .chip .st-btn--icon { width: 22px; height: 22px; border-radius: 50%; }
 .chip .st-btn--icon .st-icon { width: 14px; height: 14px; }
 

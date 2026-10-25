@@ -694,9 +694,13 @@ function chatTitle(c) {
 // out; this drops it on the way in, for records an older page already wrote.  Only the tool's open field is
 // touched: a very old record that still carries a picture's data URL is left exactly as it is.
 const dropToolOpen = (list) => list.map((m) => (m && m.tools ? {...m, tools: m.tools.map((t) => ({...t, open: undefined}))} : m));
-const cleanMessages = (list) => list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                                  files: (m.files || []).map((f) => ({name: f.name})),
-                                                  tools: (m.tools || []).map((t) => ({...t, open: undefined}))}));
+// keepBytes (todo #edit-posts / store-full-attachments): the IndexedDB record keeps the image data URL and the
+// file text, so a reloaded post can still show and open its attachments.  The single-chat localStorage path
+// (history off) passes keepBytes=false - localStorage is capped around 5 MB, so a data URL there could blow it.
+const cleanMessages = (list, keepBytes = true) => list.map((m) => ({...m,
+    images: (m.images || []).map((i) => keepBytes ? {name: i.name, url: i.url} : {name: i.name}),
+    files: (m.files || []).map((f) => keepBytes ? {name: f.name, text: f.text} : {name: f.name}),
+    tools: (m.tools || []).map((t) => ({...t, open: undefined}))}));
 const cleanChat = (c) => ({...c, messages: cleanMessages(c.messages)});
 
 let historyOn = store.get("history", false);
@@ -871,11 +875,13 @@ function showChat(c) {
 function openChat(id) {
   // no busy guard: the answer keeps streaming into its own message object, and paint() finds the row again when
   // you come back, so reading another conversation mid-turn is safe (todo #switch-while-running)
+  if (!confirmDiscardEdit()) return;                 // an open edit box is not silently lost on a chat switch (todo #edit-posts)
   const c = chats.find((x) => x.id === id);
   if (c) showChat(c);
 }
 function startChat() {
   if (!messages.length) { $("input").focus(); return; }        // already a fresh chat
+  if (!confirmDiscardEdit()) return;                           // don't lose an open edit when starting a new chat
   const prev = chatId;
   // one blank chat is as good as another: making a second one only fills the list with rows that all say
   // "New chat", and each would then want its own draft. Reuse the blank one the list already has.
@@ -896,6 +902,7 @@ function startChat() {
 }
 function deleteChat(c) {
   if (busy && c.id === busy.chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (!confirm(`Delete "${chatTitle(c)}"?`)) return;   // deleting a chat is destructive; an Undo is offered for the session
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
   if (i < 0) return;                                // the list only ever passes a chat it holds
   chats.splice(i, 1);
@@ -991,6 +998,51 @@ function openEditModeMenu(m, el, anchor) {
                        ["cancel", "Cancel", false]],
               (act) => { if (act === "final") openEditBox(el, m, "final"); else if (act === "entire") openEditBox(el, m, "entire"); });
 }
+// view an attachment (todo #edit-posts): an image enlarges, a text file shows in a scrollable box.  A reloaded
+// post's attachments are stored name-only (bytes not kept in the browser - item store-full-attachments), so those
+// show a note instead of the content.  Backdrop click or Escape closes it.
+let viewerEl = null;
+function closeViewer() { if (viewerEl) viewerEl.remove(); viewerEl = null; }
+function openViewer(a) {
+  closeViewer();
+  const back = node("div", "att-viewer");
+  back.onclick = (e) => { if (e.target === back) closeViewer(); };
+  const panel = node("div", "att-viewer__panel");
+  const head = node("div", "att-viewer__head");
+  head.appendChild(node("span", "att-viewer__name", a.name || "attachment"));
+  const x = node("button", "st-btn st-btn--icon", "×"); x.type = "button"; x.setAttribute("aria-label", "Close");
+  x.onclick = closeViewer;
+  head.appendChild(x);
+  panel.appendChild(head);
+  if (a.kind === "image" || a.url) {
+    if (a.url) {
+      const im = document.createElement("img"); im.src = a.url; im.alt = a.name || ""; im.className = "att-viewer__img";
+      im.title = "Open in a new tab"; im.style.cursor = "pointer"; im.onclick = () => openImageTab(a); panel.appendChild(im);
+    }
+    else panel.appendChild(node("p", "muted", "This picture's data is not kept in the browser (see store-full-attachments)."));
+  } else {
+    const pre = node("pre", "att-viewer__text");
+    pre.textContent = a.text != null ? a.text : "(this file's contents are not kept in the browser — see store-full-attachments)";
+    panel.appendChild(pre);
+  }
+  back.appendChild(panel);
+  document.body.appendChild(back);
+  viewerEl = back;
+}
+// open an image in a new tab.  A data: URL cannot be a top-level navigation (the browser blocks it), so turn it
+// into a blob: URL first.  If the pop-up is blocked, say so rather than failing silently.
+function openImageTab(a) {
+  if (!a || !a.url) return;
+  try {
+    const comma = a.url.indexOf(",");
+    const mime = ((a.url.slice(0, comma).match(/data:([^;]+)/) || [])[1]) || "image/png";
+    const bin = atob(a.url.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    if (!window.open(URL.createObjectURL(new Blob([bytes], {type: mime})), "_blank"))
+      toast("warn", "Pop-up blocked", "Allow pop-ups to open the image in a new tab.");
+  } catch (e) { toast("warn", "Can't open image", String((e && e.message) || e)); }
+}
 // rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
 function renameChat(row, c) {
   const title = row.querySelector(".chat-item__title");
@@ -1038,7 +1090,7 @@ document.addEventListener("click", (e) => {
   if (activePopover && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]") &&
       !e.target.closest("[data-msg-edit]")) closePopover();
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && activePopover) closePopover(); });
+document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
 
 // the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
 function setHistory(on, save, fromScreen) {
@@ -1048,7 +1100,7 @@ function setHistory(on, save, fromScreen) {
   $("new-btn").title = on ? "New chat (the one you are in stays in the list)" : "New chat";
   if (save) store.set("history", on);
   // off writes the single chat here as well, so a reload shows the chat you were in, not the one from before the switch
-  if (!on) { messages = chat ? chat.messages : messages; store.set("chat", cleanMessages(messages)); renderChat(); return; }
+  if (!on) { messages = chat ? chat.messages : messages; store.set("chat", cleanMessages(messages, false)); renderChat(); return; }
   openHistory(fromScreen).then(renderChat);          // the store is opened before the list can be read
 }
 $("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true, true);
@@ -1096,32 +1148,62 @@ function openEditBox(el, m, mode) {
     think.appendChild(cb); think.appendChild(document.createTextNode(" Delete the model's thinking"));
     think._cb = cb;
   }
+  // attachments (user posts only): start from the post's existing images/files; the box can remove them or add
+  // new ones via the same addFiles path.  A reloaded post's images/files are stored name-only (no data URL), so
+  // they show as removable chips but their original bytes cannot be re-attached - item store-full-attachments.
+  let edits = null, attachBox = null, fileIn = null, attachBtn = null;
+  if (m.role === "user") {
+    edits = [...(m.images || []).map((im) => ({kind: "image", name: im.name, url: im.url})),
+             ...(m.files || []).map((fl) => ({kind: "file", name: fl.name, text: fl.text}))];
+    attachBox = node("div", "attachments");
+    fileIn = document.createElement("input"); fileIn.type = "file"; fileIn.multiple = true; fileIn.hidden = true;
+    fileIn.onchange = () => { addFiles(fileIn.files, edits, attachBox); fileIn.value = ""; };
+    attachBtn = node("button", "st-btn st-btn--icon msg-edit__attach", ""); attachBtn.type = "button";
+    attachBtn.title = "Attach a file"; attachBtn.setAttribute("aria-label", "Attach a file");
+    attachBtn.innerHTML = icon("attach");
+    attachBtn.onclick = () => { if (fileIn.click) fileIn.click(); };
+    renderAttachments(edits, attachBox);
+  }
   const bar = node("div", "msg-edit__bar");
   const save = node("button", "st-btn st-btn--secondary", "Save"); save.type = "button";
   const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button";
-  // close() uses the closure's own form/bubble, not a re-query: reopening a box replaces the node, and a
-  // querySelector (or the harness's cached one) could grab the wrong one.
-  const close = () => { form.remove(); el.classList.remove("editing"); if (activeEdit && activeEdit.m === m) activeEdit = null;
-    if (bubble) { bubble.hidden = false; redrawBubble(el, m, bubble); } };
-  activeEdit = {m, el, close};
-  save.onclick = () => {
-    const t = ta.value.trim();
-    if (mode === "final") { if (!t && !head.trim()) return; m.text = head + t; }
-    else { if (!t) return; m.text = t; if (mode === "entire") m.tools = []; }
-    if (think && think._cb.checked) { m.reasoning = ""; m.thinkSecs = null; }   // option B: drop the thinking on request
-    close(); saveChat();
+  // close() rebuilds the whole row, not just the bubble: an edit can change the text, the thinking, the tool
+  // calls, AND the attachments (thumbnails/chips live outside the bubble), so a full row rebuild is what makes
+  // every part reflect the edit without a reload.  It uses the closure's own form/el, not a re-query.
+  const close = () => {
+    form.remove(); el.classList.remove("editing"); if (activeEdit && activeEdit.m === m) activeEdit = null;
+    const i = messages.indexOf(m);
+    if (i >= 0) el.replaceWith(msgEl(m, i));
+    else if (bubble) { bubble.hidden = false; redrawBubble(el, m, bubble); }
   };
+  activeEdit = {m, el, close};
+  // apply writes the edited text, attachments, and (optionally) dropped thinking onto the message.
+  const apply = () => {
+    const t = ta.value.trim();
+    if (mode === "final") { if (!t && !head.trim()) return false; m.text = head + t; }
+    else { if (!t && !(edits && edits.length)) return false; m.text = t; if (mode === "entire") m.tools = []; }
+    if (think && think._cb.checked) { m.reasoning = ""; m.thinkSecs = null; }   // option B: drop the thinking on request
+    if (edits) {   // write the post's attachments back from the edited list
+      m.images = edits.filter((a) => a.kind === "image").map((a) => ({name: a.name, url: a.url}));
+      m.files = edits.filter((a) => a.kind === "file").map((a) => ({name: a.name, text: a.text}));
+    }
+    return true;
+  };
+  save.onclick = () => { if (!apply()) return; close(); saveChat(); };
   cancel.onclick = () => { if (ta.value.trim() !== (editable || "").trim() && !confirm("Discard your changes?")) return; close(); };
   bar.appendChild(save);
   // Submit (user posts only): save the edit, delete every message after it, and resend to the model.  Assistant
   // posts get Save only - there is nothing to resend them as.
   if (m.role === "user") {
     const submit = node("button", "st-btn st-btn--primary", "Submit"); submit.type = "button";
-    submit.onclick = () => { const t = ta.value.trim(); if (!t) return; m.text = t; close(); send(m); };
+    submit.onclick = () => { if (!apply()) return; close(); send(m); };
     bar.appendChild(submit);
   }
   bar.appendChild(cancel);
-  form.appendChild(ta); if (think) form.appendChild(think); form.appendChild(bar);
+  form.appendChild(ta);
+  if (attachBox) { form.appendChild(attachBox); form.appendChild(attachBtn); form.appendChild(fileIn); }
+  if (think) form.appendChild(think);
+  form.appendChild(bar);
   el.appendChild(form);
   ta.focus();
   grow();                                              // size to the existing text on open
@@ -1138,6 +1220,14 @@ function redrawBubble(el, m, bubble) {
   // parts makes renderBubble rebuild every part from the current message.
   else { bubble.innerHTML = ""; bubble._parts = null; bubble._blocks = []; updateAssistant(el, m, false); }
 }
+// switching conversations or starting a new one while an edit box is open (todo #edit-posts): prompt to discard
+// first, so the edit is not silently lost.  (Keeping the box open across chats would need it saved per chat.)
+function confirmDiscardEdit() {
+  if (!activeEdit) return true;
+  if (!confirm("Discard the edit you are working on?")) return false;
+  activeEdit.close();
+  return true;
+}
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -1152,6 +1242,7 @@ function msgEl(m, i) {
         c.className = "chip";
         c.innerHTML = icon("attach", "st-icon st-icon--sm");
         c.append(f.name);
+        c.title = "View"; c.style.cursor = "pointer"; c.onclick = () => openViewer({kind: "file", name: f.name, text: f.text});
         wrap.appendChild(c);
       }
       el.appendChild(wrap);
@@ -1160,8 +1251,8 @@ function msgEl(m, i) {
       const wrap = document.createElement("div");
       wrap.className = "msg-images";
       for (const im of m.images) {
-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
-        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
+        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; img.title = im.name || "image"; img.style.cursor = "pointer"; img.onclick = () => openViewer({kind: "image", name: im.name, url: im.url}); wrap.appendChild(img); }
+        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); c.title = im.name || "image"; c.style.cursor = "pointer"; c.onclick = () => openViewer({kind: "image", name: im.name}); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
     }
@@ -1523,10 +1614,34 @@ function ctxInfo(m) {
               `\nOutput: ${fmt(out)} tokens`;
   return {pct: fmt(pct, 1), tip};
 }
+// a live estimate of a streaming turn's meta (todo #edit-posts): tokens/rate/context update about once a second
+// as the answer arrives.  These are estimates (token count from characters, ~4/word) - the exact figures come from
+// the usage chunk when the turn ends (ctxInfo).
+function liveMeta(m) {
+  const chars = (m.text || "").length + (m.reasoning || "").length;
+  const tokens = Math.round(chars / 4);
+  const secs = m.turnStart ? (Date.now() - m.turnStart) / 1000 : 0;
+  const rate = secs > 0.5 ? ` · ${fmt(tokens / secs, 1)} tok/s` : "";
+  const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
+  const calls = ran ? ` · ${ran} tool call${ran > 1 ? "s" : ""}` : "";
+  let ctx = "";
+  if (health.max_context) {
+    let prior = 0;
+    for (const x of messages) { if (x === m || x.role !== "user" && x.role !== "assistant") continue; prior += (x.text || "").length + (x.reasoning || "").length; }
+    const used = Math.round((prior + chars) / 4);
+    ctx = ` (~${Math.round(used / health.max_context * 100)}% context)`;
+  }
+  return `${fmt(tokens)} tokens${rate}${calls}${ctx}`;
+}
 function updateAssistant(el, m, streaming) {
   renderBubble(el, m, streaming);
   const bubble = el.querySelector(".st-bubble");
-  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
+  if (streaming) el.classList.add("streaming"); else el.classList.remove("streaming");   // hides the Edit button mid-turn (CSS)
+  // live meta while streaming, refreshed about once a second (not every frame - the context estimate walks the
+  // history); the exact figures replace it when the turn ends.
+  if (streaming) {
+    if (!m._metaAt || Date.now() - m._metaAt > 1000) { m._metaAt = Date.now(); el.querySelector(".meta-text").textContent = liveMeta(m); }
+  } else el.querySelector(".meta-text").textContent = m.meta || (m.stopped ? "Stopped" : "");
   // the "(NN% context)" span: shown only once the turn has usage and the window is known, so it is absent while
   // a turn streams and on a stopped turn that never got a usage chunk (updateAssistant runs on reload too, so a
   // saved m.usage brings it back).
@@ -1722,7 +1837,7 @@ async function send(editOf) {
   let key;
   if (editOf) {
     if (busy) return;
-    if (!(editOf.text || "").trim()) return;          // the box saved the text onto editOf before calling send
+    if (!(editOf.text || "").trim() && !(editOf.images || []).length && !(editOf.files || []).length) return;   // the box saved text/attachments onto editOf
     const idx = messages.indexOf(editOf);
     if (idx < 0) return;                             // it is no longer in this conversation
     messages.length = idx + 1;                       // drop the old answer and everything after it
@@ -1738,7 +1853,7 @@ async function send(editOf) {
     autosize();
     store.set(key, "");                              // sent: that draft is spent
   }
-  const m = {id: mid(), role: "assistant", text: "", reasoning: "", time: Date.now()};
+  const m = {id: mid(), role: "assistant", text: "", reasoning: "", time: Date.now(), turnStart: Date.now()};
   messages.push(m);
   renderChat();
   const controller = new AbortController();
@@ -1944,13 +2059,15 @@ function isTextFile(f) {
   return f.type.startsWith("text/") || /json|xml|javascript|yaml|toml|x-sh|x-python/.test(f.type) ||
          TEXT_EXT.test(f.name) || /(^|[\\/])(makefile|dockerfile|readme|license)$/i.test(f.name);
 }
-function addFiles(files) {
+// read chosen files into an attachment list (images as data URLs, text files as text).  Defaults to the
+// composer's global list; the edit box (todo #edit-posts) passes its own list/container to attach to a post.
+function addFiles(files, list = attachments, box = $("attachments")) {
   for (const f of files) {
     if (f.type.startsWith("image/")) {
       if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
       if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
       const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
+      r.onload = () => { list.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(list, box); };
       r.readAsDataURL(f);
       continue;
     }
@@ -1960,8 +2077,8 @@ function addFiles(files) {
     r.onload = () => {
       const text = String(r.result);
       if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
-      attachments.push({kind: "file", name: f.name, text});
-      renderAttachments();
+      list.push({kind: "file", name: f.name, text});
+      renderAttachments(list, box);
     };
     r.readAsText(f);
   }
@@ -1976,19 +2093,23 @@ function userText(m) {
   const files = (m.files || []).filter((f) => f.text != null);
   return [m.text, ...files.map(fileBlock)].filter((s) => s).join("\n\n");
 }
-function renderAttachments() {
-  const box = $("attachments");
-  box.hidden = !attachments.length;
+// render a chip list of attachments with a remove button on each.  Defaults to the composer's global list;
+// the edit box (todo #edit-posts) passes its own list and container so it can remove/add attachments on a post.
+function renderAttachments(list = attachments, box = $("attachments")) {
+  box.hidden = !list.length;
   box.innerHTML = "";
-  attachments.forEach((a, i) => {
+  list.forEach((a, i) => {
     const c = document.createElement("span");
     c.className = "chip";
-    c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
+    if (a.kind === "image" && a.url) { const th = document.createElement("img"); th.className = "chip__thumb"; th.src = a.url; th.alt = ""; c.appendChild(th); }
+    else c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
     c.append(a.name);
+    c.title = "View"; c.style.cursor = "pointer"; c.setAttribute("data-att-index", i);
+    c.onclick = (e) => { if (e.target.closest && e.target.closest("button")) return; openViewer(a); };   // click the chip body to view
     const x = document.createElement("button");
     x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", "Remove");
     x.innerHTML = icon("trash");
-    x.onclick = () => { attachments.splice(i, 1); renderAttachments(); };
+    x.onclick = () => { list.splice(i, 1); renderAttachments(list, box); };
     c.appendChild(x);
     box.appendChild(c);
   });

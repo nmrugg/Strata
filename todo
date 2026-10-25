@@ -180,12 +180,13 @@ all: fold-control replaced them, and the four overlapping switches became one co
     prefix pin actually useful, so it is worth doing early despite being small.
 
 
-`store-full-attachments`  Keep the original bytes of attached files/pictures in IndexedDB. [ui]
-    cleanMessages today strips images/files to names only (no data URL) so a record stays small; that is why a
-    reloaded post cannot show or re-edit its attachments - the bytes are gone (item edit-posts hit this).
-    Decide the retention/size policy first: raw data URLs bloat the store fast (LESSONS.md: a chat can be
-    megabytes).  Options: store bytes keyed by id and fetch on demand (like the trim-tool-results full-result idea),
-    or cap by size, or keep bytes only for the recent window.  Then edit-posts can re-attach originals on reload.
+`store-full-attachments`  Keep the original bytes of attached files/pictures in IndexedDB. [ui] DONE 2026-10-24
+    cleanMessages now keeps the image data URL and file text in the IndexedDB record (keepBytes defaults true), so
+    a reloaded post can still show and open its attachments - the "not kept in the browser" note is gone for
+    history-on chats.  The localStorage single-chat path (history off) still strips to names, because localStorage
+    is capped around 5 MB and a data URL there could blow it.
+    Still open, if records get large: cap by size, or store bytes keyed by id and fetch on demand (the trim-tool-
+    results pattern), rather than inlining every data URL in the record.  Not needed until someone hits a limit.
 
 
 `chat-size-stats`  Show a conversation's size, and sort the sidebar by size or name. [ui]
@@ -220,6 +221,19 @@ all: fold-control replaced them, and the four overlapping switches became one co
     submit.  Add a setting (DEFAULTS + the store, like other settings) for the send-key scheme, applied to both
     boxes.  Also wanted: Enter/Ctrl+Enter in the edit box opens a small modal asking Save / Submit / Cancel, so a
     stray Enter does not fire off a resend.  Decide the default so the common case stays one keystroke.
+
+
+`attach-unknown-ext`  An unknown file extension should ask what to do, not just reject. [ui]
+    addFiles (serve/web/app.js) rejects anything that is not an image or a known text extension (isTextFile /
+    TEXT_EXT).  Instead, when the extension is unknown, ask the user (a small prompt): attach as text, or cancel.
+    Keep the binary guard (a NUL byte means binary) so a real binary still refuses with a clear reason.
+
+
+`attach-pdfs`  Handle PDF attachments - as text (default) or as images. [ui] [py]
+    A PDF is neither an image/ nor a text file today, so it is rejected.  Options: extract text, or render pages
+    as images the model can see.  The human wants a toggle (in the side/Settings menu) to pick which way a PDF is
+    handled, default text.  Text extraction needs a PDF reader; page-as-image needs rendering + the vision path,
+    and the model must support images.  Decide where the work lives (front end vs server) before building.
 
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
@@ -268,8 +282,25 @@ all: fold-control replaced them, and the four overlapping switches became one co
         popover, like the row menu) with "Edit final output only" (keeps the tool rounds and their at/rat offsets,
         edits only the text after the last call), "Edit entire (drops its tool calls)" (replaces the text, clears
         m.tools), or Cancel.  The Edit button is now offered on every post.
-      - TODO: an Attach button and remove-attachment in the edit box (user posts only); delete-a-post; the inline
-        re-read warning on Submit; keyboard consolidation (see configurable-send-keys).
+      - TODO: delete-a-post; the inline re-read warning on Submit; keyboard consolidation (see configurable-send-keys).
+      - DONE (attachments in the edit box): editing a user post lists its images/files as removable chips plus an
+        Attach button (a paperclip, like the composer's; reuses addFiles/renderAttachments with a per-box list).
+        Removing and saving updates the post.  Caveat: a reloaded post's attachments are stored name-only, so they
+        show as removable chips but the original bytes cannot be re-attached - item store-full-attachments.  Adding
+        via the picker is browser-only (FileReader), not unit-tested.
+      - FIXED (attachment bugs from the human): saving an edit rebuilds the whole ROW (not just the bubble), so
+        thumbnails/chips update without a reload; the Attach button is the paperclip icon; image chips carry a
+        thumbnail; the message's own read-only attachment display is hidden while editing (attachments show once,
+        as the editable pills with trash icons); clickable chips get a hand cursor; message thumbnails keep their
+        aspect ratio and are large.  Clicking a message IMAGE opens it in a new tab via a blob: URL (data: URLs are
+        blocked for top-level navigation - the "Not allowed to navigate top frame to data URL" error); clicking a
+        text-file chip opens a viewer with its contents; Escape/backdrop close the viewer.  Attachment bytes are now
+        kept in the IndexedDB record, so reload no longer loses them (see store-full-attachments).
+      - DONE (live meta + guards): a streaming message's meta updates about once a second with an ESTIMATE of
+        tokens/rate/tool-calls/context (liveMeta in serve/web/app.js - token count from characters, ~4/word),
+        replaced by the exact usage figures when the turn ends; the Edit button is hidden while streaming (the row
+        gets a .streaming class, matching the copy button which was already hidden); and deleting a chat now asks
+        to confirm first (Undo is still offered for the session).
       - FIXED (bug reports from the human): "Edit entire" left the tool blocks on screen until a reload - the
         redraw now rebuilds the whole bubble, not incrementally; only one edit box at a time (clicking Edit on
         another post asks to discard, a second click on the same post is a no-op, and the editing row hides its
@@ -290,6 +321,14 @@ all: fold-control replaced them, and the four overlapping switches became one co
     computes them).
     Message-level identity is a prerequisite for any of this being safe: messages have no ids
     today, only array position and `time`. See item nvme-park.
+
+`edit-persist-across-chats`  Let an open edit survive switching chats (and a reload). [ui]
+    Today switching chats while editing prompts to discard (confirmDiscardEdit in serve/web/app.js) so the edit is
+    not silently lost.  The nicer behaviour: keep the edit box open per chat, so you can switch away and back and
+    the in-progress edit is still there.  That means storing the draft edit (text + attachments + thinking choice)
+    keyed by chat id - in memory for switching, and in the browser (localStorage/IndexedDB) so a reload restores
+    it, like the composer draft already does per chat.  Decide whether one edit per chat is enough or several.
+
 
 `queue-another-chat`  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
     The SERVER ALREADY DOES THIS: docs/BATCHING.md - "By default Strata serves one request

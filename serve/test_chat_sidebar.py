@@ -389,14 +389,17 @@ class ChatSidebar(unittest.TestCase):
     def test_turning_the_switch_off_keeps_the_chat_on_the_screen(self):
         # the single chat is written when the switch is flipped, otherwise a reload shows the chat from before it
         off_branch = self.body("setHistory").split("if (!on)")[1].split("return;")[0]
-        self.assertIn('store.set("chat", cleanMessages(messages))', off_branch)
+        self.assertIn('store.set("chat", cleanMessages(messages, false))', off_branch)
         self.assertIn("renderChat()", off_branch)
 
-    def test_pictures_and_files_are_kept_as_names_only(self):
+    def test_attachment_bytes_are_kept_in_the_record_but_not_localstorage(self):
+        # the IndexedDB record keeps image data URLs and file text so a reloaded post can still show and open its
+        # attachments (todo #edit-posts / store-full-attachments); the localStorage single-chat path strips them,
+        # because localStorage is capped around 5 MB and a data URL there could blow it.
         clean = re.search(r"const cleanMessages = .*?;\n", self.js, re.S).group(0)
-        self.assertIn("map((i) => ({name: i.name}))", clean)
-        self.assertIn("map((f) => ({name: f.name}))", clean)
-        self.assertNotIn("url", clean)                                    # a data URL would fill the browser's storage
+        self.assertIn("keepBytes ? {name: i.name, url: i.url} : {name: i.name}", clean)
+        self.assertIn("keepBytes ? {name: f.name, text: f.text} : {name: f.name}", clean)
+        self.assertIn("cleanMessages(messages, false)", self.body("setHistory"))   # the single-chat save strips
 
     def test_the_search_and_the_day_groups(self):
         render = self.body("renderSidebar")
