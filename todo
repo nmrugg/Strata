@@ -236,8 +236,18 @@ all: fold-control replaced them, and the four overlapping switches became one co
     (assistantMessages, and serve/server.py:4470-4481 on why they must match). An import
     that loses them re-creates the re-read bug. Round-trip those or refuse the import.
 
-`edit-posts`  Edit and delete posts in a conversation, mine and the model's. [ui] [py]
-    Chat-level rename and delete exist (renameChat, deleteChat); message-level do not.
+`edit-posts`  Edit and delete posts in a conversation, mine and the model's. [ui] [py] PARTLY DONE 2026-10-24
+    PROGRESS (built in increments, decided with the human 2026-10-24):
+      - DONE (increment 1): message ids (mid(), backfilled on load, identity only - never sent, so the replay is
+        untouched); an Edit button on each post (openEditBox, an inline textarea); Save edits the text in place and
+        keeps every message below it (the "edit only, do not resubmit" path); Cancel/Escape confirm only when the
+        text changed; a turn that made tool calls is LOCKED (canEditMsg) because its rounds are offsets into its own
+        text (at/rat) and editing that breaks the replay.
+      - TODO: Submit on a user post (delete all messages after it, then resend - inline re-read warning); an Attach
+        button and remove-attachment in the edit box (user posts only); the tool-call assistant modal (Edit entire +
+        drop tool calls / Edit final output only / Cancel) to unlock editing those; delete-a-post.
+      - Assistant posts: Save only (no Submit, no attach).  User posts: Save + Submit + attach.
+    Chat-level rename and delete exist (renameChat, deleteChat); message-level delete does not yet.
     Straightforward to build. See item edit-no-reread for the cost.
     The delete wants a modal, not a confirm(): "delete this message", a warning that it
     cannot be undone and that the conversation must be re-read (until item edit-no-reread lands), and a

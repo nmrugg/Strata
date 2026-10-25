@@ -678,6 +678,10 @@ function newChat() {
   return {id: `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
           title: "", time: Date.now(), messages: []};
 }
+// a message's own id (todo #edit-posts): editing/deleting a post needs stable identity, not array position,
+// which shifts under concurrency (item multi-tab-sync).  It is identity only - the prompt replay
+// (apiMessages/assistantMessages) never sends it, so the engine's cached prefix is untouched.
+const mid = () => `m${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 // the name in the list: what the user called it, else the first line of their first question
 function chatTitle(c) {
   if (c.title) return c.title;
@@ -769,6 +773,8 @@ async function openHistory(fromScreen) {
   // a tool block's open/closed click is display state, not conversation, and an older page saved it with the
   // chat (see dropToolOpen).  Stripped where the records arrive, in place: the array from getAll is ours.
   for (const c of chats) c.messages = dropToolOpen(c.messages || []);
+  // records written before message ids existed get one on load (identity only; never sent to the server)
+  for (const c of chats) for (const m of c.messages) if (!m.id) m.id = mid();
   if (!chats.length) {
     const old = fromScreen ? messages : dropToolOpen(store.get("chat", []));   // the single chat from before the sidebar
     if (old.length) {
@@ -1036,6 +1042,42 @@ $("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute(
 const msgMd = (m) => (m.md === undefined ? (m.role === "user" ? settings.mdmine === true : settings.mdtheirs !== false) : !!m.md);
 const mdBtn = (m) => `<button class="st-btn st-btn--md" data-md-toggle role="switch" aria-checked="${msgMd(m)}"` +
   ` title="Render this message as markdown (${msgMd(m) ? "on" : "off"})">md</button>`;
+// editing a post (todo #edit-posts).  A turn that made tool calls is locked for now: its rounds are stored as
+// offsets into its own text (at/rat) and editing that text breaks the replay - the tool-call edit modal is a
+// later increment.  So Edit is offered for user posts and for plain (no-tool) answers.
+const canEditMsg = (m) => m.role === "user" || !(m.tools && m.tools.length);
+const editBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-edit aria-label="Edit this message"` +
+  ` title="${canEditMsg(m) ? "Edit" : "Editing a turn with tool calls is coming soon"}"${canEditMsg(m) ? "" : " disabled"}>${icon("edit")}</button>`;
+// the inline edit box (todo #edit-posts).  Increment 1: Save edits the post's text in place and keeps every
+// message below it (the "edit only, do not resubmit" path).  Submit (delete-after-and-resend), attach/remove, and
+// the tool-call modal come in later increments.  Cancel/Escape confirm only when the text actually changed.
+function openEditBox(el, m) {
+  const bubble = el.querySelector(".st-bubble");
+  if (bubble) bubble.hidden = true;
+  const form = node("div", "msg-edit");
+  const ta = document.createElement("textarea");
+  ta.className = "st-input msg-edit__ta"; ta.value = m.text || ""; ta.setAttribute("aria-label", "Edit message");
+  const bar = node("div", "msg-edit__bar");
+  const save = node("button", "st-btn st-btn--primary", "Save"); save.type = "button";
+  const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button";
+  // close() uses the closure's own form/bubble, not a re-query: reopening a box replaces the node, and a
+  // querySelector (or the harness's cached one) could grab the wrong one.
+  const close = () => { form.remove(); if (bubble) { bubble.hidden = false; redrawBubble(el, m, bubble); } };
+  save.onclick = () => { const t = ta.value.trim(); if (!t) return; m.text = t; close(); saveChat(); };
+  cancel.onclick = () => { if (ta.value.trim() !== (m.text || "") && !confirm("Discard your changes?")) return; close(); };
+  bar.appendChild(save); bar.appendChild(cancel);
+  form.appendChild(ta); form.appendChild(bar);
+  el.appendChild(form);
+  ta.focus();
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); cancel.onclick(); }
+    else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save.onclick(); }
+  });
+}
+function redrawBubble(el, m, bubble) {
+  if (m.role === "user") { if (msgMd(m)) bubble.innerHTML = markdown(m.text || ""); else bubble.textContent = m.text; }
+  else updateAssistant(el, m, false);
+}
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -1073,7 +1115,7 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.innerHTML = `<span class="meta-text"></span>${mdBtn(m)}`;
+    meta.innerHTML = `<span class="meta-text"></span>${editBtn(m)}${mdBtn(m)}`;
     meta.querySelector(".meta-text").textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
@@ -1082,7 +1124,7 @@ function msgEl(m, i) {
     el.innerHTML = `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
       `<span class="ctx-pct" hidden></span>` +
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer"` +
-      ` title="Copy the answer - Shift: with the thinking, Ctrl+Shift: everything including the tool calls">${icon("copy")}</button>${mdBtn(m)}</div>`;
+      ` title="Copy the answer - Shift: with the thinking, Ctrl+Shift: everything including the tool calls">${icon("copy")}</button>${editBtn(m)}${mdBtn(m)}</div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -1495,6 +1537,13 @@ $("chat").addEventListener("click", (e) => {
     if (!busy) saveChat();                              // the choice belongs to the chat, not to this page load
     return;
   }
+  const me = e.target.closest("[data-msg-edit]");
+  if (me) {
+    if (busy) return;                                   // no editing while a turn runs
+    const el = me.closest(".st-msg"), m = messages[+el.dataset.i];
+    if (m && canEditMsg(m)) openEditBox(el, m);
+    return;
+  }
   // tool blocks are not opened here: a click handler that prevented the default and asked for a rebuild lost the
   // click whenever the rebuild replaced the node between mousedown and mouseup, which is most of the time while
   // the answer streams.  The browser opens them; the toggle listener below remembers it.
@@ -1603,14 +1652,14 @@ async function send() {
   const text = $("input").value.trim();
   if ((!text && !attachments.length) || busy) return;
   const key = draftKey();                    // taken before the message lands: a blank chat is keyed differently
-  messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
+  messages.push({id: mid(), role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
   renderAttachments();
   $("input").value = "";
   autosize();
   store.set(key, "");                                          // sent: that draft is spent
-  const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
+  const m = {id: mid(), role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
   renderChat();
   const controller = new AbortController();

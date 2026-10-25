@@ -1947,5 +1947,54 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(cr.s.chatMenu, "clicking the button again is not treated as an outside click");
   done.push("chat row menu: one overflow opens a body-level popover; Rename/Duplicate/Export/Delete wired; Escape and outside-click close");
 
+  // 56. editing a post (todo #edit-posts, increment 1: edit-only Save).  An Edit button on a message opens an
+  // inline box; Save rewrites the post's text and keeps every message below it.  A turn that made tool calls is
+  // locked (its rounds are offsets into its own text; the modal comes in a later increment).  Cancel/Escape
+  // confirm only when the text actually changed - matching how rename already behaves.
+  const ep56 = run({}, {});
+  await wait();
+  const um56 = {id: "u1", role: "user", text: "the original question", time: Date.now()};
+  const am56 = {id: "a1", role: "assistant", text: "the answer", reasoning: "", time: Date.now()};
+  const tm56 = {id: "a2", role: "assistant", text: "used a tool", reasoning: "", time: Date.now(),
+              tools: [{id: "t1", name: "x", state: "done", at: 10, rat: 0, result: "r", round: 0}]};
+  ep56.s.messages.push(um56, am56, tm56);
+  const uel56 = ep56.s.msgEl(um56, 0), tel56 = ep56.s.msgEl(tm56, 2);
+  ep56.s.el("chat").appendChild(uel56); ep56.s.el("chat").appendChild(ep56.s.msgEl(am56, 1)); ep56.s.el("chat").appendChild(tel56);
+  // a fake Edit-button click: closest("[data-msg-edit]") returns itself so .closest(".st-msg") still works
+  const editTarget = (row) => { const o = {closest: (s) => s === "[data-msg-edit]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  const clickEdit = (row) => ep56.s.el("chat")._l["click"]({target: editTarget(row)});
+  const box56 = (row) => row.children.find((c) => (c.className || "").includes("msg-edit"));   // live children, not the querySelector cache (a reopened box replaces it)
+  const taOf = (row) => box56(row).querySelector(".msg-edit__ta");
+  const btnOf = (row, i) => box56(row).querySelector(".msg-edit__bar").children[i];   // 0 Save, 1 Cancel
+
+  clickEdit(uel56);
+  assert.ok(box56(uel56) && uel56.children.includes(box56(uel56)), "Edit opens an inline box in the post's row");
+  assert.strictEqual(taOf(uel56).value, "the original question", "the box starts with the post's text");
+  taOf(uel56).value = "the edited question";
+  btnOf(uel56, 0).onclick();                              // Save
+  assert.strictEqual(um56.text, "the edited question", "Save rewrote the post");
+  assert.strictEqual(am56.text, "the answer", "the answer below it is untouched - edit only, nothing deleted");
+  assert.ok(!uel56.children.some((c) => (c.className || "").includes("msg-edit")), "the box closed");
+
+  // Cancel with changed text asks first; refusing keeps the box, accepting discards the edit
+  clickEdit(uel56); taOf(uel56).value = "a discarded edit";
+  ep56.confirmAnswer.yes = false;
+  btnOf(uel56, 1).onclick();                              // Cancel -> refused
+  assert.strictEqual(ep56.confirms.length, 1, "Cancel with changed text asks first");
+  assert.strictEqual(um56.text, "the edited question", "refusing left the text as it was");
+  ep56.confirmAnswer.yes = true;
+  btnOf(uel56, 1).onclick();                              // Cancel -> accepted
+  assert.strictEqual(ep56.confirms.length, 2, "it asked again");
+  assert.strictEqual(um56.text, "the edited question", "accepting discarded the new edit");
+  assert.ok(!uel56.children.some((c) => (c.className || "").includes("msg-edit")), "and the box closed");
+  // Cancel with nothing changed does not ask (silent close)
+  const cB56 = ep56.confirms.length;
+  clickEdit(uel56); btnOf(uel56, 1).onclick();
+  assert.strictEqual(ep56.confirms.length, cB56, "Cancel with nothing changed asks nothing");
+  // a tool-call turn is locked: Edit opens no box
+  clickEdit(tel56);
+  assert.ok(!tel56.children.some((c) => (c.className || "").includes("msg-edit")), "a turn with tool calls cannot be edited yet");
+  done.push("edit-posts increment 1: Edit opens an inline box; Save rewrites the post and keeps everything below; Cancel confirms only if changed; tool-call turns locked");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
