@@ -543,7 +543,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   th.s.setSettings({show: "always"});
   done1 = thinkMsg({role: "assistant", text: "the answer", reasoning: "why it answered", time: Date.now()});
   assert.strictEqual(detOf(done1).open, true, "always: it is open, answer already written");
-  assert.strictEqual(detOf(done1).querySelector(".thinking").textContent, "why it answered", "and its text is filled in");
+  assert.ok((detOf(done1).querySelector(".thinking")._html || "").includes("why it answered"), "and its text is filled in (as markdown)");
   const live = {role: "assistant", text: "", reasoning: "still going", time: Date.now()};
   const liveEl = th.s.msgEl(live, 0);
   th.s.updateAssistant(liveEl, live, true);
@@ -910,7 +910,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const ob = detOf(oel).querySelector(".thinking");
   ob.clientHeight = 20; ob.scrollHeight = 900; ob.scrollTop = 500;
   o.s.updateAssistant(oel, om, false);
-  assert.strictEqual(ob.textContent, "what it thought", "a finished block is filled in");
+  assert.ok((ob._html || "").includes("what it thought"), "a finished block is filled in (as markdown)");
   assert.strictEqual(ob.scrollTop, 500, "and is not dragged to the bottom");
   done.push("thinking: auto-scroll follows only when you were already at the bottom of it");
 
@@ -1017,10 +1017,10 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                      "the run that streamed is still readable on the collapsed line");
   assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "", "the run that never streamed is empty");
   gb._blocks[0].el.open = true;                                // a real details fires the toggle event itself
-  assert.strictEqual(gb._blocks[0].el.querySelector(".thinking").textContent, "first thought",
-                     "opening the first fills it with its own slice");
+  assert.ok((gb._blocks[0].el.querySelector(".thinking")._html || "").includes("first thought"),
+                     "opening the first fills it with its own slice (as markdown)");
   gb._blocks[1].el.open = true;
-  assert.strictEqual(gb._blocks[1].el.querySelector(".thinking").textContent, "\n\nsecond thought",
+  assert.ok((gb._blocks[1].el.querySelector(".thinking")._html || "").includes("second thought"),
                      "and it fills with only that run's slice, not the whole reasoning");
   // a run's seconds are stamped only when the NEXT run starts, so the title has to catch up on a later paint
   gm.tools[0].tsec = 4.2;
@@ -2414,6 +2414,24 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await acc.s.poll();                 // NEW round: generated reset to 3 -> accumulate, not reset
   assert.strictEqual(acc.s.busy.msg._gen, 18, "a new round accumulates (15 + 3), it does not drop to 3 or 0");
   done.push("edit-posts: the live token count accumulates across MCP rounds (does not reset when a new round starts)");
+
+  // 72. thinking renders as markdown once settled (escaped first, safe), and the thinking block's own md toggle
+  // switches it back to plain text (todo #thinking-markdown).
+  const thk = run({}, {});
+  await wait();
+  thk.s.setSettings({show: "always"});                          // open the thinking block so its body renders
+  const thkMsg = {id: "tm", role: "assistant", text: "answer", reasoning: "**bold** and `code` thought", time: Date.now()};
+  thk.s.messages.push(thkMsg);
+  const tel72 = thk.s.msgEl(thkMsg, 0); thk.s.el("chat").appendChild(tel72);
+  const thinkEl = () => tel72.querySelector(".st-bubble")._blocks[0].el;
+  assert.ok((thinkEl().querySelector(".thinking")._html || "").includes("<strong>bold</strong>"), "settled thinking renders markdown");
+  assert.ok((thinkEl().querySelector(".thinking")._html || "").includes('<code class="inline">code</code>'), "and inline code");
+  const mdBtn72 = thinkEl().querySelector("[data-think-md]");
+  assert.ok(mdBtn72, "the thinking block has an md toggle");
+  thk.s.el("chat")._l["click"]({target: {closest: (s) => s === "[data-think-md]" ? mdBtn72 : (s === ".st-msg" ? tel72 : null)}, preventDefault() {}});
+  assert.strictEqual(thkMsg.mdthink, false, "the toggle turns thinking markdown off");
+  assert.strictEqual(thinkEl().querySelector(".thinking").textContent, "**bold** and `code` thought", "off -> plain text, exactly as written");
+  done.push("thinking-markdown: settled thinking renders as markdown (escaped); its md toggle switches to plain text");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

@@ -1524,6 +1524,7 @@ function addBlocks(host, p, blks) {
 const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summary>${icon("thinking", "st-icon st-icon--sm")}` +
   `<span class="think-title"></span><span class="think-preview muted"></span>` +
   `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+  `<button class="st-btn st-btn--md st-think-md" data-think-md role="switch" aria-label="Render this thinking as markdown">md</button>` +
   `<div class="st-collapse__body thinking"></div></details>`;
 // one line of a thinking run for the collapsed summary, the way a tool block previews its result.  The first
 // 200 characters are taken and CSS ellipsises what does not fit, so the line never wraps.
@@ -1539,6 +1540,12 @@ const thinkPreview = (t) => t.replace(/\s+/g, " ").trim().slice(0, 200);
 // "Done" for a thought is not "it is the last run": while a tool round runs thinkRuns still reports one run,
 // so that rule would hold the thought open through the whole call.  Two signals say it is over - p.cut, a call
 // starting exactly where the run ends, and p.tstart, answer text grown past where the run began.
+// render a thinking body: markdown (escaped) when md is on and the run has settled, plain text otherwise
+// (streaming or md off) so the growing block is not re-parsed every frame (todo #thinking-markdown).
+const renderThinkBody = (body, text, mdOn) => {
+  if (mdOn) { body.classList.add("md"); body.innerHTML = markdown(text); }
+  else { body.classList.remove("md"); body.textContent = text; }
+};
 function syncThink(det, m, p, streaming) {           // det IS the details: querySelector looks at descendants only
   const thinkingNow = streaming && p.i === p.runs - 1 && !m.text;
   const text = (m.reasoning || "").slice(p.from, p.to);
@@ -1553,8 +1560,11 @@ function syncThink(det, m, p, streaming) {           // det IS the details: quer
   if (det.dataset.touched !== "1" && det.open !== wantOpen) { det._auto = true; det.open = wantOpen; }
   const body = det.querySelector(".thinking");
   const follow = streaming && p.i === p.runs - 1 && nearEnd(body, 48);   // only the live block follows its own text
+  const mdOn = m.mdthink !== false;
+  const mdb = det.querySelector("[data-think-md]");
+  if (mdb) { mdb.setAttribute("aria-checked", String(mdOn)); mdb.title = `Render this thinking as markdown (${mdOn ? "on" : "off"})`; }
   if (det.open || thinkingNow) {
-    body.textContent = text;
+    renderThinkBody(body, text, mdOn && !thinkingNow);   // markdown once settled; plain while it streams
     if (follow) body.scrollTop = body.scrollHeight;
   } else body.dataset.pending = "1";
   det.hidden = !text;
@@ -1787,6 +1797,12 @@ $("chat").addEventListener("click", (e) => {
     if (!busy) saveChat();                              // the choice belongs to the chat, not to this page load
     return;
   }
+  const tmd = e.target.closest("[data-think-md]");
+  if (tmd) {
+    const el = tmd.closest(".st-msg"), m = messages[+el.dataset.i];
+    if (m) { m.mdthink = m.mdthink === false; renderBubble(el, m, !!busy && busy.msg === m); if (!busy) saveChat(); }
+    return;
+  }
   const me = e.target.closest("[data-msg-edit]");
   if (me) {
     if (busy) { toast("info", "Can't edit yet", "Stop the answer first."); return; }   // editing mid-turn would fight the stream
@@ -1837,7 +1853,7 @@ $("chat").addEventListener("toggle", (e) => {
   if (d.open && body.dataset.pending) {              // a block that was closed while it streamed fills on opening
     const el = d.closest(".st-msg"), m = messages[+el.dataset.i];
     const p = (el.querySelector(".st-bubble")._blocks || []).find((x) => x.i === +d.dataset.think);
-    if (p && m) body.textContent = (m.reasoning || "").slice(p.from, p.to);
+    if (p && m) renderThinkBody(body, (m.reasoning || "").slice(p.from, p.to), m.mdthink !== false && !(busy && busy.msg === m));
     delete body.dataset.pending;
   }
 }, true);

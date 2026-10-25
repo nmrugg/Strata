@@ -235,6 +235,14 @@ all: fold-control replaced them, and the four overlapping switches became one co
     handled, default text.  Text extraction needs a PDF reader; page-as-image needs rendering + the vision path,
     and the model must support images.  Decide where the work lives (front end vs server) before building.
 
+
+`thinking-markdown`  Render thinking as markdown, with a per-block toggle. [ui] DONE 2026-10-24
+    Thinking bodies were plain textContent (no markdown, no toggle).  Now a SETTLED thinking block renders as
+    markdown (escaped first, safe) via renderThinkBody; while it is the live streaming run it stays plain text so
+    the growing block is not re-parsed every frame and does not flicker.  Each thinking block has an "md" toggle
+    (m.mdthink, default on) - a button that is a direct child of the <details> (not the summary), so clicking it
+    never toggles the block open/closed.  The body carries a .md class so markdown drops pre-wrap spacing.
+
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
 `trim-tool-results`  Trim long tool calls before they reach the DOM. [py] [ui] - decide the policy first
