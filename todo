@@ -133,7 +133,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     It is a moderate change (a scroll listener + reordering the turn-end logic), not a one-liner - which is why it
     was parked for poll-on-enter.
 
-`chat-row-menu`  A three-dot menu on each chat row: Rename, Copy, Export, Delete. [ui]
+`chat-row-menu`  A three-dot menu on each chat row: Rename, Copy, Export, Delete. [ui] DONE 2026-10-24
     Replaces the two hover buttons (`.chat-item__actions`, app.css) with one overflow button
     that opens a menu.
     Cheap parts: Rename and Delete already exist (renameChat, deleteChat) and just move into
