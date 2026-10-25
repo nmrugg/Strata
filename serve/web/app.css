@@ -114,6 +114,15 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-msg.editing [data-msg-edit] { display: none; }
 /* no Edit button on a message that is still streaming - editing mid-turn would fight the stream (todo #edit-posts) */
 .st-msg.streaming [data-msg-edit] { display: none; }
+/* same for Delete: no deleting a live turn, or a post that is open in an edit box */
+.st-msg.streaming [data-msg-delete], .st-msg.editing [data-msg-delete] { display: none; }
+/* the delete-a-post modal (todo #edit-posts) */
+.msg-del__title { margin: 0; font: 600 var(--st-fs-base) var(--st-font); color: var(--st-ink); }
+.msg-del__quote { margin: 0; padding: 8px 10px; background: var(--st-surface-2); border-left: 3px solid var(--st-line);
+                  border-radius: 4px; color: var(--st-ink-soft); font-size: var(--st-fs-sm); max-height: 6em; overflow: hidden; }
+.msg-del__below { display: flex; align-items: center; gap: 6px; font: 500 var(--st-fs-sm) var(--st-font); color: var(--st-ink); cursor: pointer; }
+.msg-del__warn { margin: 0; font-size: var(--st-fs-xs); color: var(--st-warn-text); }
+.msg-del .st-btn--primary { background: var(--st-danger); border-color: var(--st-danger); color: #fff; }
 /* while editing, the message's own read-only attachment display is replaced by the editable chips in the box,
    so the attachments appear once (with trash icons), not twice (todo #edit-posts) */
 .st-msg.editing .msg-images { display: none; }

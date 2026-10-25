@@ -282,7 +282,26 @@ all: fold-control replaced them, and the four overlapping switches became one co
         popover, like the row menu) with "Edit final output only" (keeps the tool rounds and their at/rat offsets,
         edits only the text after the last call), "Edit entire (drops its tool calls)" (replaces the text, clears
         m.tools), or Cancel.  The Edit button is now offered on every post.
-      - TODO: delete-a-post; the inline re-read warning on Submit; keyboard consolidation (see configurable-send-keys).
+      - TODO: the inline re-read warning on Submit; keyboard consolidation (see configurable-send-keys).
+      - DONE (delete-a-post): a Delete button on every post opens a modal (not a bare confirm) with a "delete all
+        messages below" checkbox - default ON (truncate at that message, the safe case), or OFF to remove just that
+        one (leaves the turns after it).  It warns the action is undoable only for the session and will re-read the
+        conversation from there (~N tokens).  Blocked while a turn runs, and it discards an open edit first.
+      - FIXED (streaming + submit polish): tool calls count in the live meta as soon as they start (not only after
+        they finish); the meta row stays visible during a turn so stats show while thinking, not only once output
+        arrives; the new turn's row is marked .streaming immediately so the Edit button never flickers; and Submit
+        now opens a resend-confirm modal (confirmResend) like delete - it drops everything after the edited post
+        and re-reads, so it should not fire on a stray click.
+      - FIXED (context accuracy): the poll's live prompt/generated figures are `null` between MCP rounds (shown=
+        false when idle), so the message's context collapsed to ~0 in those gaps.  poll() now HOLDS the last
+        non-null figures across the gaps (lastLive merge), send() resets them per turn, and liveMeta uses the
+        exact `generated` (not a character estimate) so the count no longer jumps at the end.  A stopped turn now
+        keeps its token count (from the held live figures) instead of just "Stopped".  The final context is exact
+        (from the usage chunk) so it drops the "~"; only the live estimate keeps the "~".
+      - FIXED (the "back to 0 tokens" bug): the poll's `generated` counts the CURRENT round only and resets to 0
+        when a new round starts after a tool call, so the live count dropped each round.  noteLive() now
+        accumulates it across rounds (m._gen, resetting the round baseline when `generated` falls), so the token
+        count climbs monotonically for the whole turn.
       - DONE (attachments in the edit box): editing a user post lists its images/files as removable chips plus an
         Attach button (a paperclip, like the composer's; reuses addFiles/renderAttachments with a per-box list).
         Removing and saving updates the post.  Caveat: a reloaded post's attachments are stored name-only, so they

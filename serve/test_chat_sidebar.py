@@ -170,7 +170,7 @@ class ChatSidebar(unittest.TestCase):
         upd = self.body("updateAssistant")
         self.assertIn("const hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error;", upd)
         self.assertIn("bubble.hidden = !hasOutput && !m.reasoning;", upd)
-        self.assertIn('el.querySelector(".st-msg__meta").hidden = !hasOutput && streaming;', upd)
+        self.assertIn('el.querySelector(".st-msg__meta").hidden = false;', upd)   # stays visible during a turn so live stats show (todo #edit-posts)
         # thinking lives inside the bubble now (todo #think-per-round), so a thinking-only message keeps the element and
         # drops its chrome instead of hiding it - hiding the bubble would hide the thinking with it
         self.assertIn('bubble.classList.add("thinking-only")', upd)

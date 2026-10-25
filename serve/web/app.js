@@ -61,11 +61,10 @@ async function copyText(text, btn, title = "Copied to clipboard") {
 function setTheme(t, save) {
   document.documentElement.dataset.theme = t;
   if (save) try { localStorage.setItem("strata.theme", t); } catch (e) { /* ignore */ }
-  $("theme-icon").setAttribute("href", `${SPRITE}#i-${t === "dark" ? "sun" : "moon"}`);
+  const ti = $("theme-icon"); if (ti) ti.setAttribute("href", `${SPRITE}#i-${t === "dark" ? "sun" : "moon"}`);   // the header toggle is gone; the About/Info switch reflects the state
   $("dark-toggle").setAttribute("aria-checked", String(t === "dark"));
 }
 const flipTheme = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
-$("theme-btn").onclick = flipTheme;
 $("dark-toggle").onclick = flipTheme;
 setTheme(document.documentElement.dataset.theme || "light", false);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
@@ -155,6 +154,7 @@ function setMetric(key, value, unit, sub) {
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
+let lastLive = null;   // the running request's live metrics from the poll (prompt_tokens, generated) - used for the message's live context (todo #edit-posts)
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
 // todo #metrics-lite: /metrics is 7,317 bytes and the Chat tab shows none of it but the header pill, which reads about
 // 256 bytes of it.  So: ask for ?lite=1 off the Monitor and About tabs, and go quiet when nothing is happening
@@ -212,10 +212,14 @@ async function poll() {
     const r = await fetch(pollUrl(), {headers: headers()});
     if (r.status === 401) {
       setPill("error", "API key needed");
-      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
+      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under Info > Settings.", 6000); }
     } else if (r.ok) {
       const m = await r.json();
       metricsFailures = 0;
+      // hold the live figures across the gaps between MCP rounds, where the server reports them as null
+      // (shown=false when idle between rounds) - otherwise the message's context collapses to ~0 in those windows.
+      if (m.live) lastLive = Object.assign({}, lastLive, Object.fromEntries(Object.entries(m.live).filter(([, v]) => v != null)));
+      noteLive();                                    // accumulate the turn's output across MCP rounds (todo #edit-posts)
       // a lite answer has no sparklines, request table or cache in it: paint what it does carry, and merge it
       // into the last full answer so a switch to the Monitor paints at once
       if (m.lite) { lastMetrics = {...(lastMetrics || {}), ...m}; renderLite(m); }
@@ -347,11 +351,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
-  setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
+  setMetric("speed", speed ? fmt(speed, 1) : null, "t/s",     // a 0 speed means "nothing yet" -> show "-", not "0"
             live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
   const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
                 : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
-  setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
+  setMetric("prefill", prefill ? fmt(prefill) : null, "t/s",   // a 0 prefill rate means "nothing yet" -> show "-"
             live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
@@ -1090,7 +1094,7 @@ document.addEventListener("click", (e) => {
   if (activePopover && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]") &&
       !e.target.closest("[data-msg-edit]")) closePopover();
 });
-document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
+document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
 
 // the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
 function setHistory(on, save, fromScreen) {
@@ -1115,6 +1119,7 @@ const mdBtn = (m) => `<button class="st-btn st-btn--md" data-md-toggle role="swi
 // (openEditModeMenu) because its rounds are offsets into its own text (at/rat) and editing the whole text would
 // break the replay - so it offers "edit final output only" (rounds kept) or "edit entire" (rounds dropped).
 const editBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-edit aria-label="Edit this message" title="Edit">${icon("edit")}</button>`;
+const delBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-delete aria-label="Delete this message" title="Delete">${icon("trash")}</button>`;
 // only one edit box at a time (todo #edit-posts): opening another asks to discard the current one, and the
 // editing row hides its own Edit button so it cannot be pressed twice.
 let activeEdit = null;
@@ -1196,7 +1201,7 @@ function openEditBox(el, m, mode) {
   // posts get Save only - there is nothing to resend them as.
   if (m.role === "user") {
     const submit = node("button", "st-btn st-btn--primary", "Submit"); submit.type = "button";
-    submit.onclick = () => { if (!apply()) return; close(); send(m); };
+    submit.onclick = () => { if (!apply()) return; close(); confirmResend(m, messages.indexOf(m)); };
     bar.appendChild(submit);
   }
   bar.appendChild(cancel);
@@ -1227,6 +1232,60 @@ function confirmDiscardEdit() {
   if (!confirm("Discard the edit you are working on?")) return false;
   activeEdit.close();
   return true;
+}
+// delete a post (todo #edit-posts): a modal, not a bare confirm - a "delete all messages below" checkbox (default
+// on, the safe case), and a warning that it removes ~N tokens and the conversation re-reads from here.  Deleting
+// one message alone (checkbox off) leaves the turns after it, which is why "below" is the default.
+let msgModal = null;
+function closeModal() { if (msgModal) msgModal.remove(); msgModal = null; }
+const deletePostTokens = (index, below) =>
+  Math.round((below ? messages.slice(index) : [messages[index]])
+    .reduce((s, x) => s + (x.text || "").length + (x.reasoning || "").length, 0) / 4);
+function openDeletePostModal(m, index) {
+  closeModal();
+  const back = node("div", "att-viewer");
+  back.onclick = (e) => { if (e.target === back) closeModal(); };
+  const panel = node("div", "att-viewer__panel msg-del");
+  panel.appendChild(node("h3", "msg-del__title", "Delete this message?"));
+  panel.appendChild(node("div", "msg-del__quote", (m.text || "").trim().slice(0, 160) || "(empty)"));
+  const lbl = node("label", "msg-del__below");
+  const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = true;
+  lbl.appendChild(cb); lbl.appendChild(document.createTextNode(" Delete all messages below this one")); lbl._cb = cb;
+  panel.appendChild(lbl);
+  const warn = node("p", "msg-del__warn");
+  const updateWarn = () => { warn.textContent = `This cannot be undone. It removes about ${fmt(deletePostTokens(index, cb.checked))} tokens, and the conversation will be re-read from here.`; };
+  cb.addEventListener("change", updateWarn); updateWarn();
+  panel.appendChild(warn);
+  const bar = node("div", "msg-edit__bar");
+  const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button"; cancel.onclick = closeModal;
+  const del = node("button", "st-btn st-btn--primary", "Delete"); del.type = "button";
+  del.onclick = () => { const below = cb.checked; closeModal(); messages.splice(index, below ? messages.length - index : 1); saveChat(); renderChat(); };
+  bar.appendChild(cancel); bar.appendChild(del);
+  panel.appendChild(bar);
+  back.appendChild(panel);
+  document.body.appendChild(back);
+  msgModal = back;
+}
+// resubmitting an edited post (todo #edit-posts): confirm first, like delete - it drops every message after the
+// edited one and rebuilds the prompt from there (a re-read), so it should not fire on a stray click.
+function confirmResend(m, index) {
+  closeModal();
+  const back = node("div", "att-viewer");
+  back.onclick = (e) => { if (e.target === back) closeModal(); };
+  const panel = node("div", "att-viewer__panel msg-del");
+  panel.appendChild(node("h3", "msg-del__title", "Resend from this message?"));
+  panel.appendChild(node("div", "msg-del__quote", (m.text || "").trim().slice(0, 160) || "(empty)"));
+  const removed = messages.length - index - 1;
+  panel.appendChild(node("p", "msg-del__warn",
+    `This removes the ${removed} message${removed === 1 ? "" : "s"} after it and re-reads the conversation from here (about ${fmt(deletePostTokens(index, true))} tokens).`));
+  const bar = node("div", "msg-edit__bar");
+  const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button"; cancel.onclick = closeModal;
+  const go = node("button", "st-btn st-btn--primary", "Send"); go.type = "button"; go.onclick = () => { closeModal(); send(m); };
+  bar.appendChild(cancel); bar.appendChild(go);
+  panel.appendChild(bar);
+  back.appendChild(panel);
+  document.body.appendChild(back);
+  msgModal = back;
 }
 
 function msgEl(m, i) {
@@ -1266,7 +1325,7 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.innerHTML = `<span class="meta-text"></span>${editBtn(m)}${mdBtn(m)}`;
+    meta.innerHTML = `<span class="meta-text"></span>${editBtn(m)}${delBtn(m)}${mdBtn(m)}`;
     meta.querySelector(".meta-text").textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
@@ -1275,7 +1334,7 @@ function msgEl(m, i) {
     el.innerHTML = `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
       `<span class="ctx-pct" hidden></span>` +
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer"` +
-      ` title="Copy the answer - Shift: with the thinking, Ctrl+Shift: everything including the tool calls">${icon("copy")}</button>${editBtn(m)}${mdBtn(m)}</div>`;
+      ` title="Copy the answer - Shift: with the thinking, Ctrl+Shift: everything including the tool calls">${icon("copy")}</button>${editBtn(m)}${delBtn(m)}${mdBtn(m)}</div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -1618,20 +1677,34 @@ function ctxInfo(m) {
 // as the answer arrives.  These are estimates (token count from characters, ~4/word) - the exact figures come from
 // the usage chunk when the turn ends (ctxInfo).
 function liveMeta(m) {
+  // no stats until thinking or output actually starts (todo #edit-posts)
+  if (!(m.reasoning || "").length && !(m.text || "").length && !(m.tools || []).length) return "";   // no stats until thinking or output starts
+  // cumulative output for the WHOLE turn: the poll's `generated` is per-round and resets to 0 when a new round
+  // starts after a tool call, so noteLive accumulates it across rounds onto m._gen. Fall back to a character
+  // estimate before the poll has reported anything.
   const chars = (m.text || "").length + (m.reasoning || "").length;
-  const tokens = Math.round(chars / 4);
+  const gen = (m._gen != null) ? m._gen : Math.round(chars / 4);
   const secs = m.turnStart ? (Date.now() - m.turnStart) / 1000 : 0;
-  const rate = secs > 0.5 ? ` · ${fmt(tokens / secs, 1)} tok/s` : "";
-  const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
+  const rate = secs > 0.5 ? ` · ${fmt(gen / secs, 1)} tok/s` : "";
+  const ran = (m.tools || []).length;   // count tool calls as soon as they start, not only after they finish
   const calls = ran ? ` · ${ran} tool call${ran > 1 ? "s" : ""}` : "";
-  let ctx = "";
+  // context: the actual prompt size and output from the poll's live metrics (lastLive); "-" until we know.
+  let ctx = " (– context)";
   if (health.max_context) {
-    let prior = 0;
-    for (const x of messages) { if (x === m || x.role !== "user" && x.role !== "assistant") continue; prior += (x.text || "").length + (x.reasoning || "").length; }
-    const used = Math.round((prior + chars) / 4);
-    ctx = ` (~${Math.round(used / health.max_context * 100)}% context)`;
+    const used = ((lastLive && lastLive.prompt_tokens) || 0) + gen;
+    const pct = Math.round(used / health.max_context * 100);
+    if (pct > 0) ctx = ` (~${pct}% context)`;
   }
-  return `${fmt(tokens)} tokens${rate}${calls}${ctx}`;
+  return `${fmt(gen)} tokens${rate}${calls}${ctx}`;
+}
+// accumulate the turn's output across MCP rounds: `generated` counts the current round only and drops when a new
+// round starts, so add its growth and reset the round baseline when it falls (todo #edit-posts).
+function noteLive() {
+  if (!busy || !lastLive || lastLive.generated == null) return;
+  const m = busy.msg, g = lastLive.generated;
+  if (m._roundGen == null) { m._roundGen = g; m._gen = g; }
+  else if (g >= m._roundGen) { m._gen += g - m._roundGen; m._roundGen = g; }   // same round, more output
+  else { m._gen += g; m._roundGen = g; }                                       // new round: generated reset
 }
 function updateAssistant(el, m, streaming) {
   renderBubble(el, m, streaming);
@@ -1657,7 +1730,9 @@ function updateAssistant(el, m, streaming) {
   const hasOutput = !!m.text || !!(m.tools && m.tools.length) || !!m.error;
   bubble.hidden = !hasOutput && !m.reasoning;
   if (!hasOutput && m.reasoning) bubble.classList.add("thinking-only"); else bubble.classList.remove("thinking-only");
-  el.querySelector(".st-msg__meta").hidden = !hasOutput && streaming;
+  // the meta row stays visible during a streaming turn so the live stats (tokens/rate/context) show even while
+  // only thinking has arrived (todo #edit-posts); only a finished turn that produced nothing keeps a bare meta.
+  el.querySelector(".st-msg__meta").hidden = false;
 }
 function renderChat() {
   const chat = $("chat");
@@ -1724,6 +1799,14 @@ $("chat").addEventListener("click", (e) => {
     }
     if (m.role === "assistant" && m.tools && m.tools.length) openEditModeMenu(m, el, me);
     else openEditBox(el, m, "full");
+    return;
+  }
+  const md = e.target.closest("[data-msg-delete]");
+  if (md) {
+    if (busy) { toast("info", "Can't delete yet", "Stop the answer first."); return; }   // can't delete a live turn
+    if (!confirmDiscardEdit()) return;                                                    // don't delete under an open edit
+    const el = md.closest(".st-msg"), i = +el.dataset.i, m = messages[i];
+    if (m) openDeletePostModal(m, i);
     return;
   }
   // tool blocks are not opened here: a click handler that prevented the default and asked for a rebuild lost the
@@ -1856,8 +1939,13 @@ async function send(editOf) {
   const m = {id: mid(), role: "assistant", text: "", reasoning: "", time: Date.now(), turnStart: Date.now()};
   messages.push(m);
   renderChat();
+  // mark the new turn's row streaming right away (Edit button hidden from the first frame, no flicker) and show a
+  // first live meta, so stats appear during thinking, not only once output arrives (todo #edit-posts).
+  const asstEl = rowOf(m);                            // look it up by index, not lastElementChild (that capture is unsafe - #switch-while-running)
+  if (asstEl) { asstEl.classList.add("streaming"); asstEl.querySelector(".meta-text").textContent = liveMeta(m); }
   const controller = new AbortController();
   busy = {controller, msg: m, chat, chatId};      // which conversation this turn belongs to, not which is open
+  lastLive = null;                                // new turn: drop the previous turn's held live figures
   setBusy(true);
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
@@ -1891,7 +1979,7 @@ async function send(editOf) {
     if (!r.ok) {
       let msg = `HTTP ${r.status}`;
       try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
-      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
+      if (r.status === 401) msg = "This server needs an API key: add it under Info > Settings.";
       throw new Error(msg);
     }
     const reader = r.body.getReader(), dec = new TextDecoder();
@@ -1953,7 +2041,12 @@ async function send(editOf) {
     m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
              (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
   } else if (m.stopped) {
-    m.meta = "Stopped";
+    // a stopped turn never gets a usage chunk; keep the held live figures so tokens/tok/s/context survive the
+    // stop instead of collapsing to just "Stopped" (todo #edit-posts).
+    const gen = (lastLive && lastLive.generated) || 0, prompt = (lastLive && lastLive.prompt_tokens) || 0;
+    const secs = m.turnStart ? (Date.now() - m.turnStart) / 1000 : 0;
+    m.meta = `Stopped · ${fmt(gen)} tokens${secs > 0.25 ? ` · ${fmt(gen / secs, 1)} tok/s` : ""}`;
+    if (prompt) m.usage = {prompt_tokens: prompt, completion_tokens: gen, prompt_tokens_details: {cached_tokens: (lastLive.reused || 0)}};
   }
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
   // a click on a tool block holds for the turn and no further (todo #click-not-persisted): the open choice is

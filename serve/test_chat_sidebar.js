@@ -206,7 +206,7 @@ function run(hooks, stored, seed) {
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, groupName, setHistory, startChat, openChat, " +
-    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
+    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
@@ -214,7 +214,7 @@ function run(hooks, stored, seed) {
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
-    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
                fetches, timers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
@@ -798,7 +798,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const cbul = cels.querySelector(".st-bubble");
   assert.ok(cbul.className.includes("thinking-only"), "thinking-only: the element exists (the thinking lives in it now)");
   assert.strictEqual(cbul.hidden, false, "...but it is not hidden, it has no chrome instead (app.css)");
-  assert.strictEqual(cels.querySelector(".st-msg__meta").hidden, true, "and no meta row while it is still thinking");
+  assert.strictEqual(cels.querySelector(".st-msg__meta").hidden, false, "the meta row stays visible while thinking, to show live stats (todo #edit-posts)");
   assert.strictEqual(cbul._sets, undefined, "nothing was ever written into the bubble: no placeholder");
   assert.ok(!cbul.className.includes("cursor"), "and no caret class on it");
   assert.strictEqual(detOf(cels).hidden, false, "the thinking block is what is visible");
@@ -2035,7 +2035,9 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.deepStrictEqual(bar57.children.map((b) => b.textContent), ["Save", "Submit", "Cancel"], "a user post's box has Save, Submit, Cancel");
   const f57 = (o) => "data: " + JSON.stringify(o) + "\n\n";
   q57.push(f57({choices: [{delta: {content: "the new answer"}}]}));
-  bar57.children[1].onclick();                                         // Submit
+  bar57.children[1].onclick();                                         // Submit -> resend-confirm modal
+  assert.ok(su.s.modalEl, "Submit asks to confirm before resending");
+  su.s.modalEl.children[0].querySelector(".msg-edit__bar").children[1].onclick();   // Send
   await wait();
   ctl57.step(); await wait(); su.flush();                              // the content frame
   ctl57.step(); await wait();                                          // end of stream
@@ -2285,11 +2287,14 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
          f66({choices: [{}], usage: {prompt_tokens: 100, completion_tokens: 12, total_tokens: 112, prompt_tokens_details: {cached_tokens: 50}}}));
   const run66 = lm66.s.send();
   await wait();
+  const row66a = lm66.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--assistant"));
+  assert.strictEqual(row66a.querySelector(".meta-text").textContent, "", "no stats before thinking/output starts");
   ctl66.step(); await wait(); lm66.flush();            // the content frame paints (live meta)
   const row66 = lm66.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--assistant"));
   assert.ok((row66.className || "").includes("streaming"), "the streaming row is marked (its Edit button is hidden by CSS)");
   const meta66 = row66.querySelector(".meta-text").textContent;
-  assert.ok(meta66.includes("tokens") && meta66.includes("context"), "the meta shows a live token/context estimate: " + meta66);
+  assert.ok(meta66.includes("tokens") && meta66.includes("– context"),
+            "tokens show once output starts; context is '-' until the poll reports the prompt: " + meta66);
   ctl66.step(); await wait(); lm66.flush();            // the usage frame
   ctl66.step(); await wait();                        // end of stream
   await run66;
@@ -2310,6 +2315,105 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   dc.s.deleteChat(dc.s.chats.find((c) => c.id === "B"));
   assert.ok(!dc.s.chats.some((c) => c.id === "B"), "accepting deletes it");
   done.push("edit-posts: streaming meta updates live (tokens/context) with the Edit button hidden until done; deleting a chat asks first");
+
+  // 68. deleting a post (todo #edit-posts): a modal with a "delete all below" checkbox (default on).  Delete-below
+  // truncates at that message; delete-one removes just that message; Cancel does nothing.
+  const delT68 = (row) => { const o = {closest: (s) => s === "[data-msg-delete]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  const seed3 = () => [{id: "a", role: "user", text: "first", time: Date.now()},
+                       {id: "b", role: "assistant", text: "answer", reasoning: "", time: Date.now()},
+                       {id: "c", role: "user", text: "second", time: Date.now()}];
+  const rowWith = (s, i) => s.el("chat").children.find((c) => +c.dataset.i === i);
+
+  const dA = run({}, {}); await wait();
+  const s3 = seed3(); dA.s.messages.push(...s3);
+  dA.s.el("chat").appendChild(dA.s.msgEl(s3[0], 0)); dA.s.el("chat").appendChild(dA.s.msgEl(s3[1], 1)); dA.s.el("chat").appendChild(dA.s.msgEl(s3[2], 2));
+  dA.s.el("chat")._l["click"]({target: delT68(rowWith(dA.s, 1))});                 // Delete on the assistant (index 1)
+  assert.ok(dA.s.modalEl, "Delete opens a modal");
+  const panelA = dA.s.modalEl.children[0];
+  assert.strictEqual(panelA.children.find((c) => (c.className || "").includes("msg-del__below"))._cb.checked, true, "'delete all below' is on by default");
+  panelA.querySelector(".msg-edit__bar").children[1].onclick();                    // Delete (bar: Cancel, Delete)
+  assert.strictEqual(dA.s.messages.length, 1, "delete-below truncated at the message (removed it and everything after)");
+  assert.strictEqual(dA.s.messages[0].id, "a", "the message before it remains");
+
+  const dB = run({}, {}); await wait();
+  const s3b = seed3(); dB.s.messages.push(...s3b);
+  dB.s.el("chat").appendChild(dB.s.msgEl(s3b[0], 0)); dB.s.el("chat").appendChild(dB.s.msgEl(s3b[1], 1)); dB.s.el("chat").appendChild(dB.s.msgEl(s3b[2], 2));
+  dB.s.el("chat")._l["click"]({target: delT68(rowWith(dB.s, 1))});
+  const panelB = dB.s.modalEl.children[0];
+  panelB.children.find((c) => (c.className || "").includes("msg-del__below"))._cb.checked = false;   // delete just this one
+  panelB.querySelector(".msg-edit__bar").children[1].onclick();                    // Delete
+  assert.strictEqual(dB.s.messages.length, 2, "delete-one removed only that message");
+  assert.deepStrictEqual(dB.s.messages.map((m) => m.id), ["a", "c"], "the neighbours remain");
+
+  const dC = run({}, {}); await wait();
+  const s3c = seed3(); dC.s.messages.push(...s3c);
+  dC.s.el("chat").appendChild(dC.s.msgEl(s3c[0], 0));
+  dC.s.el("chat")._l["click"]({target: delT68(rowWith(dC.s, 0))});
+  dC.s.modalEl.children[0].querySelector(".msg-edit__bar").children[0].onclick();  // Cancel
+  assert.strictEqual(dC.s.messages.length, 3, "Cancel deletes nothing");
+  assert.strictEqual(dC.s.modalEl, null, "and closes the modal");
+  done.push("edit-posts: Delete-a-post modal - 'delete all below' (default) truncates, delete-one removes just that message, Cancel does nothing");
+
+  // 69. the poll holds the live prompt/generated figures across the null gaps between MCP rounds, so a message's
+  // context does not collapse to 0 between rounds (todo #edit-posts).
+  let pollN69 = 0;
+  const hold = run({fetch: async (u) => {
+    if (String(u).startsWith("metrics")) { pollN69++;
+      return {ok: true, json: async () => pollN69 === 1 ? {live: {state: "generating", prompt_tokens: 5000, generated: 10}}
+                                                        : {live: {state: "idle", prompt_tokens: null, generated: null}}}; }
+    return {ok: true, json: async () => ({}), text: async () => ""};
+  }}, {});
+  await wait();
+  await hold.s.poll();
+  assert.strictEqual(hold.s.lastLive.prompt_tokens, 5000, "the first poll records the prompt size");
+  hold.timers.filter((t) => t.f).pop().f();          // the poll re-armed itself; run the (null) second poll
+  await wait();
+  assert.strictEqual(hold.s.lastLive.prompt_tokens, 5000, "a null round keeps the last known prompt (no collapse to 0)");
+  assert.strictEqual(hold.s.lastLive.generated, 10, "and the last known generated count");
+
+  // 70. stopping a turn keeps the token count, not just "Stopped" (todo #edit-posts).
+  const st = run({fetch: async (u) => {
+    if (u === "health") return {ok: true, json: async () => ({status: "ok", model: "strata", max_context: 8192, images: false, loaded: true})};
+    if (String(u).startsWith("v1/chat/completions")) return {ok: true, body: {getReader: () => ({n: 0, read() {
+      if (this.n === 0) { this.n++; return Promise.resolve({done: false, value: new TextEncoder().encode("data: " + JSON.stringify({choices: [{delta: {content: "partial answer"}}]}) + "\n\n")}); }
+      const e = new Error("aborted"); e.name = "AbortError"; return Promise.reject(e);   // simulate a stop mid-turn
+    }})}};
+    return {ok: true, json: async () => ({}), text: async () => ""};
+  }}, {});
+  await wait();
+  st.s.el("input").value = "go";
+  const run70 = st.s.send();
+  await run70;
+  const msg70 = st.s.messages[1];
+  assert.ok(msg70.stopped, "the turn is marked stopped");
+  assert.ok((msg70.meta || "").includes("Stopped") && (msg70.meta || "").includes("tokens"),
+            "the stopped meta keeps the token count, not just 'Stopped': " + msg70.meta);
+  done.push("edit-posts: the poll holds live figures across the null gaps between rounds; stopping a turn keeps the token count");
+
+  // 71. the live token count ACCUMULATES across MCP rounds - the poll's `generated` resets each round, so
+  // noteLive must add the growth, not read the current round (this was the "back to 0 tokens" bug).
+  let mN71 = 0;
+  const acc = run({fetch: async (u) => {
+    if (u === "health") return {ok: true, json: async () => ({status: "ok", model: "strata", max_context: 8192, images: false, loaded: true})};
+    if (String(u).startsWith("metrics")) { mN71++; const gen = [10, 15, 3][mN71 - 1];
+      return {ok: true, json: async () => ({live: {state: "generating", prompt_tokens: 5000, generated: gen}})}; }
+    if (String(u).startsWith("v1/chat/completions")) return {ok: true, body: {getReader: () => ({n: 0, read() {
+      if (!this.n++) return Promise.resolve({done: false, value: new TextEncoder().encode("data: " + JSON.stringify({choices: [{delta: {content: "x"}}]}) + "\n\n")});
+      return new Promise(() => {});   // stay open: the turn is still running
+    }})}};
+    return {ok: true, json: async () => ({}), text: async () => ""};
+  }}, {});
+  await wait();
+  acc.s.el("input").value = "go";
+  acc.s.send();                       // start a turn (busy set); the stream stays open
+  await wait();
+  await acc.s.poll();                 // round 1 grew to 10
+  assert.strictEqual(acc.s.busy.msg._gen, 10, "round 1: 10 tokens");
+  await acc.s.poll();                 // same round grew to 15
+  assert.strictEqual(acc.s.busy.msg._gen, 15, "same round grew to 15");
+  await acc.s.poll();                 // NEW round: generated reset to 3 -> accumulate, not reset
+  assert.strictEqual(acc.s.busy.msg._gen, 18, "a new round accumulates (15 + 3), it does not drop to 3 or 0");
+  done.push("edit-posts: the live token count accumulates across MCP rounds (does not reset when a new round starts)");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
