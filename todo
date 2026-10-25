@@ -275,10 +275,9 @@ all: fold-control replaced them, and the four overlapping switches became one co
         another post asks to discard, a second click on the same post is a no-op, and the editing row hides its
         own Edit button); clicking Edit during a live turn now says "Stop the answer first" instead of doing
         nothing; the edit box scrolls its buttons into view.
-      - OPEN DECISION (the human asked): what happens to the model's THINKING (reasoning) when a turn is edited?
-        It currently stays. Options: (a) leave it; (b) a keep/delete toggle like the tool calls; (c) let the user
-        edit the thinking too (risky - the per-round thinking offsets rat are replay-critical, same class as the
-        tool-call offsets).  Decide before building.
+      - DONE (option B): editing a turn that has thinking shows a "Delete the model's thinking" checkbox - kept by
+        default, checked by default for "Edit entire" (which already drops the tool calls); a user post has none.
+        Editing the thinking text itself (option C) stays out: the per-round rat offsets are replay-critical.
       - Assistant posts: Save only (no Submit, no attach).  User posts: Save + Submit + attach.
     Chat-level rename and delete exist (renameChat, deleteChat); message-level delete does not yet.
     Straightforward to build. See item edit-no-reread for the cost.

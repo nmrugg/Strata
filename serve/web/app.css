@@ -107,6 +107,9 @@ main { flex: 1; min-height: 0; display: flex; }
                 background: var(--st-surface); border: 1px solid var(--st-line); border-radius: var(--st-r-md);
                 padding: 10px 12px; resize: vertical; box-sizing: border-box; }
 .msg-edit__bar { display: flex; gap: 8px; justify-content: flex-end; }
+/* the "Delete the model's thinking" toggle (option B), on its own line above the buttons */
+.msg-edit__think { display: flex; align-items: center; gap: 6px; font: 500 var(--st-fs-sm) var(--st-font);
+                   color: var(--st-ink-muted); cursor: pointer; }
 /* while a post is being edited, hide its own Edit button so it cannot be opened twice (todo #edit-posts) */
 .st-msg.editing [data-msg-edit] { display: none; }
 /* todo #no-placeholder: the fake caret rule is gone - the page no longer draws anything that pretends to be output while

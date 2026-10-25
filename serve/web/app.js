@@ -1087,6 +1087,15 @@ function openEditBox(el, m, mode) {
   // cannot push the whole chat off screen); the CSS gives it a roomy minimum to start.
   const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, (innerHeight || 800) * 0.6) + "px"; };
   ta.addEventListener("input", grow);
+  // a post that has thinking gets a "Delete the model's thinking" toggle (option B): keep it by default, but
+  // default to delete for "entire" (which already drops the tool calls, so the old thinking no longer fits).
+  let think = null;
+  if (m.role === "assistant" && m.reasoning) {
+    think = document.createElement("label"); think.className = "msg-edit__think";
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = mode === "entire";
+    think.appendChild(cb); think.appendChild(document.createTextNode(" Delete the model's thinking"));
+    think._cb = cb;
+  }
   const bar = node("div", "msg-edit__bar");
   const save = node("button", "st-btn st-btn--secondary", "Save"); save.type = "button";
   const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button";
@@ -1099,6 +1108,7 @@ function openEditBox(el, m, mode) {
     const t = ta.value.trim();
     if (mode === "final") { if (!t && !head.trim()) return; m.text = head + t; }
     else { if (!t) return; m.text = t; if (mode === "entire") m.tools = []; }
+    if (think && think._cb.checked) { m.reasoning = ""; m.thinkSecs = null; }   // option B: drop the thinking on request
     close(); saveChat();
   };
   cancel.onclick = () => { if (ta.value.trim() !== (editable || "").trim() && !confirm("Discard your changes?")) return; close(); };
@@ -1111,7 +1121,7 @@ function openEditBox(el, m, mode) {
     bar.appendChild(submit);
   }
   bar.appendChild(cancel);
-  form.appendChild(ta); form.appendChild(bar);
+  form.appendChild(ta); if (think) form.appendChild(think); form.appendChild(bar);
   el.appendChild(form);
   ta.focus();
   grow();                                              // size to the existing text on open

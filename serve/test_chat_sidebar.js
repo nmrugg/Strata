@@ -170,7 +170,8 @@ function makeIdb(hooks, seed) {
 function run(hooks, stored, seed) {
   const byId = {};
   const document = {getElementById: (id) => (byId[id] = byId[id] || makeEl()),
-                    createElement: () => makeEl(), documentElement: {dataset: {}},
+                    createElement: () => makeEl(), createTextNode: (t) => ({nodeType: 3, textContent: t}),
+                    documentElement: {dataset: {}},
                     body: makeEl(),                                   // the row menu is appended to <body> (todo #chat-row-menu)
                     hidden: false,                                    // pollDelay reads it; a test flips it
                     _l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },   // recorded so a test can fire the document click/keydown
@@ -2150,6 +2151,46 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(!lgEl.querySelector(".st-bubble").children.some((c) => (c.className || "").includes("tool-call")),
             "no tool block left in the bubble after 'Edit entire'");
   done.push("edit-posts: one edit box at a time (discard prompt; same-post re-click is a no-op; button hidden), Edit during a live turn says stop it, and dropped tool blocks leave the DOM");
+
+  // 62. editing a turn that has thinking offers a "Delete the model's thinking" toggle (option B): kept by
+  // default, but checked by default for "Edit entire" (which already drops the tool calls).  A user post (no
+  // thinking) gets no toggle.
+  const th62 = run({}, {});
+  await wait();
+  const thEdit = (row) => { const o = {closest: (s) => s === "[data-msg-edit]" ? o : (s === ".st-msg" ? row : null)}; return o; };
+  const clickEd = (row) => th62.s.el("chat")._l["click"]({target: thEdit(row)});
+  const boxIn = (row) => row.children.find((c) => (c.className || "").includes("msg-edit"));
+  const cbIn = (row) => boxIn(row).children.find((c) => (c.className || "").includes("msg-edit__think"))._cb;
+  const saveIn = (row) => boxIn(row).querySelector(".msg-edit__bar").children[0];
+
+  const am62 = {id: "am62", role: "assistant", text: "the answer", reasoning: "a long thought", time: Date.now()};
+  th62.s.messages.push(am62);
+  const amEl = th62.s.msgEl(am62, 0); th62.s.el("chat").appendChild(amEl);
+  clickEd(amEl);
+  assert.ok(boxIn(amEl).children.some((c) => (c.className || "").includes("msg-edit__think")), "a thinking post gets the toggle");
+  assert.strictEqual(cbIn(amEl).checked, false, "keeping the thinking is the default");
+  saveIn(amEl).onclick();
+  assert.strictEqual(am62.reasoning, "a long thought", "Save kept the thinking (toggle off)");
+  clickEd(amEl);
+  cbIn(amEl).checked = true;
+  saveIn(amEl).onclick();
+  assert.strictEqual(am62.reasoning, "", "checking the toggle deleted the thinking on Save");
+  // "Edit entire" on a tool-call turn defaults the toggle to delete
+  const tm62 = {id: "tm62", role: "assistant", text: "HEADTAIL", reasoning: "thought", time: Date.now(),
+                tools: [{id: "t", name: "x", state: "done", at: 4, rat: 0, result: "r", round: 0}]};
+  th62.s.messages.push(tm62);
+  const tmEl = th62.s.msgEl(tm62, 1); th62.s.el("chat").appendChild(tmEl);
+  clickEd(tmEl);
+  const act62 = (a) => { const o = {closest: (s) => s === "[data-chat-act]" ? o : null, getAttribute: () => a}; return o; };
+  th62.s.chatMenu._l["click"]({target: act62("entire")});
+  assert.strictEqual(cbIn(tmEl).checked, true, "'Edit entire' defaults the thinking toggle to delete");
+  // a user post (no thinking) gets no toggle
+  const um62 = {id: "um62", role: "user", text: "q", time: Date.now()};
+  th62.s.messages.push(um62);
+  const umEl = th62.s.msgEl(um62, 2); th62.s.el("chat").appendChild(umEl);
+  clickEd(umEl);
+  assert.ok(!boxIn(umEl).children.some((c) => (c.className || "").includes("msg-edit__think")), "a user post has no thinking toggle");
+  done.push("edit-posts option B: editing a thinking turn offers 'Delete the model's thinking' (keep by default; delete by default for 'Edit entire'); user posts have none");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
