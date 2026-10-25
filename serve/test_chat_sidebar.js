@@ -1704,5 +1704,62 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(m9.s.settings.show, "live", "a browser with nothing stored gets the default");
   done.push("settings: the four old switches map to folded/live/always once on load, and the drawer shows it");
 
+  // 50. auto-scroll keeps following when a big block lands (todo #auto-scroll-big-block).  The bug: send()'s paint()
+  // measured nearBottom() AFTER updateAssistant had grown the DOM, so a chunk that adds thousands of pixels in one
+  // frame left the reader past the 120 px slack, the follow switched itself off, and it never came back.  The fix
+  // measures the follow decision BEFORE the update - the order the thinking body already uses (nearEnd before
+  // assigning textContent, app.js).  The stub does not lay out, so the page's growth is modelled by counting the
+  // answer bubble's drawn blocks: each block stands for a tall one (a tool call, a table, a code fence) and is
+  // weighted far above the slack, so one landing in a single frame is exactly the case that broke.  Driven through
+  // send(), one frame at a time, like case 46.
+  const ctl50 = {step: null, flush: null}, q50 = [];
+  const read50 = () => new Promise((res) => {
+    ctl50.step = () => {
+      if (ctl50.flush) ctl50.flush();               // paint the previous chunk, as one animation frame would
+      res(q50.length ? {done: false, value: new TextEncoder().encode(q50.shift())} : {done: true});
+    };
+  });
+  const as = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: read50})}})}, {});
+  await wait();
+  ctl50.flush = as.flush;
+  const scroll = as.s.el("chat-scroll");
+  scroll.clientHeight = 600;
+  const rowOf50 = () => as.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--assistant"));
+  const blocksOf50 = () => { const r = rowOf50(); const b = r && r.querySelector(".st-bubble"); return b ? b.children.length : 0; };
+  // 600 px of chrome plus 5000 px per drawn block: one block appearing in one frame is a jump of 5000 px,
+  // far more than the 120 px the follow allows, which is the situation the bug is about.
+  Object.defineProperty(scroll, "scrollHeight", {configurable: true, get: () => 600 + 5000 * blocksOf50(), set: () => {}});
+  const f50 = (o) => "data: " + JSON.stringify(o) + "\n\n";
+  q50.push(f50({choices: [{delta: {content: "the first paragraph"}}]}));
+  as.s.el("input").value = "go";
+  const running50 = as.s.send();
+  await wait();                                     // renderChat has run; the assistant bubble is still empty
+  scroll.scrollTop = scroll.scrollHeight - scroll.clientHeight;   // put the reader exactly at the bottom
+  const bottom0 = scroll.scrollHeight;
+  ctl50.step(); await wait(); as.flush();           // the first content frame: one block lands
+  assert.strictEqual(blocksOf50(), 1, "one answer block drawn");
+  assert.ok(scroll.scrollHeight > bottom0 + 120, "the block added far more than the 120 px slack in one frame");
+  assert.strictEqual(scroll.scrollTop, scroll.scrollHeight,
+                     "a 5000 px block lands while at the bottom: the chat follows to the new bottom (this is the fix)");
+  // keep following: a second big block (a code fence) lands while still at the bottom - the follow must not have
+  // switched itself off, which is what the old code did after the first one
+  q50.push(f50({choices: [{delta: {content: "\n\n```\nmany lines\n```"}}]}));
+  ctl50.step(); await wait(); as.flush();
+  assert.strictEqual(blocksOf50(), 2, "a second block, a code fence, lands");
+  assert.strictEqual(scroll.scrollTop, scroll.scrollHeight, "the follow is still on after the first big block");
+  // but a reader who scrolled up is not yanked back down: a big block lands above them and the follow is off
+  scroll.scrollTop = scroll.scrollHeight - scroll.clientHeight - 400;   // 400 px above the bottom
+  const upAt = scroll.scrollTop;
+  q50.push(f50({choices: [{delta: {content: "\n\nand more text below"}}]}));
+  ctl50.step(); await wait(); as.flush();
+  assert.strictEqual(blocksOf50(), 3, "a third block lands while the reader is scrolled up");
+  assert.strictEqual(scroll.scrollTop, upAt, "scrolled up: not dragged to the bottom by a new block");
+  // the final paint follows only because the reader came back to the bottom
+  scroll.scrollTop = scroll.scrollHeight - scroll.clientHeight;
+  ctl50.step(); await wait();                        // one step past the last frame: the stream ends, then the fin paint
+  await running50;
+  assert.strictEqual(scroll.scrollTop, scroll.scrollHeight, "the final paint follows when the reader is at the bottom");
+  done.push("auto-scroll: keeps following when a big block lands in one frame; a reader who scrolled up is left alone");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

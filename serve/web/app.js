@@ -1365,7 +1365,8 @@ function rowOf(m) {
 // how far from the bottom of a scroll container still counts as "at the bottom"
 const nearEnd = (s, px) => s.scrollHeight - s.scrollTop - s.clientHeight < px;
 function nearBottom() { return nearEnd($("chat-scroll"), 120); }
-function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom()) s.scrollTop = s.scrollHeight; }
+function stickBottom() { const s = $("chat-scroll"); s.scrollTop = s.scrollHeight; }
+function scrollDown(force) { if (force || nearBottom()) stickBottom(); }
 
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
@@ -1536,7 +1537,11 @@ async function send() {
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   // the row is looked up every frame: switching chats rebuilds them, and a captured node would keep painting a
   // detached element.  No row means another chat is on screen - the turn keeps running, it just does not paint.
-  const paint = () => { frame = 0; const el = rowOf(m); if (el) { updateAssistant(el, m, true); scrollDown(); } };
+  // follow is measured BEFORE the DOM grows (LESSONS.md, "Four traps", trap 4): a big block - a tool call, a
+  // table - can add thousands of pixels in one frame, and measuring the gap after updateAssistant leaves the
+  // reader past the 120 px slack, so the follow switched itself off and never came back.  This is what the
+  // thinking body already does (nearEnd before assigning textContent).
+  const paint = () => { frame = 0; const el = rowOf(m); if (el) { const follow = nearBottom(); updateAssistant(el, m, true); if (follow) stickBottom(); } };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -1622,7 +1627,7 @@ async function send() {
   setBusy(false);                                   // the spinner clears; elsewhere a dot appears
   if (frame) cancelAnimationFrame(frame);
   const fin = rowOf(m);
-  if (fin) { updateAssistant(fin, m, false); scrollDown(); }
+  if (fin) { const follow = nearBottom(); updateAssistant(fin, m, false); if (follow) stickBottom(); }
   saveChat(turn.chat);                              // write it into ITS chat, not whichever one is open now
 }
 

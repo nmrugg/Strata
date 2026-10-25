@@ -27,7 +27,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
 
 ## 1. Trivial - minutes to an hour, one file, no design decision
 
-`auto-scroll-big-block`  Auto-scroll stops following when a big block lands (a tool call, a table). [ui] BUG
+`auto-scroll-big-block`  Auto-scroll stops following when a big block lands (a tool call, a table). [ui] DONE 2026-10-24
     The human's diagnosis is correct, and the code shows why. `paint()` at
     serve/web/app.js:1491 does `updateAssistant(el, m, true); scrollDown();` - so
     `nearBottom()` measures the gap AFTER the DOM has already grown. A chunk that adds
