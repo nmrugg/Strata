@@ -171,8 +171,10 @@ function run(hooks, stored, seed) {
   const byId = {};
   const document = {getElementById: (id) => (byId[id] = byId[id] || makeEl()),
                     createElement: () => makeEl(), documentElement: {dataset: {}},
+                    body: makeEl(),                                   // the row menu is appended to <body> (todo #chat-row-menu)
                     hidden: false,                                    // pollDelay reads it; a test flips it
-                    addEventListener() {}, querySelectorAll: () => []};
+                    _l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },   // recorded so a test can fire the document click/keydown
+                    querySelectorAll: () => []};
   const idb = makeIdb(hooks, seed);
   // window listeners are recorded so a test can ask "is anything holding the page open right now, and what
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
@@ -200,7 +202,7 @@ function run(hooks, stored, seed) {
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, chatTitle, groupName, setHistory, startChat, openChat, " +
-    "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
+    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
@@ -208,9 +210,9 @@ function run(hooks, stored, seed) {
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
-    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return chatMenu; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
-               fetches, timers, flush: () => { while (raf.length) raf.shift()(); }};
+               fetches, timers, body: document.body, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
 }
 
@@ -1890,6 +1892,60 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   pe.s.setBusy(false);                               // ending must not arm a fresh poll: the chain is already running at 1 s while busy
   assert.strictEqual(pe.timers.filter((t) => t.f).length, 0, "setBusy(false) schedules nothing new");
   done.push("poll-on-enter: Enter polls immediately; the one scheduler means it cannot fork a second chain");
+
+  // 55. the row's three-dot menu (todo #chat-row-menu): one overflow button opens a fixed popover with Rename /
+  // Duplicate / Export / Delete.  The popover is appended to <body>, not the row, because #sidebar-list scrolls and
+  // would clip it - so the menu carries its own click handler (the sidebar-list handler only opens it, from the
+  // overflow button, which IS inside the row).  What the harness can prove is the wiring - open, each action fires
+  // the right function, outside-click and Escape close - not the pixel geometry, which is browser-only.
+  const cr = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+                 {a: {id: "a", title: "chat a", time: Date.now(), messages: [msg("one"), msg("two")]},
+                  b: {id: "b", title: "chat b", time: Date.now() - 1000, messages: [msg("only b")]}});
+  await wait();
+  const rowA = () => cr.s.el("sidebar-list").children.find((c) => c.dataset.id === "a");
+  const rowB = () => cr.s.el("sidebar-list").children.find((c) => c.dataset.id === "b");
+  // a fake overflow button: closest(".chat-item") resolves its row, closest("[data-chat-menu]") resolves the button
+  const menuBtn = {closest: (s) => s === ".chat-item" ? rowA() : (s === "[data-chat-menu]" ? {} : null)};
+  const menuBtnB = {closest: (s) => s === ".chat-item" ? rowB() : (s === "[data-chat-menu]" ? {} : null)};
+  const actBtn = (act) => { const o = {closest: (s) => (s === "[data-chat-act]" ? o : null), getAttribute: () => act}; return o; };
+  const outside = {closest: () => null};
+  const openMenu = (btn) => cr.s.el("sidebar-list")._l["click"]({target: btn});
+  const fireAct = (act) => cr.s.chatMenu._l["click"]({target: actBtn(act)});
+
+  openMenu(menuBtn);
+  const menu = cr.s.chatMenu;
+  assert.ok(menu && cr.body.children.includes(menu), "the menu opens on <body>, not inside the clipped row");
+  assert.deepStrictEqual(menu.children.map((x) => x.textContent), ["Rename", "Duplicate", "Export", "Delete"],
+                         "Rename, Duplicate, Export, Delete");
+  assert.ok(menu.children[3].className.includes("danger"), "Delete is the danger item");
+  cr.fireDoc("keydown", {key: "Escape"});
+  assert.strictEqual(cr.s.chatMenu, null, "Escape closes it");
+
+  // Duplicate clones the conversation: a new chat beside the first, same content, new id, not nested
+  const before55 = cr.s.chats.length;
+  openMenu(menuBtn); fireAct("copy");
+  assert.strictEqual(cr.s.chats.length, before55 + 1, "Duplicate added one chat beside the first");
+  const clone = cr.s.chats.find((c) => c.id !== "a" && c.id !== "b");
+  assert.ok(clone, "the clone has a new id");
+  assert.strictEqual(clone.title, "chat a", "same title");
+  assert.strictEqual(clone.messages.length, 2, "same messages");
+  assert.strictEqual(clone.messages[0].text, "one", "and the same content");
+  assert.notStrictEqual(clone.messages, cr.s.chats.find((c) => c.id === "a").messages, "its message array is a copy, not shared");
+  assert.strictEqual(cr.s.chats.filter((c) => c.id === "a").length, 1, "the original is still there once - not nested");
+  assert.strictEqual(cr.s.chatMenu, null, "the action closed the menu");
+
+  // Rename turns the row into an inline field (done on B so A's row is untouched by the clone test)
+  openMenu(menuBtnB); fireAct("rename");
+  assert.ok(rowB().children.some((c) => (c.className || "").includes("chat-item__input")), "Rename opens the inline field");
+
+  // a click outside closes it; a click on the overflow button itself does not close it out from under the row
+  openMenu(menuBtn);
+  cr.fireDoc("click", {target: outside});
+  assert.strictEqual(cr.s.chatMenu, null, "a click outside closes it");
+  openMenu(menuBtn);
+  cr.fireDoc("click", {target: menuBtn});
+  assert.ok(cr.s.chatMenu, "clicking the button again is not treated as an outside click");
+  done.push("chat row menu: one overflow opens a body-level popover; Rename/Duplicate/Export/Delete wired; Escape and outside-click close");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

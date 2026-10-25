@@ -828,8 +828,7 @@ function chatItem(c) {
     ` title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}${drafted ? " (has draft)" : ""}">${esc(t)}</button>` +
     (state ? `<span class="chat-item__state ${state}" title="${esc(tip)}" aria-hidden="true"></span>` : "") +
     `<span class="chat-item__actions">` +
-    `<button class="st-btn st-btn--icon" data-rename aria-label="Rename this chat" title="Rename">${icon("edit")}</button>` +
-    `<button class="st-btn st-btn--icon" data-delete aria-label="Delete this chat" title="Delete">${icon("trash")}</button>` +
+    `<button class="st-btn st-btn--icon chat-item__more" data-chat-menu aria-haspopup="menu" aria-label="Chat actions" title="Chat actions">⋮</button>` +
     `</span>`;
   return row;
 }
@@ -910,6 +909,67 @@ function deleteChat(c) {
     if (wasOpen) showChat(c); else { writeChat(c); renderSidebar(); }
   }});
 }
+// duplicate the conversation (todo #chat-row-menu, and the shared core of item fork-chat): a second chat with
+// the same messages, a new id and a fresh time, sitting beside the first - not nested, not a clipboard copy.
+// Display/ephemeral state (unread, draft) must not carry over to the clone.
+function cloneChat(c) {
+  const copy = {...c, id: newChat().id, time: Date.now(), unread: false};
+  delete copy.draft;
+  copy.messages = (c.messages || []).map((m) => ({...m}));
+  chats.push(copy);
+  writeChat(copy);
+  renderSidebar();
+  toast("success", "Duplicated", chatTitle(c));
+  return copy;
+}
+// export one conversation as Markdown, the same builder and file name the export button uses (todo #chat-row-menu)
+function exportChatMd(c) {
+  if (!c.messages.length) { toast("info", "Nothing to save yet"); return; }
+  const md = c.messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` : `## ${health.model}\n\n${turnMarkdown(m)}`).join("\n");
+  const name = `${safeFileName(chatTitle(c))}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+// the row's three-dot menu (todo #chat-row-menu).  A fixed-position popover appended to <body>, not a child of
+// the row: #sidebar-list is a scroll container and would clip a menu placed inside a row.  openChatMenu anchors
+// it under the button and flips it above when it would run past the bottom of the viewport.
+let chatMenu = null;
+function closeChatMenu() { if (chatMenu) chatMenu.remove(); chatMenu = null; }
+function chatMenuAction(act, row, c) {
+  closeChatMenu();
+  if (act === "rename") renameChat(row, c);
+  else if (act === "copy") cloneChat(c);
+  else if (act === "export") exportChatMd(c);
+  else if (act === "delete") deleteChat(c);
+}
+function openChatMenu(row, c, btn) {
+  closeChatMenu();
+  const menu = node("div", "chat-menu");
+  menu.setAttribute("role", "menu");
+  for (const [act, label, danger] of [["rename", "Rename", false], ["copy", "Duplicate", false],
+                                      ["export", "Export", false], ["delete", "Delete", true]]) {
+    const b = node("button", danger ? "danger" : "", label);
+    b.setAttribute("data-chat-act", act); b.setAttribute("role", "menuitem");
+    menu.appendChild(b);
+  }
+  // the menu is on <body>, not in the row, so it carries its own click handler (the sidebar-list handler only
+  // opens it, from the overflow button, which IS inside the row)
+  menu.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-chat-act]");
+    if (b) chatMenuAction(b.getAttribute("data-chat-act"), row, c);
+  });
+  document.body.appendChild(menu);
+  chatMenu = menu;
+  if (btn.getBoundingClientRect) {                 // the harness stub has no layout; skip geometry there (verified in the browser)
+    const r = btn.getBoundingClientRect();
+    const h = menu.offsetHeight || 0, w = menu.offsetWidth || 168;
+    menu.style.left = `${Math.max(4, Math.min(r.left, (innerWidth || 0) - w - 4))}px`;
+    menu.style.top = (r.bottom + h > (innerHeight || 0) && r.top - h > 0) ? `${r.top - h - 4}px` : `${r.bottom + 4}px`;
+  }
+}
 // rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
 function renameChat(row, c) {
   const title = row.querySelector(".chat-item__title");
@@ -947,10 +1007,15 @@ $("sidebar-list").addEventListener("click", (e) => {
   if (!row) return;
   const c = chats.find((x) => x.id === row.dataset.id);
   if (!c) return;
-  if (e.target.closest("[data-delete]")) { deleteChat(c); return; }
-  if (e.target.closest("[data-rename]")) { renameChat(row, c); return; }
+  if (e.target.closest("[data-chat-menu]")) { openChatMenu(row, c, e.target.closest("[data-chat-menu]")); return; }
   openChat(c.id);
 });
+// a click anywhere outside the open row menu, or Escape, dismisses it (todo #chat-row-menu).  The menu lives on
+// <body> (not in the clipped #sidebar-list), so this listener is on document.
+document.addEventListener("click", (e) => {
+  if (chatMenu && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]")) closeChatMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && chatMenu) closeChatMenu(); });
 
 // the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
 function setHistory(on, save, fromScreen) {

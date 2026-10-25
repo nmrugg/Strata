@@ -158,20 +158,31 @@ main { flex: 1; min-height: 0; display: flex; }
   .chat-item__state.run::before { animation: none; border-color: var(--st-accent); }
 }
 .chat-item.on .chat-item__title { color: var(--st-ink); font-weight: var(--st-fw-bold); }
-/* the edit and delete buttons take no room until they are shown: they are two 30px buttons, a 2px gap and the
-   row's own 2px gap = 64px, which in the 260px rail (228px of content, 16px of the title's own padding) left the
-   title 148px instead of 212px.  opacity: 0 kept that space reserved, so the name ellipsised early for buttons
-   nobody could see.  display: none gives it back; on hover the row is exactly as it was. */
+/* the row's actions take no room until they are shown: one 30px overflow button, which in the 260px rail
+   (228px of content, 16px of the title's own padding) left the title 148px instead of 212px when two buttons
+   showed.  opacity: 0 kept that space reserved, so the name ellipsised early for a button nobody could see.
+   display: none gives it back; on hover the row is exactly as it was.  (todo #chat-row-menu: the two edit/delete
+   buttons collapsed into one overflow that opens the menu below.) */
 .chat-item__actions { display: none; gap: 2px; flex: none; }
 .chat-item:hover .chat-item__actions, .chat-item:focus-within .chat-item__actions { display: flex; }
-/* while a row is being renamed the field owns the whole row: :focus-within would otherwise bring the buttons
-   back and narrow the field by 64px mid-word, moving the caret under the typing */
+/* while a row is being renamed the field owns the whole row: :focus-within would otherwise bring the button
+   back and narrow the field mid-word, moving the caret under the typing */
 .chat-item:has(.chat-item__input) .chat-item__actions { display: none; }
-/* and where there is no hover at all, they are always shown - otherwise they would be unreachable, not just
-   invisible as they were before */
+/* and where there is no hover at all, it is always shown - otherwise it would be unreachable, not just
+   invisible as it was before */
 @media (hover: none) { .chat-item__actions { display: flex; } }
-.chat-item__actions .st-btn--icon { width: 30px; height: 30px; }
-.chat-item__actions .st-btn--icon .st-icon { width: 16px; height: 16px; }
+.chat-item__more { width: 30px; height: 30px; }
+/* the row menu (todo #chat-row-menu): a fixed popover, not a child of the row, because #sidebar-list is a
+   scroll container (overflow-y: auto) and a menu inside a row would be clipped by it.  app.js positions it at
+   the button's rect and flips it above the button near the bottom of the viewport. */
+.chat-menu { position: fixed; z-index: 60; min-width: 168px; padding: 4px; background: var(--st-surface);
+             border: 1px solid var(--st-line); border-radius: var(--st-r-md);
+             box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+.chat-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; cursor: pointer;
+                    padding: 8px 10px; border-radius: var(--st-r-sm); color: var(--st-ink-soft);
+                    font: 500 var(--st-fs-sm) var(--st-font); }
+.chat-menu button:hover { background: var(--st-surface-2); color: var(--st-ink); }
+.chat-menu button.danger { color: var(--st-danger); }
 .chat-item__input { flex: 1; min-width: 0; height: 34px; font-size: var(--st-fs-sm); }
 .sidebar-empty { margin: 0; padding: var(--st-s-2) 8px; }
 .sidebar-foot { margin: 0; }
