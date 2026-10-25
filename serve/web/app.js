@@ -794,8 +794,13 @@ function saveChat(c = chat) {
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
 function groupName(t) {
-  const days = Math.floor((Date.now() - t) / 86400000);
-  if (!days) return "Today";
+  // calendar days, not a 24-hour count.  The old `Math.floor((Date.now() - t) / 86400000)` put a chat from
+  // 23:59 yesterday in "Today" for the whole of today, and never said "Yesterday" until a chat was 24-48 hours
+  // old.  Compare local midnights instead (timeStr shows local times, so the group must match the day the reader
+  // sees); Math.round absorbs the 23/25-hour day a DST change makes.  A future timestamp (clock skew) is "Today".
+  const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((midnight(new Date()) - midnight(new Date(t))) / 86400000);
+  if (days <= 0) return "Today";
   if (days === 1) return "Yesterday";
   if (days <= 7) return "Previous 7 days";
   if (days <= 30) return "Previous 30 days";

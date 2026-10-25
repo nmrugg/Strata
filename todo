@@ -42,7 +42,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     taller than that.
 
 
-`sidebar-yesterday`  The sidebar's "Yesterday" is arithmetic, not a calendar day. [ui] BUG
+`sidebar-yesterday`  The sidebar's "Yesterday" is arithmetic, not a calendar day. [ui] DONE 2026-10-24
     `groupName` (serve/web/app.js) does `Math.floor((Date.now() - t) / 86400000)`, so a chat
     from 23:00 yesterday read at 01:00 today is "Today", and nothing is ever "Yesterday"
     unless it is 24-48 hours old. The human's report is right.

@@ -379,18 +379,21 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(rows(search.s), 1, "one by its message text");
   done.push("search: titles and message text");
 
-  // 14. the day groups
-  const day = 86400000;
+  // 14. the day groups.  Built from local calendar midnights, not from `Date.now() - N * 86400000`: the groups
+  // are calendar days now (todo #sidebar-yesterday), and an arithmetic offset lands on a different calendar day
+  // depending on the wall-clock time the test runs at, so a fixed hour (noon) on a fixed day is what is stable.
+  const now14 = new Date();
+  const at14 = (d) => new Date(now14.getFullYear(), now14.getMonth(), now14.getDate() + d, 12, 0).getTime();
   const grouped = run({}, {"strata.history": "true"}, {
-    today: {id: "today", title: "today", time: Date.now(), messages: [msg("a")]},
-    yesterday: {id: "yesterday", title: "yesterday", time: Date.now() - 1.5 * day, messages: [msg("b")]},
-    week: {id: "week", title: "week", time: Date.now() - 5 * day, messages: [msg("c")]},
-    older: {id: "older", title: "older", time: Date.now() - 40 * day, messages: [msg("d")]}});
+    today: {id: "today", title: "today", time: at14(0), messages: [msg("a")]},
+    yesterday: {id: "yesterday", title: "yesterday", time: at14(-1), messages: [msg("b")]},
+    week: {id: "week", title: "week", time: at14(-5), messages: [msg("c")]},
+    older: {id: "older", title: "older", time: at14(-40), messages: [msg("d")]}});
   await wait();
   assert.deepStrictEqual(groups(grouped.s), ["Today", "Yesterday", "Previous 7 days", "Older"], "the day groups");
 
   // the group names come out newest first, and a chat inside seven days is in the same group
-  grouped.s.chats[0].time = Date.now() - 2 * day;
+  grouped.s.chats[0].time = at14(-2);
   grouped.s.renderSidebar();
   assert.deepStrictEqual(groups(grouped.s), ["Yesterday", "Previous 7 days", "Older"], "the group follows the chat");
   done.push("day groups: Today, Yesterday, Previous 7 days, Older");
@@ -1760,6 +1763,38 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   await running50;
   assert.strictEqual(scroll.scrollTop, scroll.scrollHeight, "the final paint follows when the reader is at the bottom");
   done.push("auto-scroll: keeps following when a big block lands in one frame; a reader who scrolled up is left alone");
+
+  // 51. the sidebar groups by calendar day, not by a 24-hour count (todo #sidebar-yesterday).  This is the
+  // report: a chat from 23:59 yesterday read at any time today was "Today" under the old arithmetic, and nothing
+  // was ever "Yesterday" until it was 24-48 hours old.  The timestamps are built from local midnights so the
+  // assertion holds whatever wall-clock time the test runs at: 23:59 yesterday is always one calendar day back,
+  // and the old `Math.floor((Date.now() - t) / 86400000)` put it in "Today" for the whole of today (the gap is
+  // under 24 hours), so this assertion fails on the old code and passes on the new one at every hour.
+  const cal = run({}, {"strata.history": "true"}, {});
+  await wait();
+  const nowC = new Date();
+  const atC = (d, h, min) => new Date(nowC.getFullYear(), nowC.getMonth(), nowC.getDate() + d, h, min, 0, 0).getTime();
+  cal.s.chats.push(
+    {id: "ylate", title: "late yesterday", time: atC(-1, 23, 59), messages: [msg("ylate")]},
+    {id: "tearly", title: "early today", time: atC(0, 0, 30), messages: [msg("tearly")]},
+    {id: "three", title: "three days ago", time: atC(-3, 12, 0), messages: [msg("three")]},
+    {id: "old60", title: "sixty days ago", time: atC(-60, 12, 0), messages: [msg("old")]});
+  cal.s.renderSidebar();
+  assert.deepStrictEqual(groups(cal.s), ["Today", "Yesterday", "Previous 7 days", "Older"], "the four calendar groups");
+  // which group a given row sits under: walk the list, remembering the last group heading seen
+  const groupOf = (id) => {
+    let g = "";
+    for (const c of cal.s.el("sidebar-list").children) {
+      if ((c.className || "").includes("sidebar-group")) g = c.textContent;
+      else if (c.dataset.id === id) return g;
+    }
+    return "(no row)";
+  };
+  assert.strictEqual(groupOf("ylate"), "Yesterday", "23:59 yesterday reads as Yesterday, not Today, whatever time today it is read");
+  assert.strictEqual(groupOf("tearly"), "Today", "00:30 today reads as Today");
+  assert.strictEqual(groupOf("three"), "Previous 7 days", "three days ago is in the seven-day group");
+  assert.strictEqual(groupOf("old60"), "Older", "sixty days ago is Older");
+  done.push("day groups: calendar days - late yesterday is Yesterday at any hour today; the old 24-hour count said Today all day");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
