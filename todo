@@ -51,7 +51,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     preferred, but the same diff makes them calendar-correct for free.
 
 
-`sidebar-quarter-groups`  Past 30 days, group the sidebar by calendar quarter, not "Older". [ui]
+`sidebar-quarter-groups`  Past 30 days, group the sidebar by calendar quarter, not "Older". [ui] DONE 2026-10-24
     Decided 2026-10-24 with the human: after "Previous 30 days" the buckets are quarters -
     "2025 Q4", "2026 Q1", ... newest first - not a fixed count per group.  A count bucket
     re-flows every time a chat is added and labels nothing a reader can act on; quarters are

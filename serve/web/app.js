@@ -798,13 +798,18 @@ function groupName(t) {
   // 23:59 yesterday in "Today" for the whole of today, and never said "Yesterday" until a chat was 24-48 hours
   // old.  Compare local midnights instead (timeStr shows local times, so the group must match the day the reader
   // sees); Math.round absorbs the 23/25-hour day a DST change makes.  A future timestamp (clock skew) is "Today".
-  const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((midnight(new Date()) - midnight(new Date(t))) / 86400000);
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return "Older";        // a record with no/invalid time: there is no quarter to name
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((midnight(new Date()) - midnight(d)) / 86400000);
   if (days <= 0) return "Today";
   if (days === 1) return "Yesterday";
   if (days <= 7) return "Previous 7 days";
   if (days <= 30) return "Previous 30 days";
-  return "Older";
+  // past 30 days the buckets are calendar quarters (todo #sidebar-quarter-groups), e.g. "2026 Q4", not one flat
+  // "Older".  The list is already sorted newest-first and a heading is emitted only when the group changes, so
+  // the quarters come out most-recent-first with no extra work.
+  return `${d.getFullYear()} Q${Math.floor(d.getMonth() / 3) + 1}`;
 }
 function chatItem(c) {
   const t = chatTitle(c);

@@ -199,7 +199,7 @@ function run(hooks, stored, seed) {
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
-    "get messages() { return messages; }, get db() { return db; }, chatTitle, setHistory, startChat, openChat, " +
+    "get messages() { return messages; }, get db() { return db; }, chatTitle, groupName, setHistory, startChat, openChat, " +
     "deleteChat, renameChat, saveChat, renderSidebar, setBusy, send, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
@@ -223,6 +223,10 @@ const warnTitle = (s) => warns(s).map((t) => t.querySelector(".st-toast__title")
 const warnText = (s) => warns(s).map((t) => t.querySelector(".t-text").textContent).join(" | ");
 const firstText = (c) => (c.messages[0] || {}).text || "(empty)";
 const msg = (text) => ({role: "user", text, time: Date.now()});
+// the quarter label the sidebar uses for a chat past 30 days (todo #sidebar-quarter-groups).  Cases 14 and 51
+// just need an old chat to land in SOME quarter bucket, so they compute the expected heading with this; case 52
+// pins the formula itself against literal strings, so a wrong formula cannot hide behind a matching helper.
+const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Math.floor(d.getMonth() / 3) + 1}`; };
 
 (async () => {
   const done = [];
@@ -390,13 +394,14 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
     week: {id: "week", title: "week", time: at14(-5), messages: [msg("c")]},
     older: {id: "older", title: "older", time: at14(-40), messages: [msg("d")]}});
   await wait();
-  assert.deepStrictEqual(groups(grouped.s), ["Today", "Yesterday", "Previous 7 days", "Older"], "the day groups");
+  assert.deepStrictEqual(groups(grouped.s), ["Today", "Yesterday", "Previous 7 days", qlabel(at14(-40))],
+                         "the day groups - past 30 days it is a quarter bucket, not 'Older'");
 
   // the group names come out newest first, and a chat inside seven days is in the same group
   grouped.s.chats[0].time = at14(-2);
   grouped.s.renderSidebar();
-  assert.deepStrictEqual(groups(grouped.s), ["Yesterday", "Previous 7 days", "Older"], "the group follows the chat");
-  done.push("day groups: Today, Yesterday, Previous 7 days, Older");
+  assert.deepStrictEqual(groups(grouped.s), ["Yesterday", "Previous 7 days", qlabel(at14(-40))], "the group follows the chat");
+  done.push("day groups: Today, Yesterday, Previous 7 days, then a quarter past 30 days");
 
   // 15. rename through the field: Enter keeps the name, Escape gives it up
   const row = search.s.el("sidebar-list").children.find((c) => c.className.split(" ").includes("chat-item"));
@@ -1780,7 +1785,7 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
     {id: "three", title: "three days ago", time: atC(-3, 12, 0), messages: [msg("three")]},
     {id: "old60", title: "sixty days ago", time: atC(-60, 12, 0), messages: [msg("old")]});
   cal.s.renderSidebar();
-  assert.deepStrictEqual(groups(cal.s), ["Today", "Yesterday", "Previous 7 days", "Older"], "the four calendar groups");
+  assert.deepStrictEqual(groups(cal.s), ["Today", "Yesterday", "Previous 7 days", qlabel(atC(-60, 12, 0))], "the four calendar groups");
   // which group a given row sits under: walk the list, remembering the last group heading seen
   const groupOf = (id) => {
     let g = "";
@@ -1793,8 +1798,32 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(groupOf("ylate"), "Yesterday", "23:59 yesterday reads as Yesterday, not Today, whatever time today it is read");
   assert.strictEqual(groupOf("tearly"), "Today", "00:30 today reads as Today");
   assert.strictEqual(groupOf("three"), "Previous 7 days", "three days ago is in the seven-day group");
-  assert.strictEqual(groupOf("old60"), "Older", "sixty days ago is Older");
+  assert.strictEqual(groupOf("old60"), qlabel(atC(-60, 12, 0)), "sixty days ago falls into its calendar quarter, not 'Older'");
   done.push("day groups: calendar days - late yesterday is Yesterday at any hour today; the old 24-hour count said Today all day");
+
+  // 52. past 30 days the sidebar groups by calendar quarter, not one flat "Older" (todo #sidebar-quarter-groups).
+  // Fixed 2024 dates so the expected headings are literal strings - independent of when the test runs, and far
+  // enough back that every chat is past the 30-day named buckets whatever today's date is.  The headings must come
+  // out newest-first (Q4 -> Q1) because renderSidebar sorts newest-first and emits a heading only when the group
+  // changes; that ordering is free, and this asserts it.  The quarter FORMULA is pinned by the groupName calls
+  // below, so a wrong formula cannot hide behind the qlabel helper cases 14 and 51 use.
+  const atQ = (y, mo, da) => new Date(y, mo, da, 12, 0).getTime();
+  // seed the four chats so openHistory loads them and does not add a blank "Today" chat on top
+  const qg = run({}, {"strata.history": "true"}, {
+    q1: {id: "q1", title: "feb 2024", time: atQ(2024, 1, 15), messages: [msg("q1")]},
+    q2: {id: "q2", title: "jun 2024", time: atQ(2024, 5, 15), messages: [msg("q2")]},
+    q3: {id: "q3", title: "sep 2024", time: atQ(2024, 8, 15), messages: [msg("q3")]},
+    q4: {id: "q4", title: "dec 2024", time: atQ(2024, 11, 15), messages: [msg("q4")]}});
+  await wait();
+  qg.s.renderSidebar();
+  assert.deepStrictEqual(groups(qg.s), ["2024 Q4", "2024 Q3", "2024 Q2", "2024 Q1"],
+                         "quarters, newest first - not one flat 'Older' bucket");
+  assert.strictEqual(qg.s.groupName(atQ(2024, 0, 10)), "2024 Q1", "January is Q1");
+  assert.strictEqual(qg.s.groupName(atQ(2024, 2, 10)), "2024 Q1", "March is still Q1");
+  assert.strictEqual(qg.s.groupName(atQ(2024, 3, 10)), "2024 Q2", "April opens Q2");
+  assert.strictEqual(qg.s.groupName(atQ(2024, 11, 31)), "2024 Q4", "December is Q4");
+  assert.strictEqual(qg.s.groupName(undefined), "Older", "a record with no time has no quarter to name (fallback, not NaN QNaN)");
+  done.push("day groups: past 30 days the buckets are calendar quarters newest-first; an invalid time falls back to Older");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
