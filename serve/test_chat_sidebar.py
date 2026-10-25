@@ -89,7 +89,7 @@ class ChatSidebar(unittest.TestCase):
         # turnMarkdown takes the level and there is no second formatter that could drift
         self.assertIn("function turnMarkdown(m, level = 2)", self.js)
         self.assertNotIn("function turnText", self.js)
-        self.assertIn('const txt = level ? turnMarkdown(m, level) : (m.text || "");', self.js)
+        self.assertIn('const txt = (m.role === "user" || !level) ? (m.text || "") : turnMarkdown(m, level);', self.js)
         self.assertIn("function safeFileName(t)", self.js)
         self.assertIn("a.download = name;", self.js)
         self.assertNotIn("a.download = `strata-chat-", self.js)          # the day-only name is only a fallback now

@@ -2433,5 +2433,20 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(thinkEl().querySelector(".thinking").textContent, "**bold** and `code` thought", "off -> plain text, exactly as written");
   done.push("thinking-markdown: settled thinking renders as markdown (escaped); its md toggle switches to plain text");
 
+  // 73. user messages get a copy button too (todo): clicking it copies the post's own text.
+  const cp73 = run({}, {});
+  await wait();
+  const um73 = {id: "u73", role: "user", text: "my question here", time: Date.now()};
+  cp73.s.messages.push(um73);
+  const uel73 = cp73.s.msgEl(um73, 0); cp73.s.el("chat").appendChild(uel73);
+  const meta73 = uel73.children.find((c) => (c.className || "").includes("st-msg__meta"));
+  assert.ok((meta73._html || "").includes("data-msg-copy"), "the user meta row carries a copy button");
+  const copyEl73 = uel73.querySelector("[data-msg-copy]");
+  assert.ok(copyEl73, "a user message has a copy button");
+  assert.notStrictEqual(copyEl73.hidden, true, "and it is shown");
+  cp73.s.el("chat")._l["click"]({target: {closest: (s) => s === "[data-msg-copy]" ? copyEl73 : (s === ".st-msg" ? uel73 : null)}});
+  assert.ok(cp73.copied.includes("my question here"), "clicking it copies the user's text");
+  done.push("copy: user messages get a copy button that copies their text");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

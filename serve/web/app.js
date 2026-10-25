@@ -1120,6 +1120,7 @@ const mdBtn = (m) => `<button class="st-btn st-btn--md" data-md-toggle role="swi
 // break the replay - so it offers "edit final output only" (rounds kept) or "edit entire" (rounds dropped).
 const editBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-edit aria-label="Edit this message" title="Edit">${icon("edit")}</button>`;
 const delBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-delete aria-label="Delete this message" title="Delete">${icon("trash")}</button>`;
+const copyBtn = (m) => `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the message" title="Copy">${icon("copy")}</button>`;
 // only one edit box at a time (todo #edit-posts): opening another asks to discard the current one, and the
 // editing row hides its own Edit button so it cannot be pressed twice.
 let activeEdit = null;
@@ -1325,7 +1326,7 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.innerHTML = `<span class="meta-text"></span>${editBtn(m)}${delBtn(m)}${mdBtn(m)}`;
+    meta.innerHTML = `<span class="meta-text"></span>${copyBtn(m)}${editBtn(m)}${delBtn(m)}${mdBtn(m)}`;
     meta.querySelector(".meta-text").textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
@@ -1677,10 +1678,16 @@ function ctxInfo(m) {
   const prompt = u.prompt_tokens || 0, out = u.completion_tokens || 0;
   const cached = (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
   const used = prompt + out, pct = used / max * 100, cachedPct = prompt ? cached / prompt * 100 : 0;
+  // thinking and tool-call tokens are not in the OpenAI usage chunk, so they are estimates (~4 chars/token);
+  // prompt/output/cached are exact.
+  const think = Math.round((m.reasoning || "").length / 4);
+  const toolRes = Math.round((m.tools || []).reduce((s, t) => s + (t.result || "").length + JSON.stringify(t.arguments || {}).length, 0) / 4);
   const tip = `Context: ${fmt(used)} of ${fmt(max)} tokens (${fmt(pct, 1)}%)` +
-              `\nPrompt: ${fmt(prompt)} tokens` +
+              `\nPrompt read: ${fmt(prompt)} tokens` +
               (cached && prompt ? `, ${fmt(cached)} (${fmt(cachedPct, 1)}%) reused from the cache` : "") +
-              `\nOutput: ${fmt(out)} tokens`;
+              `\nGenerated: ${fmt(out)} tokens (thinking + answer)` +
+              (think ? `\nThinking: ~${fmt(think)} tokens (estimate)` : "") +
+              (toolRes ? `\nTool calls: ~${fmt(toolRes)} tokens of arguments + results (estimate)` : "");
   return {pct: fmt(pct, 1), tip};
 }
 // a live estimate of a streaming turn's meta (todo #edit-posts): tokens/rate/context update about once a second
@@ -1731,7 +1738,8 @@ function updateAssistant(el, m, streaming) {
   const ctxEl = el.querySelector(".ctx-pct"), ci = ctxInfo(m);
   if (ci) { ctxEl.hidden = false; ctxEl.textContent = `(${ci.pct}% context)`; ctxEl.title = ci.tip; }
   else { ctxEl.hidden = true; ctxEl.textContent = ""; ctxEl.title = ""; }
-  el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+  const copyEl = el.querySelector("[data-msg-copy]");
+  if (copyEl) copyEl.hidden = streaming || (m.role !== "user" && !m.text);   // user posts always have text to copy
   // todo #no-placeholder: nothing that only pretends to be output.  There is no box until the model has produced something
   // real - an answer, a tool call, an error.  Thinking now lives inside the bubble, so a thinking-only message
   // keeps the element (hiding it would hide the thinking with it) and drops its chrome: .thinking-only below.
@@ -1775,12 +1783,13 @@ $("chat").addEventListener("click", (e) => {
   if (mc) {
     const m = messages[+mc.closest(".st-msg").dataset.i];
     // plain click = the answer (as it always was); Shift = the answer and the thinking; Ctrl/Cmd+Shift =
-    // everything, the tool calls and their results included
+    // everything, the tool calls and their results included.  A user post has only its own text.
     const level = (e.ctrlKey || e.metaKey) && e.shiftKey ? 2 : (e.shiftKey ? 1 : 0);
-    const txt = level ? turnMarkdown(m, level) : (m.text || "");
-    // a tool result can be 20,000 characters, so say how much actually went onto the clipboard
-    copyText(txt, mc, ["Copy the answer", "Copied the answer and the thinking",
-                       `Copied everything (${fmt(txt.length)} characters, tool calls included)`][level]);
+    const txt = (m.role === "user" || !level) ? (m.text || "") : turnMarkdown(m, level);
+    const title = m.role === "user" ? "Copied your message"
+      : ["Copy the answer", "Copied the answer and the thinking",
+         `Copied everything (${fmt(txt.length)} characters, tool calls included)`][level];
+    copyText(txt, mc, title);
     return;
   }
   const mb = e.target.closest("[data-md-toggle]");
