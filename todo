@@ -203,6 +203,24 @@ all: fold-control replaced them, and the four overlapping switches became one co
     conversation is destructive and there is no undo across a reload.  Related to item import-export (export before
     culling) and pin-conversation (which chats are worth keeping).
 
+
+`edit-history`  Show that a post was edited, and maybe a history of its edits. [ui]
+    Raised with item edit-posts.  Minimum: when a post is edited, stamp it and show it in the meta line, e.g.
+    "You · 07:04 AM (edited)".  Store an `edited: true` (or an editedAt time) on the message when it is saved -
+    that is the cheap half, and answer the human's question "does it at least update the time?": today it does
+    not, the meta keeps the original `time`.
+    A full edit history (prior versions, restore) is much more: it means keeping old text per message, which
+    bloats the record.  Keep it a separate, later decision; do not fold it into edit-posts.
+
+
+`configurable-send-keys`  Make Enter/Shift+Enter/Ctrl+Enter in the composer and edit box a setting. [ui]
+    Today the composer: Enter submits, Shift+Enter is a newline (send() keydown handler).  The edit box (item
+    edit-posts) used Ctrl+Enter to save, Escape to cancel - inconsistent.  The human wants them consolidated
+    (probably match the composer), and made configurable: some people want Enter = newline and Shift/Ctrl+Enter =
+    submit.  Add a setting (DEFAULTS + the store, like other settings) for the send-key scheme, applied to both
+    boxes.  Also wanted: Enter/Ctrl+Enter in the edit box opens a small modal asking Save / Submit / Cancel, so a
+    stray Enter does not fire off a resend.  Decide the default so the common case stays one keystroke.
+
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
 `trim-tool-results`  Trim long tool calls before they reach the DOM. [py] [ui] - decide the policy first
