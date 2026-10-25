@@ -51,6 +51,20 @@ all: fold-control replaced them, and the four overlapping switches became one co
     preferred, but the same diff makes them calendar-correct for free.
 
 
+`sidebar-quarter-groups`  Past 30 days, group the sidebar by calendar quarter, not "Older". [ui]
+    Decided 2026-10-24 with the human: after "Previous 30 days" the buckets are quarters -
+    "2025 Q4", "2026 Q1", ... newest first - not a fixed count per group.  A count bucket
+    re-flows every time a chat is added and labels nothing a reader can act on; quarters are
+    stable and bound the heading count even across years.
+    One function: extend groupName in serve/web/app.js, which already switched to calendar
+    days (item sidebar-yesterday).  Replace the `return "Older"` branch with a quarter label
+    from the chat's local year and Math.floor(month/3).  The five existing names and the
+    function signature must stay - serve/test_chat_sidebar.py pins them by text.
+    Test: drive renderSidebar with chats spread over several quarters and assert the headings
+    come out newest-first.  Build the timestamps from local midnights like cases 14 and 51 do;
+    Date.now() minus N days lands on the wrong calendar bucket depending on the hour.
+
+
 `context-percent`  Show the context percent on each message's meta line, with a hover breakdown. [ui]
     Wanted shape: `4,040 tokens · 52.7 tok/s · 5 tool calls (54% context)`, and hovering the
     percentage gives a popup with the parts.
@@ -87,6 +101,18 @@ all: fold-control replaced them, and the four overlapping switches became one co
 
 
 ## 2. Small - a few hours, one or two files, no design decision
+
+`sidebar-load-more`  Paginate the sidebar: render recent chats, "Show older" loads the rest. [ui]
+    renderSidebar (serve/web/app.js) builds one row for EVERY chat, no cap - thousands of chats
+    is thousands of DOM nodes in a 260 px rail.  Bound it: render the first N of the sorted list
+    (it is already newest-first) and a "Show older" footer button that raises N by a page.
+    UI only, and it works against the in-memory `chats` array, so it does NOT fix the load cost -
+    that is item sidebar-capped-load.  Do it first anyway: it is the cheap half, and it is the
+    affordance the capped load reuses.
+    Care: keep search working.  The filter runs over `chats` on every render, so a bigger N must
+    re-run it, and "no chat matches" must not appear while older chats are simply not loaded yet -
+    say "load older to search further" instead.
+
 
 `finish-sound`  A notification sound when a turn finishes and the window is not visible. [ui]
     The want: hear it, the way item sidebar-yesterday ("start_beep") does for the server, but for a finished
@@ -216,6 +242,23 @@ NEED RENUMBERING
     chat id) so two streams can be tracked and painted into the right chat.
 
 ## 3. Medium - two or three layers, or a decision to make first (days)
+
+`sidebar-capped-load`  Do not load the whole store on every open; load a recent window. [ui]
+    The real ceiling at scale, and it is not the row count.  openHistory -> allChats -> getAll()
+    (serve/web/app.js) pulls the ENTIRE store into memory on every load, and the sidebar search
+    filters by scanning every chat's messages in memory.  A huge store makes both slow before the
+    DOM even matters.
+    Decided 2026-10-24 with the human: search recent first, then "load older" brings in more and
+    search covers those afterward.  So load a bounded recent window; growing that window is the
+    same button item sidebar-load-more adds.
+    THE HARD PART: IndexedDB has no ORDER BY.  getAll() returns everything; "the most recent N"
+    needs an index on the chat `time` field and a reverse IDBKeyRange cursor with a count.  Adding
+    that index bumps the database VERSION, and a store already at version 1 does NOT re-run
+    onupgradeneeded (LESSONS.md) - existing browsers need the version bump to gain the index, and
+    the upgrade handler must create it.  That migration is why this is Medium, not Small.
+    Measure the real ceiling (how many chats before openHistory/search drag) before sizing it -
+    not measured on this box.
+
 
 `edit-no-reread`  Make editing or deleting not re-read everything. [eng] [py]
     Partly possible today: STRATA_CACHE_MESSAGE_BOUNDARY=1 saves a checkpoint at the previous
