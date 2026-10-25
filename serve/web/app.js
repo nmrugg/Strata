@@ -1015,6 +1015,7 @@ function msgEl(m, i) {
     // todo #think-per-round: the thinking blocks are parts of the bubble now, in the order the model produced them, so the
     // template only makes the bubble and the row under it
     el.innerHTML = `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
+      `<span class="ctx-pct" hidden></span>` +
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer"` +
       ` title="Copy the answer - Shift: with the thinking, Ctrl+Shift: everything including the tool calls">${icon("copy")}</button>${mdBtn(m)}</div>`;
     updateAssistant(el, m, false);
@@ -1339,10 +1340,32 @@ function onTool(m, x) {
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
 }
+// the context fill for a finished turn (todo #context-percent): the stream's usage chunk (prompt + completion)
+// over the engine's window, with a hover breakdown that names the cached prefix - "54% full" is far more
+// actionable when you can see 40 points of it was a reused prefix.  Null until a turn has usage, or when the
+// engine has not reported a window size (health.max_context 0 before /health answers).
+function ctxInfo(m) {
+  const u = m.usage, max = health.max_context || 0;
+  if (!u || !max) return null;
+  const prompt = u.prompt_tokens || 0, out = u.completion_tokens || 0;
+  const cached = (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
+  const used = prompt + out, pct = used / max * 100, cachedPct = prompt ? cached / prompt * 100 : 0;
+  const tip = `Context: ${fmt(used)} of ${fmt(max)} tokens (${fmt(pct, 1)}%)` +
+              `\nPrompt: ${fmt(prompt)} tokens` +
+              (cached && prompt ? `, ${fmt(cached)} (${fmt(cachedPct, 1)}%) reused from the cache` : "") +
+              `\nOutput: ${fmt(out)} tokens`;
+  return {pct: fmt(pct, 1), tip};
+}
 function updateAssistant(el, m, streaming) {
   renderBubble(el, m, streaming);
   const bubble = el.querySelector(".st-bubble");
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
+  // the "(NN% context)" span: shown only once the turn has usage and the window is known, so it is absent while
+  // a turn streams and on a stopped turn that never got a usage chunk (updateAssistant runs on reload too, so a
+  // saved m.usage brings it back).
+  const ctxEl = el.querySelector(".ctx-pct"), ci = ctxInfo(m);
+  if (ci) { ctxEl.hidden = false; ctxEl.textContent = `(${ci.pct}% context)`; ctxEl.title = ci.tip; }
+  else { ctxEl.hidden = true; ctxEl.textContent = ""; ctxEl.title = ""; }
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
   // todo #no-placeholder: nothing that only pretends to be output.  There is no box until the model has produced something
   // real - an answer, a tool call, an error.  Thinking now lives inside the bubble, so a thinking-only message
@@ -1613,6 +1636,7 @@ async function send() {
     else { m.error = e.message || String(e); toast("error", "The request failed", m.error, 6000); }
   }
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
+  if (usage) m.usage = usage;                         // todo #context-percent: kept on the message (and in the record) so the fill survives a reload
   const n = usage ? usage.completion_tokens : null;
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;

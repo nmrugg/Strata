@@ -85,6 +85,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
 .st-msg__meta .st-btn--icon .st-icon { width: 16px; height: 16px; }
+/* the context percent on a finished answer's meta line (todo #context-percent): muted like the rest of the
+   line, and cursor:help because the hover title holds the prompt / reused / output breakdown.  [hidden] is set
+   while a turn streams or when there is no usage, and the row is flex, so hide it explicitly. */
+.st-msg__meta .ctx-pct { color: var(--st-ink-muted); cursor: help; white-space: nowrap; }
+.st-msg__meta .ctx-pct[hidden] { display: none; }
 /* the per-message "md" switch in a message's meta row: a text button, since the sprite has no markdown glyph.
    margin-left:auto puts it at the right end of the row; a user row is already content-width and right-aligned
    (components.css:64), so there it stays the rightmost item either way */

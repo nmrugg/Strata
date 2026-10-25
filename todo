@@ -65,7 +65,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Date.now() minus N days lands on the wrong calendar bucket depending on the hour.
 
 
-`context-percent`  Show the context percent on each message's meta line, with a hover breakdown. [ui]
+`context-percent`  Show the context percent on each message's meta line, with a hover breakdown. [ui] DONE 2026-10-24
     Wanted shape: `4,040 tokens · 52.7 tok/s · 5 tool calls (54% context)`, and hovering the
     percentage gives a popup with the parts.
     The data already exists: the stream's final usage chunk carries `prompt_tokens` and

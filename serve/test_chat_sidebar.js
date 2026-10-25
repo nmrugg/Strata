@@ -1825,5 +1825,51 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(qg.s.groupName(undefined), "Older", "a record with no time has no quarter to name (fallback, not NaN QNaN)");
   done.push("day groups: past 30 days the buckets are calendar quarters newest-first; an invalid time falls back to Older");
 
+  // 53. the context percent on a finished answer (todo #context-percent).  Driven through send(): the stream's
+  // final usage chunk carries prompt_tokens/completion_tokens and the reused count (prompt_tokens_details.
+  // cached_tokens), send() stores m.usage, and the meta row grows a "(NN% context)" span whose hover title
+  // breaks it down.  health.max_context is the denominator, so the fake fetch answers /health with a window size.
+  // Used = prompt + completion = 4,040 of 8,192 -> 49%; the reused 3,200 is 80% of the 4,000-token prompt.
+  const ctl53 = {step: null, flush: null}, q53 = [];
+  const read53 = () => new Promise((res) => {
+    ctl53.step = () => {
+      if (ctl53.flush) ctl53.flush();
+      res(q53.length ? {done: false, value: new TextEncoder().encode(q53.shift())} : {done: true});
+    };
+  });
+  const cpr = run({fetch: async (u) => {
+    if (u === "health") return {ok: true, json: async () => ({status: "ok", model: "strata", max_context: 8192, images: false, loaded: true})};
+    if (String(u).startsWith("v1/chat/completions")) return {ok: true, body: {getReader: () => ({read: read53})}};
+    return {ok: true, json: async () => ({}), text: async () => ""};
+  }}, {});
+  await wait();                                       // loadHealth answered /health, so health.max_context is 8192
+  ctl53.flush = cpr.flush;
+  const f53 = (o) => "data: " + JSON.stringify(o) + "\n\n";
+  q53.push(f53({choices: [{delta: {content: "the answer"}}]}),
+         f53({choices: [{}], usage: {prompt_tokens: 4000, completion_tokens: 40, total_tokens: 4040,
+                                      prompt_tokens_details: {cached_tokens: 3200}}}));
+  cpr.s.el("input").value = "go";
+  const run53 = cpr.s.send();
+  await wait();
+  ctl53.step(); await wait(); cpr.flush();             // the content frame
+  ctl53.step(); await wait(); cpr.flush();             // the usage frame
+  ctl53.step(); await wait();                          // end of stream, then the fin paint
+  await run53;
+  const m53 = cpr.s.messages[1];
+  assert.ok(m53.usage, "send() stored the usage chunk on the message");
+  assert.strictEqual(m53.usage.prompt_tokens, 4000, "prompt tokens kept for the breakdown");
+  const row53 = cpr.s.el("chat").children.find((c) => (c.className || "").includes("st-msg--assistant"));
+  const pct53 = row53.querySelector(".ctx-pct");
+  assert.strictEqual(pct53.hidden, false, "the percent span shows once the turn has usage");
+  assert.strictEqual(pct53.textContent, "(49.3% context)", "4,040 of 8,192 tokens is 49.3% (to the tenth)");
+  assert.ok(String(pct53.title).includes("3,200"), "the hover title names the reused prefix");
+  assert.ok(String(pct53.title).includes("80.0%"), "and how much of the prompt was reused (3,200 of 4,000)");
+  // no percent while a turn streams (no usage yet), and a re-render brings it back from the stored usage
+  const live53 = {role: "assistant", text: "partial", reasoning: "", time: Date.now()};
+  assert.strictEqual(cpr.s.msgEl(live53, 0).querySelector(".ctx-pct").hidden, true, "no percent before the turn has usage");
+  assert.strictEqual(cpr.s.msgEl(m53, 0).querySelector(".ctx-pct").textContent, "(49.3% context)",
+                     "a re-render shows it again from the stored usage (the reload path)");
+  done.push("context percent: (NN% context) on a finished answer; the hover title breaks it into prompt / reused / output");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
