@@ -1527,8 +1527,10 @@ function setBusy(on) {
   $("stop-btn").hidden = !on;
   $("send-btn").disabled = on;
   $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
-  if (on) window.addEventListener("beforeunload", warnOnLeave);
-  else window.removeEventListener("beforeunload", warnOnLeave);
+  if (on) {
+    window.addEventListener("beforeunload", warnOnLeave);
+    pollNow();            // todo #poll-on-enter: pressing Enter must not wait for the next idle poll (up to POLL_IDLE_MS = 15 s away, so the pill reads Idle while the engine is already working).  schedulePoll clears the pending timer first, so this cannot fork a second chain (the metrics-lite lesson).
+  } else window.removeEventListener("beforeunload", warnOnLeave);
   if (historyOn) renderSidebar();      // the list shows which conversation is answering (chatItem reads busy)
 }
 

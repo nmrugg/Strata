@@ -210,7 +210,7 @@ function run(hooks, stored, seed) {
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
-               fetches, flush: () => { while (raf.length) raf.shift()(); }};
+               fetches, timers, flush: () => { while (raf.length) raf.shift()(); }};
   return api;
 }
 
@@ -1870,6 +1870,26 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(cpr.s.msgEl(m53, 0).querySelector(".ctx-pct").textContent, "(49.3% context)",
                      "a re-render shows it again from the stored usage (the reload path)");
   done.push("context percent: (NN% context) on a finished answer; the hover title breaks it into prompt / reused / output");
+
+  // 54. pressing Enter polls at once (todo #poll-on-enter).  Idle polling is POLL_IDLE_MS = 15 s, so before the fix
+  // the pill could read "Idle" for up to 15 s into a turn - the next poll was whatever the previous idle cycle had
+  // already scheduled.  setBusy(true), which send() calls, must call pollNow(); pollNow goes through the ONE
+  // scheduler (schedulePoll clears the pending timer before arming), so it cannot fork a second chain.  The stub
+  // records setTimeout calls rather than running them, so what is asserted is the scheduled delay and the count of
+  // live timers.
+  const pe = run({}, {});
+  await wait();
+  pe.timers.length = 0;                              // drop any timer the page armed at start-up
+  pe.s.setBusy(true);
+  assert.strictEqual(pe.timers.filter((t) => t.f && t.ms === 0).length, 1,
+                     "setBusy(true) arms exactly one poll at 0 ms - the pill updates now, not up to 15 s away");
+  pe.s.setBusy(true);                                // a second send: the scheduler cancels the pending poll, it does not stack
+  assert.strictEqual(pe.timers.filter((t) => t.f).length, 1,
+                     "still exactly one live timer - the second pollNow replaced the first, it did not fork a second chain");
+  pe.timers.length = 0;
+  pe.s.setBusy(false);                               // ending must not arm a fresh poll: the chain is already running at 1 s while busy
+  assert.strictEqual(pe.timers.filter((t) => t.f).length, 0, "setBusy(false) schedules nothing new");
+  done.push("poll-on-enter: Enter polls immediately; the one scheduler means it cannot fork a second chain");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
