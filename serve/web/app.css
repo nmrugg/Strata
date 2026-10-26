@@ -215,12 +215,13 @@ main { flex: 1; min-height: 0; display: flex; }
    invisible as it was before */
 @media (hover: none) { .chat-item__actions { display: flex; } }
 .chat-item__more { width: 30px; height: 30px; }
-/* size + attachment count after the chat's name (todo #import-export) */
-.chat-item__size { flex: none; font-size: var(--st-fs-xs); color: var(--st-ink-muted); white-space: nowrap; }
 /* the chat settings modal and its conversation picker (todo #import-export) */
 .settings-actions { display: flex; flex-direction: column; gap: var(--st-s-2); }
 .chat-picker { width: min(92vw, 560px); }
+.chat-picker__head { display: flex; align-items: center; gap: var(--st-s-2); }
+.chat-picker__back .st-icon { transform: rotate(90deg); }   /* the down chevron, turned to point left (back) */
 .chat-picker__controls { display: flex; flex-wrap: wrap; gap: var(--st-s-2); align-items: center; }
+.chat-picker__row2 { display: flex; gap: var(--st-s-2); flex-basis: 100%; }   /* All / None on their own line */
 .chat-picker__controls .st-input { height: 32px; }
 .chat-picker__controls input[type="search"] { flex: 1; min-width: 140px; }
 .chat-picker__list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; margin-top: var(--st-s-2); }

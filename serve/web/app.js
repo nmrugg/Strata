@@ -103,8 +103,7 @@ let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
-                                          : "Attach a text file (or drop it here)";
+    updateAttachEnabled();
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -647,7 +646,7 @@ function markdownBlocks(text) {
 function markdown(text) { return markdownBlocks(text).join(""); }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: "live", mdmine: false, mdtheirs: true, esp: true, mcp: true, mcpthink: false};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: "live", mdmine: false, mdtheirs: true, esp: true, mcp: true, mcpthink: false, attachments: true};
 // "Show thinking" used to be four switches (show / openthink / opentools / autofold) that overlapped and
 // half-contradicted each other.  They are one choice now - "folded" | "live" | "always" - and an old stored
 // object still has them as booleans, so map it once on load rather than letting a saved true/false decide
@@ -862,7 +861,7 @@ function importChatsFlow() {
 // a shared picker: one checkbox per chat (default on), a name filter, a date range (from-only = everything on or
 // after; to-only = everything on or before), All/None acting on the VISIBLE rows, and an action that applies to
 // every CHECKED chat even if the current filter hides it.
-function openChatPicker({title, verb, danger, list, onRun}) {
+function openChatPicker({title, verb, danger, list, onRun, onBack}) {
   closeSettingsModal();
   const items = list || chats;
   const idOf = (c) => c.id;
@@ -870,14 +869,19 @@ function openChatPicker({title, verb, danger, list, onRun}) {
   const back = node("div", "att-viewer");
   back.onclick = (e) => { if (e.target === back) closeSettingsModal(); };
   const panel = node("div", "att-viewer__panel chat-picker");
-  panel.appendChild(node("h3", "msg-del__title", title || `${verb} conversations`));
+  const head = node("div", "chat-picker__head");
+  if (onBack) { const bk = node("button", "st-btn st-btn--icon chat-picker__back", ""); bk.type = "button"; bk.title = "Back"; bk.setAttribute("aria-label", "Back"); bk.innerHTML = icon("chevron", "st-icon st-icon--sm"); bk.onclick = onBack; head.appendChild(bk); }
+  head.appendChild(node("h3", "msg-del__title", title || `${verb} conversations`));
+  panel.appendChild(head);
   const controls = node("div", "chat-picker__controls");
   const filter = document.createElement("input"); filter.type = "search"; filter.placeholder = "Filter by name"; filter.className = "st-input";
   const from = document.createElement("input"); from.type = "date"; from.title = "From date (inclusive)";
   const to = document.createElement("input"); to.type = "date"; to.title = "To date (inclusive)";
   const allBtn = node("button", "st-btn st-btn--secondary", "All"); allBtn.type = "button";
   const noneBtn = node("button", "st-btn st-btn--secondary", "None"); noneBtn.type = "button";
-  controls.append(filter, from, to, allBtn, noneBtn); panel.appendChild(controls);
+  controls.append(filter, from, to);
+  const row2 = node("div", "chat-picker__row2"); row2.append(allBtn, noneBtn); controls.appendChild(row2);
+  panel.appendChild(controls);
   const listBox = node("div", "chat-picker__list"); panel.appendChild(listBox);
   const visible = () => {
     const q = (filter.value || "").toLowerCase();
@@ -917,17 +921,42 @@ function openChatPicker({title, verb, danger, list, onRun}) {
 }
 let settingsModal = null;
 function closeSettingsModal() { if (settingsModal) settingsModal.remove(); settingsModal = null; }
+// strip every attachment from the chosen chats (the messages stay) - the "Delete only attachments" action.
+function deleteAttachmentsOnly(list) {
+  if (!list.length) { toast("info", "Nothing selected"); return; }
+  if (!confirm(`Remove attachments from ${list.length} conversation${list.length > 1 ? "s" : ""}? The chats themselves are kept.`)) return;
+  let n = 0;
+  for (const c of list) { for (const m of c.messages || []) { n += (m.images || []).length + (m.files || []).length; m.images = []; m.files = []; } writeChat(c); }
+  renderSidebar(); renderChat();
+  toast("success", "Attachments removed", `${n} attachment${n === 1 ? "" : "s"}`);
+}
+// reflect the global attachments toggle on the composer's attach button
+function updateAttachEnabled() {
+  const on = settings.attachments !== false, btn = $("attach-btn");
+  if (!btn) return;
+  btn.disabled = !on;
+  btn.title = on ? (health.images ? "Attach a text file or a picture (or drop it here)" : "Attach a text file (or drop it here)")
+                 : "Attachments are off (enable in Chat settings)";
+}
 function openChatSettings() {
   closeSettingsModal();
   const back = node("div", "att-viewer");
   back.onclick = (e) => { if (e.target === back) closeSettingsModal(); };
   const panel = node("div", "att-viewer__panel settings-modal");
   panel.appendChild(node("h3", "msg-del__title", "Chat settings"));
+  const trow = node("label", "toggle-row");
+  trow.appendChild(node("span", "", "Enable attachments"));
+  const tsw = document.createElement("button"); tsw.className = "st-toggle"; tsw.setAttribute("role", "switch");
+  tsw.setAttribute("aria-checked", String(settings.attachments !== false)); tsw.setAttribute("aria-label", "Enable attachments");
+  tsw.onclick = () => { settings.attachments = settings.attachments === false; tsw.setAttribute("aria-checked", String(settings.attachments !== false)); store.set("sampling", settings); updateAttachEnabled(); };
+  trow.appendChild(tsw); panel.appendChild(trow);
   const wrap = node("div", "settings-actions");
   const mk = (label, cls, fn) => { const b = node("button", "st-btn " + cls, label); b.type = "button"; b.onclick = fn; wrap.appendChild(b); };
-  mk("Export conversations", "st-btn--secondary", () => openChatPicker({verb: "Export", onRun: exportChatsJsonl}));
+  const go = (opts) => openChatPicker(Object.assign({onBack: openChatSettings}, opts));
+  mk("Export conversations", "st-btn--secondary", () => go({verb: "Export", onRun: exportChatsJsonl}));
   mk("Import conversations", "st-btn--secondary", importChatsFlow);
-  mk("Delete conversations", "st-btn--primary danger", () => openChatPicker({verb: "Delete", danger: true, onRun: deleteChatsConfirmed}));
+  mk("Delete only attachments", "st-btn--secondary", () => go({title: "Delete attachments", verb: "Delete attachments", onRun: deleteAttachmentsOnly}));
+  mk("Delete conversations", "st-btn--primary danger", () => go({verb: "Delete", danger: true, onRun: deleteChatsConfirmed}));
   panel.appendChild(wrap);
   back.appendChild(panel); document.body.appendChild(back); settingsModal = back;
 }
@@ -997,12 +1026,10 @@ function chatItem(c) {
   // conversation.  A reply you have not read outranks a draft in the gutter: go read beats go type.
   const state = running ? "run" : c.unread ? "new" : "";
   const tip = running ? "answering" : c.unread ? "unread reply" : "";
-  const att = chatAttCount(c), sz = kfmt(chatSize(c));
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
   row.innerHTML = `<button class="chat-item__title${drafted ? " draft" : ""}" data-open-chat` +
     ` title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}${drafted ? " (has draft)" : ""}">${esc(t)}</button>` +
-    `<span class="chat-item__size muted small" title="${fmt(chatSize(c))} bytes${att ? ` · ${att} attachment${att > 1 ? "s" : ""}` : ""}">${sz}${att ? ` · ${att}\u{1F4CE}` : ""}</span>` +
     (state ? `<span class="chat-item__state ${state}" title="${esc(tip)}" aria-hidden="true"></span>` : "") +
     `<span class="chat-item__actions">` +
     `<button class="st-btn st-btn--icon chat-item__more" data-chat-menu aria-haspopup="menu" aria-label="Chat actions" title="Chat actions">⋮</button>` +
@@ -2338,6 +2365,7 @@ function isTextFile(f) {
 // read chosen files into an attachment list (images as data URLs, text files as text).  Defaults to the
 // composer's global list; the edit box (todo #edit-posts) passes its own list/container to attach to a post.
 function addFiles(files, list = attachments, box = $("attachments")) {
+  if (settings.attachments === false) { toast("info", "Attachments are off", "Enable them in Chat settings."); return; }   // global toggle (todo #import-export)
   for (const f of files) {
     if (f.type.startsWith("image/")) {
       if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
@@ -2517,7 +2545,7 @@ function drawerSettings() {
 // counted too: it decides what Apply sends the server, and until Apply it is worth nothing.
 function drawerDirty() {
   const d = drawerSettings();
-  if (Object.keys(DEFAULTS).some((k) => String(d[k]) !== String(settings[k]))) return true;
+  if (Object.keys(DEFAULTS).some((k) => k in d && String(d[k]) !== String(settings[k]))) return true;   // only keys the drawer actually manages
   return ($("s-share").getAttribute("aria-checked") === "true") !== sharedOn;
 }
 function closeDrawer() {

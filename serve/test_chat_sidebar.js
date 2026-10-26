@@ -205,8 +205,8 @@ function run(hooks, stored, seed) {
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
-    "get messages() { return messages; }, get db() { return db; }, chatTitle, groupName, setHistory, startChat, openChat, " +
-    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, msgEl, updateAssistant, renderBubble, toolHtml, " +
+    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, setHistory, startChat, openChat, " +
+    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
@@ -2457,16 +2457,17 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                   c: {id: "c", title: "cherry", time: Date.now() - 1 * 86400000, messages: [msg("c")]}});
   await wait();
   let ranSel = null;
-  pk.s.openChatPicker({verb: "Export", list: pk.s.chats, onRun: (sel) => { ranSel = sel.map((x) => x.id); }});
+  pk.s.openChatPicker({verb: "Export", list: pk.s.chats, onBack: () => {}, onRun: (sel) => { ranSel = sel.map((x) => x.id); }});
   const picker = pk.s.settingsModal;
   assert.ok(picker, "the picker opens");
   const panel74 = picker.children[0];
   const rows74 = () => panel74.querySelector(".chat-picker__list").children;
-  const ctrls74 = panel74.querySelector(".chat-picker__controls").children;   // [filter, from, to, All, None]
+  assert.ok(panel74.children[0].children.some((c) => (c.className || "").includes("chat-picker__back")), "the picker has a back button (given onBack)");
+  const ctrls74 = panel74.querySelector(".chat-picker__controls").children;   // [filter, from, to, row2(All,None)]
   assert.strictEqual(rows74().length, 3, "all three chats listed, checked by default");
   ctrls74[0].value = "an"; ctrls74[0]._l["input"]();                          // filter -> "banana" matches "an"
   assert.strictEqual(rows74().length, 1, "the filter narrows to the visible match");
-  ctrls74[4].onclick();                                                       // None on the visible row
+  ctrls74[3].children[1].onclick();                                           // None (row2 = [All, None]) on the visible row
   ctrls74[0].value = ""; ctrls74[0]._l["input"]();                            // clear the filter
   assert.strictEqual(rows74().length, 3, "filter cleared, all visible again");
   panel74.querySelector(".msg-edit__bar").children[1].onclick();             // the action (Export)
@@ -2487,6 +2488,27 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(parsed75[0].messages[1].reasoning, "thinking here", "thinking round-trips");
   assert.strictEqual(parsed75[0].messages[1].tools[0].at, 4, "tool round at/rat round-trips");
   done.push("import-export: the picker defaults to all-checked, All/None act on visible rows, the action covers all checked even if filtered out; JSONL is llama.cpp-readable and round-trips Strata extras");
+
+  // 76. "Delete only attachments" strips images/files from the chosen chats but keeps the chats (todo #import-export).
+  const da = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+                 {a: {id: "a", title: "with att", time: Date.now(),
+                      messages: [{id: "m", role: "user", text: "look", time: Date.now(),
+                                  images: [{name: "p.png", url: "data:image/png;base64,AAA"}], files: [{name: "n.txt", text: "hi"}]}]}});
+  await wait();
+  const daChat = da.s.chats.find((c) => c.id === "a");
+  da.confirmAnswer.yes = true;
+  da.s.deleteAttachmentsOnly([daChat]);
+  assert.strictEqual(daChat.messages[0].images.length, 0, "images removed");
+  assert.strictEqual(daChat.messages[0].files.length, 0, "files removed");
+  assert.strictEqual(daChat.messages[0].text, "look", "the chat and its text are kept");
+
+  // 77. the global attachments toggle off blocks adding attachments (todo #import-export).
+  const at77 = run({}, {});
+  await wait();
+  at77.s.setSettings({attachments: false});
+  at77.s.addFiles([{type: "text/plain", name: "a.txt", size: 4}]);   // would try FileReader if enabled
+  assert.strictEqual(at77.s.attachments.length, 0, "attachments off -> addFiles does nothing");
+  done.push("import-export: delete-only-attachments strips images/files but keeps the chats; the attachments toggle gates addFiles");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
