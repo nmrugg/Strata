@@ -286,6 +286,13 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Note: tool rounds carry `at` and `rat` offsets that the replay depends on (assistantMessages, and
     serve/server.py on why they must match). An import that loses them re-creates the re-read bug - hence the
     `strata` block round-trips them; a strictly-llama.cpp import can't preserve them.
+    FIXED (import of real llama.cpp exports): the importer now handles all three shapes - the NEW export (a .zip of
+    per-conversation .jsonl: a session header + a message TREE with parent/children + currNode, toolCalls and
+    toolCallId, reasoningContent), the OLD export (a .json array of {conv, messages}), and our own .jsonl.  It walks
+    the active branch (currNode -> parents, reversed), drops system/root messages, groups assistant+tool runs into
+    Strata turns with at/rat, and restores thinking from reasoningContent.  Zip is read with the browser's
+    DecompressionStream (deflate-raw).  Verified against the real 2026-10-26 export (a 282-message tool-heavy
+    branch groups with every tool result matched).
 
 `edit-posts`  Edit and delete posts in a conversation, mine and the model's. [ui] [py] PARTLY DONE 2026-10-24
     PROGRESS (built in increments, decided with the human 2026-10-24):

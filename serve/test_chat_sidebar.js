@@ -214,7 +214,7 @@ function run(hooks, stored, seed) {
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
-    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, parseLlamaJsonl, parseImport, unzipEntries, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
                fetches, timers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
@@ -2528,6 +2528,58 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(dt.s.chats.some((c) => c.id === "a"), "toggle on -> the chat is kept");
   assert.strictEqual(dt.s.chats.find((c) => c.id === "a").messages[0].images.length, 0, "toggle on -> attachments stripped");
   done.push("import-export: the Delete picker's toggle routes to delete-attachments vs delete-chats and passes its state to the action");
+
+  // 79. the NEW llama.cpp export (per-conversation JSONL: a session header + a message tree with toolCalls /
+  // toolCallId / reasoningContent) imports into a coherent chat, not a blank New Chat.
+  const lj = run({}, {});
+  await wait();
+  const ljText = [
+    JSON.stringify({type: "session", id: "c1", name: "Civil War", lastModified: 123, currNode: "a2"}),
+    JSON.stringify({type: "message", message: {id: "r", role: "system", content: "", parent: null, children: ["s"]}}),
+    JSON.stringify({type: "message", message: {id: "s", role: "system", content: "sys prompt", parent: "r", children: ["u"]}}),
+    JSON.stringify({type: "message", message: {id: "u", role: "user", content: "Q?", parent: "s", children: ["a1"]}}),
+    JSON.stringify({type: "message", message: {id: "a1", role: "assistant", content: "", reasoningContent: "let me look", parent: "u", children: ["t1"], toolCalls: [{id: "call1", type: "function", function: {name: "fs_read", arguments: "{\"path\":\"x\"}"}}]}}),
+    JSON.stringify({type: "message", message: {id: "t1", role: "tool", content: "the file", toolCallId: "call1", parent: "a1", children: ["a2"]}}),
+    JSON.stringify({type: "message", message: {id: "a2", role: "assistant", content: "Final answer", parent: "t1", children: []}}),
+  ].join("\n");
+  const ljParsed = lj.s.parseLlamaJsonl(ljText);
+  assert.strictEqual(ljParsed.length, 1, "one conversation parsed");
+  assert.strictEqual(ljParsed[0].title, "Civil War", "session name used as the title");
+  const roles = ljParsed[0].messages.map((m) => m.role);
+  assert.deepStrictEqual(roles, ["user", "assistant"], "system/root messages dropped, user then assistant");
+  const a = ljParsed[0].messages[1];
+  assert.strictEqual(a.reasoning, "let me look", "reasoningContent becomes thinking");
+  assert.strictEqual(a.text, "Final answer", "the assistant text is kept");
+  assert.strictEqual(a.tools.length, 1, "the tool call is rebuilt");
+  assert.strictEqual(a.tools[0].name, "fs_read", "tool name");
+  assert.strictEqual(a.tools[0].result, "the file", "the tool result is matched by toolCallId");
+  assert.ok(a.tools[0].at >= 0 && a.tools[0].rat >= 0, "at/rat offsets set for correct replay");
+
+  // 80. a zip of JSONL (the new llama.cpp export) is read back entry by entry.
+  const zr = run({}, {});
+  await wait();
+  const enc = new TextEncoder();
+  const zraw = enc.encode(ljText);
+  const nm = enc.encode("a.jsonl");
+  const lh = new Uint8Array(30 + nm.length); const ldv = new DataView(lh.buffer);
+  ldv.setUint32(0, 0x04034b50, true); ldv.setUint16(4, 20, true); ldv.setUint16(8, 0, true);   // stored (method 0)
+  ldv.setUint32(18, zraw.length, true); ldv.setUint32(22, zraw.length, true); ldv.setUint16(26, nm.length, true);
+  lh.set(nm, 30);
+  const cd = new Uint8Array(46 + nm.length); const cdv = new DataView(cd.buffer);
+  cdv.setUint32(0, 0x02014b50, true); cdv.setUint16(4, 20, true); cdv.setUint16(6, 20, true); cdv.setUint16(10, 0, true);
+  cdv.setUint32(20, zraw.length, true); cdv.setUint32(24, zraw.length, true); cdv.setUint16(28, nm.length, true);
+  cdv.setUint32(42, 0, true); cd.set(nm, 46);
+  const eocd = new Uint8Array(22); const edv = new DataView(eocd.buffer);
+  edv.setUint32(0, 0x06054b50, true); edv.setUint16(8, 1, true); edv.setUint16(10, 1, true);
+  edv.setUint32(12, zraw.length, true); edv.setUint32(16, 30 + nm.length + zraw.length, true);
+  const zipBuf = new Uint8Array(lh.length + zraw.length + cd.length + eocd.length); let p = 0;
+  for (const part of [lh, zraw, cd, eocd]) { zipBuf.set(part, p); p += part.length; }
+  const entries = await zr.s.unzipEntries(zipBuf.buffer);
+  assert.strictEqual(entries.length, 1, "one entry unzipped");
+  assert.strictEqual(entries[0].name, "a.jsonl", "entry name");
+  const zp = zr.s.parseLlamaJsonl(entries[0].text);
+  assert.strictEqual(zp.length, 1, "the zipped JSONL parses to one chat");
+  done.push("import-export: the new llama.cpp JSONL (session + message tree, tools + reasoning) and a zip of JSONL both import correctly");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

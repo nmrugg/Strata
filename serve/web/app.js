@@ -847,18 +847,131 @@ function deleteChatsConfirmed(list) {
   renderSidebar();
   toast("success", "Deleted", `${list.length} conversation${list.length > 1 ? "s" : ""}`);
 }
+// ---- llama.cpp imports (todo #import-export). Three shapes: our own JSONL, the OLD llama.cpp export (a JSON
+// array of {conv, messages} with a message tree), and the NEW export (a zip of per-conversation .jsonl, each a
+// session header + message-tree lines). Tool rounds are rebuilt into Strata assistant turns with at/rat offsets
+// so the next request replays correctly; thinking comes from reasoningContent when present.
+function parseLlamaJsonl(text) {
+  const lines = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  let session = null; const msgs = [];
+  for (const l of lines) {
+    let o; try { o = JSON.parse(l); } catch (e) { continue; }
+    if (o.type === "session") session = o;
+    else if (o.type === "message" && o.message) msgs.push(o.message);
+    else if (o.messages) { const c = parseChatsJsonl(l); if (c.length) return c; }   // our own JSONL line
+  }
+  if (!msgs.length) return [];
+  const byId = new Map(); msgs.forEach((m) => byId.set(m.id, m));
+  const out = [];
+  const branches = (session && session.currNode && byId.has(session.currNode)) ? [session.currNode] : [...byId.keys()];
+  for (const leaf of branches) {
+    const path = []; let cur = byId.get(leaf), guard = 0;
+    while (cur && guard++ < 20000) { path.push(cur); cur = cur.parent ? byId.get(cur.parent) : null; }
+    path.reverse();
+    const messages = []; let i = 0;
+    while (i < path.length) {
+      const m = path[i];
+      if (m.role === "user") {
+        const content = typeof m.content === "string" ? m.content
+          : (Array.isArray(m.content) ? m.content.filter((p) => p.type === "text").map((p) => p.text).join("") : "");
+        const images = Array.isArray(m.content) ? m.content.filter((p) => p.type === "image_url").map((p) => ({name: "image", url: (p.image_url || {}).url})) : [];
+        messages.push({id: mid(), role: "user", text: content, images, files: [], time: m.timestamp || Date.now()});
+        i++;
+      } else if (m.role === "assistant") {
+        const tools = []; let text = "", reasoning = "";
+        let j = i;
+        while (j < path.length && (path[j].role === "assistant" || path[j].role === "tool")) {
+          const a = path[j];
+          if (a.role === "assistant") {
+            if (a.reasoningContent) reasoning += (reasoning ? "\n\n" : "") + a.reasoningContent;
+            const at = text.length, rat = reasoning.length;
+            text += (text ? "\n\n" : "") + (a.content || "");
+            for (const tc of (a.toolCalls || [])) {
+              let args = {}; try { args = JSON.parse(tc.function && tc.function.arguments || "{}"); } catch (e) {}
+              tools.push({id: tc.id, name: (tc.function || {}).name || tc.name || "tool", server: "imported", tool: (tc.function || {}).name || tc.name || "tool",
+                          arguments: args, round: tools.length, state: "done", at, rat, result: "", ok: true});
+            }
+            j++;
+            while (j < path.length && path[j].role === "tool") {
+              const tr = path[j], call = tools.find((t) => t.id === tr.toolCallId);
+              if (call) call.result = typeof tr.content === "string" ? tr.content : JSON.stringify(tr.content);
+              j++;
+            }
+          } else { j++; }   // stray tool result with no preceding assistant in this window
+        }
+        if (tools.length) messages.push({id: mid(), role: "assistant", text, reasoning, tools, time: m.timestamp || Date.now()});
+        else if (text || reasoning) messages.push({id: mid(), role: "assistant", text, reasoning, tools: [], time: m.timestamp || Date.now()});
+        i = j;
+      } else i++;   // system / root
+    }
+    if (messages.length) out.push({id: newChat().id, title: (session && session.name) || "", time: (session && session.lastModified) || Date.now(), messages});
+  }
+  return out;
+}
+// minimal zip reader for the entries we need (stored or raw-deflate), inflated with the browser's DecompressionStream.
+async function unzipEntries(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let eocd = -1;
+  for (let i = buf.byteLength - 22; i >= 0 && i > buf.byteLength - 66000; i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+  if (eocd < 0) return [];
+  const count = dv.getUint16(eocd + 10, true); let off = dv.getUint32(eocd + 16, true);
+  const td = new TextDecoder(), files = [];
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) break;
+    const method = dv.getUint16(off + 10, true), csize = dv.getUint32(off + 20, true);
+    const nlen = dv.getUint16(off + 28, true), elen = dv.getUint16(off + 30, true), clen = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const name = td.decode(u8.subarray(off + 46, off + 46 + nlen));
+    const lnlen = dv.getUint16(lho + 26, true), lelen = dv.getUint16(lho + 28, true);
+    const dstart = lho + 30 + lnlen + lelen;
+    const raw = u8.subarray(dstart, dstart + csize);
+    let bytes;
+    if (method === 0) bytes = raw;
+    else if (method === 8) bytes = new Uint8Array(await (new Response(raw)).stream().pipeThrough(new DecompressionStream("deflate-raw")).arrayBuffer());
+    if (bytes) files.push({name, text: td.decode(bytes)});
+    off += 46 + nlen + elen + clen;
+  }
+  return files;
+}
+// parse any supported import: a zip (new llama.cpp), a JSON array (old llama.cpp), or JSONL (new or ours).
+async function parseImport(textOrBuf) {
+  if (textOrBuf instanceof ArrayBuffer) {
+    const u8 = new Uint8Array(textOrBuf);
+    if (u8[0] === 0x50 && u8[1] === 0x4b) { const all = []; for (const f of await unzipEntries(textOrBuf)) all.push(...parseLlamaJsonl(f.text)); return all; }
+    textOrBuf = new TextDecoder().decode(u8);
+  }
+  const t = String(textOrBuf || "").trim();
+  if (t[0] === "[") { try { const arr = JSON.parse(t); return parseLlamaArray(arr); } catch (e) {} }
+  return parseLlamaJsonl(t);
+}
+// old llama.cpp export: [{conv:{name,lastModified,currNode}, messages:[...tree...]}]
+function parseLlamaArray(arr) {
+  const out = [];
+  for (const e of (Array.isArray(arr) ? arr : [])) {
+    const conv = e.conv || {}, msgs = e.messages || [];
+    const byId = new Map(); msgs.forEach((m) => byId.set(m.id, m));
+    const leaf = conv.currNode && byId.has(conv.currNode) ? conv.currNode : (msgs.length ? msgs[msgs.length - 1].id : null);
+    const path = []; let cur = leaf ? byId.get(leaf) : null, guard = 0;
+    while (cur && guard++ < 20000) { path.push(cur); cur = cur.parent ? byId.get(cur.parent) : null; }
+    path.reverse();
+    const fake = JSON.stringify({type: "session", name: conv.name, lastModified: conv.lastModified, currNode: leaf}) + "\n"
+      + path.map((m) => JSON.stringify({type: "message", message: m})).join("\n");
+    out.push(...parseLlamaJsonl(fake));
+  }
+  return out;
+}
 function importChatsFlow(onRun) {
-  const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".jsonl,.json,application/json";
-  inp.onchange = () => {
+  const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".zip,.jsonl,.json,application/json";
+  inp.onchange = async () => {
     const f = inp.files && inp.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = () => {
-      const parsed = parseChatsJsonl(r.result);
-      if (!parsed.length) { toast("warn", "Nothing to import", "No chats found in that file (expected llama.cpp JSONL)."); return; }
+    r.onload = async () => {
+      let parsed = []; try { parsed = await parseImport(r.result); } catch (e) {}
+      if (!parsed.length) { toast("warn", "Nothing to import", "No chats found (expected a llama.cpp export: a .zip of .jsonl, a .jsonl, or the older .json)."); return; }
       openChatPicker({title: "Import conversations", verb: "Import", list: parsed, onBack: openChatSettings,
         toggles: [ATT_TOGGLES()], onRun});
     };
-    r.readAsText(f);
+    r.readAsArrayBuffer(/\.(zip)$/i.test(f.name) ? f : f);
   };
   inp.click();
 }
