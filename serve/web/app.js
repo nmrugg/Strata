@@ -772,6 +772,167 @@ function dropRecord(c) {
 function putChat(c) { writeChat(c); renderSidebar(); }   // memory only: the change still has to show
 function dropChat(c) { dropRecord(c); renderSidebar(); }
 
+// ---- chat settings: import / export / delete conversations (todo #import-export) ----
+const chatSize = (c) => { try { return JSON.stringify(cleanChat(c)).length; } catch (e) { return (c.messages || []).reduce((s, m) => s + (m.text || "").length, 0); } };
+const chatAttCount = (c) => (c.messages || []).reduce((s, m) => s + (m.images || []).length + (m.files || []).length, 0);
+function downloadText(name, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type: "application/x-ndjson"}));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+// one chat -> one JSONL line: a llama.cpp-readable `messages` array (OpenAI shape) plus a `strata` block that
+// keeps what llama.cpp drops (ids, time, reasoning, tool rounds with at/rat, files, usage) for a lossless round-trip.
+function chatToJsonl(c) {
+  const messages = c.messages.map((m) => {
+    if (m.role === "user") {
+      const imgs = (m.images || []).filter((i) => i.url);
+      return {role: "user", content: imgs.length ? [{type: "text", text: m.text || ""},
+        ...imgs.map((i) => ({type: "image_url", image_url: {url: i.url}}))] : (m.text || "")};
+    }
+    return {role: "assistant", content: m.text || ""};
+  });
+  return JSON.stringify({title: chatTitle(c), time: c.time, messages,
+    strata: {id: c.id, messages: c.messages.map((m) => ({id: m.id, role: m.role, time: m.time,
+      reasoning: m.reasoning, tools: m.tools, images: m.images, files: m.files, usage: m.usage}))}});
+}
+function exportChatsJsonl(list) {
+  if (!list.length) { toast("info", "Nothing selected"); return; }
+  const name = `strata-chats-${new Date().toISOString().slice(0, 10)}.jsonl`;
+  downloadText(name, list.map(chatToJsonl).join("\n") + "\n");
+  toast("success", "Exported", `${list.length} conversation${list.length > 1 ? "s" : ""} to ${name}`);
+}
+// parse llama.cpp JSONL (one chat per line, `messages` in OpenAI shape). If a `strata` block is present, restore
+// full fidelity (ids, thinking, tool rounds, files); otherwise import the plain messages (thinking/tools lost).
+function parseChatsJsonl(text) {
+  const out = [];
+  for (const line of String(text || "").split("\n")) {
+    const s = line.trim(); if (!s) continue;
+    let obj; try { obj = JSON.parse(s); } catch (e) { continue; }
+    const msgs = obj.messages || [];
+    const sm = (obj.strata && obj.strata.messages) || [];
+    const messages = msgs.map((m, i) => {
+      const extra = sm[i] || {};
+      const base = {id: extra.id || mid(), role: m.role === "user" ? "user" : "assistant",
+                    time: extra.time || obj.time || Date.now(), images: extra.images || [], files: extra.files || [],
+                    reasoning: extra.reasoning || "", tools: extra.tools || [], usage: extra.usage};
+      if (m.role === "user") {
+        base.text = typeof m.content === "string" ? m.content
+          : (Array.isArray(m.content) ? m.content.filter((p) => p.type === "text").map((p) => p.text).join("") : "");
+        if (!base.images.length && Array.isArray(m.content))
+          base.images = m.content.filter((p) => p.type === "image_url").map((p) => ({name: "image", url: p.image_url && p.image_url.url}));
+      } else base.text = typeof m.content === "string" ? m.content : "";
+      return base;
+    });
+    out.push({id: (obj.strata && obj.strata.id) || newChat().id, title: obj.title || "", time: obj.time || Date.now(), messages});
+  }
+  return out;
+}
+function importChats(list) {
+  if (!list.length) { toast("info", "Nothing selected"); return; }
+  for (const c of list) { const fresh = {...c, id: newChat().id}; chats.push(fresh); writeChat(fresh); }
+  renderSidebar();
+  toast("success", "Imported", `${list.length} conversation${list.length > 1 ? "s" : ""}`);
+}
+function deleteChatsConfirmed(list) {
+  if (!list.length) { toast("info", "Nothing selected"); return; }
+  if (!confirm(`Delete ${list.length} conversation${list.length > 1 ? "s" : ""}? This cannot be undone.`)) return;
+  for (const c of list) {
+    if (busy && c.id === busy.chatId) continue;                 // never delete the chat that owns a live turn
+    const i = chats.indexOf(c); if (i >= 0) chats.splice(i, 1); dropRecord(c);
+  }
+  if (!chats.some((c) => c.id === chatId)) { const next = chats[0] || newChat(); if (!chats.includes(next)) chats.push(next); showChat(next); }
+  renderSidebar();
+  toast("success", "Deleted", `${list.length} conversation${list.length > 1 ? "s" : ""}`);
+}
+function importChatsFlow() {
+  const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".jsonl,.json,application/json";
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      const parsed = parseChatsJsonl(r.result);
+      if (!parsed.length) { toast("warn", "Nothing to import", "No chats found in that file (expected llama.cpp JSONL)."); return; }
+      openChatPicker({title: "Import conversations", verb: "Import", list: parsed, onRun: importChats});
+    };
+    r.readAsText(f);
+  };
+  inp.click();
+}
+// a shared picker: one checkbox per chat (default on), a name filter, a date range (from-only = everything on or
+// after; to-only = everything on or before), All/None acting on the VISIBLE rows, and an action that applies to
+// every CHECKED chat even if the current filter hides it.
+function openChatPicker({title, verb, danger, list, onRun}) {
+  closeSettingsModal();
+  const items = list || chats;
+  const idOf = (c) => c.id;
+  const checked = new Map(); items.forEach((c) => checked.set(idOf(c), true));
+  const back = node("div", "att-viewer");
+  back.onclick = (e) => { if (e.target === back) closeSettingsModal(); };
+  const panel = node("div", "att-viewer__panel chat-picker");
+  panel.appendChild(node("h3", "msg-del__title", title || `${verb} conversations`));
+  const controls = node("div", "chat-picker__controls");
+  const filter = document.createElement("input"); filter.type = "search"; filter.placeholder = "Filter by name"; filter.className = "st-input";
+  const from = document.createElement("input"); from.type = "date"; from.title = "From date (inclusive)";
+  const to = document.createElement("input"); to.type = "date"; to.title = "To date (inclusive)";
+  const allBtn = node("button", "st-btn st-btn--secondary", "All"); allBtn.type = "button";
+  const noneBtn = node("button", "st-btn st-btn--secondary", "None"); noneBtn.type = "button";
+  controls.append(filter, from, to, allBtn, noneBtn); panel.appendChild(controls);
+  const listBox = node("div", "chat-picker__list"); panel.appendChild(listBox);
+  const visible = () => {
+    const q = (filter.value || "").toLowerCase();
+    const f = from.value ? new Date(from.value + "T00:00:00").getTime() : null;
+    const t = to.value ? new Date(to.value + "T23:59:59").getTime() : null;
+    return items.filter((c) => {
+      if (q && !chatTitle(c).toLowerCase().includes(q)) return false;
+      const tm = c.time || 0;
+      if (f != null && tm < f) return false;
+      if (t != null && tm > t) return false;
+      return true;
+    });
+  };
+  const render = () => {
+    listBox.innerHTML = "";
+    for (const c of visible()) {
+      const row = node("label", "chat-picker__row");
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = checked.get(idOf(c)) !== false;
+      cb.onchange = () => checked.set(idOf(c), cb.checked);
+      row.appendChild(cb);
+      row.appendChild(node("span", "chat-picker__name", chatTitle(c)));
+      const att = chatAttCount(c);
+      row.appendChild(node("span", "chat-picker__meta", `${kfmt(chatSize(c))}B${att ? ` · ${att} attachment${att > 1 ? "s" : ""}` : ""}`));
+      listBox.appendChild(row);
+    }
+  };
+  allBtn.onclick = () => { visible().forEach((c) => checked.set(idOf(c), true)); render(); };
+  noneBtn.onclick = () => { visible().forEach((c) => checked.set(idOf(c), false)); render(); };
+  filter.addEventListener("input", render); from.addEventListener("change", render); to.addEventListener("change", render);
+  const bar = node("div", "msg-edit__bar");
+  const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button"; cancel.onclick = closeSettingsModal;
+  const go = node("button", "st-btn st-btn--primary" + (danger ? " danger" : ""), verb); go.type = "button";
+  go.onclick = () => { const sel = items.filter((c) => checked.get(idOf(c)) !== false); closeSettingsModal(); onRun(sel); };
+  bar.append(cancel, go); panel.appendChild(bar);
+  back.appendChild(panel); document.body.appendChild(back); settingsModal = back;
+  render();
+}
+let settingsModal = null;
+function closeSettingsModal() { if (settingsModal) settingsModal.remove(); settingsModal = null; }
+function openChatSettings() {
+  closeSettingsModal();
+  const back = node("div", "att-viewer");
+  back.onclick = (e) => { if (e.target === back) closeSettingsModal(); };
+  const panel = node("div", "att-viewer__panel settings-modal");
+  panel.appendChild(node("h3", "msg-del__title", "Chat settings"));
+  const wrap = node("div", "settings-actions");
+  const mk = (label, cls, fn) => { const b = node("button", "st-btn " + cls, label); b.type = "button"; b.onclick = fn; wrap.appendChild(b); };
+  mk("Export conversations", "st-btn--secondary", () => openChatPicker({verb: "Export", onRun: exportChatsJsonl}));
+  mk("Import conversations", "st-btn--secondary", importChatsFlow);
+  mk("Delete conversations", "st-btn--primary danger", () => openChatPicker({verb: "Delete", danger: true, onRun: deleteChatsConfirmed}));
+  panel.appendChild(wrap);
+  back.appendChild(panel); document.body.appendChild(back); settingsModal = back;
+}
+$("sidebar-settings").onclick = openChatSettings;
+
 // turning the switch on: the chat on the screen becomes the first record. Only when the switch is flipped in
 // this session: on a page load the list is the list, so a fresh chat stays empty and "strata.chat" is read once,
 // when the store is empty.
@@ -836,10 +997,12 @@ function chatItem(c) {
   // conversation.  A reply you have not read outranks a draft in the gutter: go read beats go type.
   const state = running ? "run" : c.unread ? "new" : "";
   const tip = running ? "answering" : c.unread ? "unread reply" : "";
+  const att = chatAttCount(c), sz = kfmt(chatSize(c));
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
   row.innerHTML = `<button class="chat-item__title${drafted ? " draft" : ""}" data-open-chat` +
     ` title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}${drafted ? " (has draft)" : ""}">${esc(t)}</button>` +
+    `<span class="chat-item__size muted small" title="${fmt(chatSize(c))} bytes${att ? ` · ${att} attachment${att > 1 ? "s" : ""}` : ""}">${sz}${att ? ` · ${att}\u{1F4CE}` : ""}</span>` +
     (state ? `<span class="chat-item__state ${state}" title="${esc(tip)}" aria-hidden="true"></span>` : "") +
     `<span class="chat-item__actions">` +
     `<button class="st-btn st-btn--icon chat-item__more" data-chat-menu aria-haspopup="menu" aria-label="Chat actions" title="Chat actions">⋮</button>` +
@@ -1094,7 +1257,7 @@ document.addEventListener("click", (e) => {
   if (activePopover && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]") &&
       !e.target.closest("[data-msg-edit]")) closePopover();
 });
-document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
+document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (settingsModal) closeSettingsModal(); else if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
 
 // the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
 function setHistory(on, save, fromScreen) {

@@ -269,13 +269,20 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Measure before building: how big is a real chat record here, and how many open blocks
     does a 900-round turn actually produce?
 
-`import-export`  Import and export conversations. [ui] [py]
-    Export exists but only as human-readable Markdown (the export button). Needs a machine
-    format. llama.cpp's chat format is JSONL with a "messages" array - a reader for that is
-    small. Import is easy for text; images and tool rounds need care to round-trip.
-    Note: tool rounds carry `at` and `rat` offsets that the replay depends on
-    (assistantMessages, and serve/server.py:4470-4481 on why they must match). An import
-    that loses them re-creates the re-read bug. Round-trip those or refuse the import.
+`import-export`  Import and export conversations. [ui] [py] PARTLY DONE 2026-10-24
+    DONE: a Settings gear in the sidebar opens a modal with Export / Import / Delete conversations.  All three use
+    one chat-picker: a checkbox per chat (default on), a name filter, a date range (from-only = everything on/after;
+    to-only = everything on/before; both = the range), and All/None that act on the VISIBLE rows - but the action
+    applies to every CHECKED chat even if the current filter hides it.  Format is llama.cpp-compatible JSONL (one
+    chat per line, OpenAI-shaped `messages`) PLUS a `strata` block carrying ids, time, reasoning, tool rounds with
+    at/rat, files and usage, so thinking + tool rounds round-trip (a pure llama.cpp file would lose them and break
+    the replay - the note below).  Import parses both (with or without the extras).  The sidebar now shows each
+    chat's size and attachment count.
+    STILL TODO: a global "enable attachments" checkbox (default on); a "Delete only attachments" action alongside
+    Delete conversations.
+    Note: tool rounds carry `at` and `rat` offsets that the replay depends on (assistantMessages, and
+    serve/server.py on why they must match). An import that loses them re-creates the re-read bug - hence the
+    `strata` block round-trips them; a strictly-llama.cpp import can't preserve them.
 
 `edit-posts`  Edit and delete posts in a conversation, mine and the model's. [ui] [py] PARTLY DONE 2026-10-24
     PROGRESS (built in increments, decided with the human 2026-10-24):

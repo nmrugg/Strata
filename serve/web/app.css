@@ -215,6 +215,20 @@ main { flex: 1; min-height: 0; display: flex; }
    invisible as it was before */
 @media (hover: none) { .chat-item__actions { display: flex; } }
 .chat-item__more { width: 30px; height: 30px; }
+/* size + attachment count after the chat's name (todo #import-export) */
+.chat-item__size { flex: none; font-size: var(--st-fs-xs); color: var(--st-ink-muted); white-space: nowrap; }
+/* the chat settings modal and its conversation picker (todo #import-export) */
+.settings-actions { display: flex; flex-direction: column; gap: var(--st-s-2); }
+.chat-picker { width: min(92vw, 560px); }
+.chat-picker__controls { display: flex; flex-wrap: wrap; gap: var(--st-s-2); align-items: center; }
+.chat-picker__controls .st-input { height: 32px; }
+.chat-picker__controls input[type="search"] { flex: 1; min-width: 140px; }
+.chat-picker__list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; margin-top: var(--st-s-2); }
+.chat-picker__row { display: flex; align-items: center; gap: var(--st-s-2); padding: 4px 6px; border-radius: var(--st-r-sm); cursor: pointer; }
+.chat-picker__row:hover { background: var(--st-surface-2); }
+.chat-picker__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-sm); color: var(--st-ink); }
+.chat-picker__meta { flex: none; font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+.chat-picker .st-btn--primary.danger, .settings-actions .st-btn--primary.danger { background: var(--st-danger); border-color: var(--st-danger); color: #fff; }
 /* the row menu (todo #chat-row-menu): a fixed popover, not a child of the row, because #sidebar-list is a
    scroll container (overflow-y: auto) and a menu inside a row would be clipped by it.  app.js positions it at
    the button's rect and flips it above the button near the bottom of the viewport. */

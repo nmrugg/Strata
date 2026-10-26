@@ -214,7 +214,7 @@ function run(hooks, stored, seed) {
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
-    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
                fetches, timers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
@@ -2448,6 +2448,45 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   cp73.s.el("chat")._l["click"]({target: {closest: (s) => s === "[data-msg-copy]" ? copyEl73 : (s === ".st-msg" ? uel73 : null)}});
   assert.ok(cp73.copied.includes("my question here"), "clicking it copies the user's text");
   done.push("copy: user messages get a copy button that copies their text");
+
+  // 74. the chat picker: all checked by default; a filter narrows what's VISIBLE; All/None act on the visible
+  // rows; the action applies to every CHECKED chat even if the current filter hides it (todo #import-export).
+  const pk = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+                 {a: {id: "a", title: "apple", time: Date.now() - 3 * 86400000, messages: [msg("a")]},
+                  b: {id: "b", title: "banana", time: Date.now() - 2 * 86400000, messages: [msg("b")]},
+                  c: {id: "c", title: "cherry", time: Date.now() - 1 * 86400000, messages: [msg("c")]}});
+  await wait();
+  let ranSel = null;
+  pk.s.openChatPicker({verb: "Export", list: pk.s.chats, onRun: (sel) => { ranSel = sel.map((x) => x.id); }});
+  const picker = pk.s.settingsModal;
+  assert.ok(picker, "the picker opens");
+  const panel74 = picker.children[0];
+  const rows74 = () => panel74.querySelector(".chat-picker__list").children;
+  const ctrls74 = panel74.querySelector(".chat-picker__controls").children;   // [filter, from, to, All, None]
+  assert.strictEqual(rows74().length, 3, "all three chats listed, checked by default");
+  ctrls74[0].value = "an"; ctrls74[0]._l["input"]();                          // filter -> "banana" matches "an"
+  assert.strictEqual(rows74().length, 1, "the filter narrows to the visible match");
+  ctrls74[4].onclick();                                                       // None on the visible row
+  ctrls74[0].value = ""; ctrls74[0]._l["input"]();                            // clear the filter
+  assert.strictEqual(rows74().length, 3, "filter cleared, all visible again");
+  panel74.querySelector(".msg-edit__bar").children[1].onclick();             // the action (Export)
+  assert.deepStrictEqual((ranSel || []).slice().sort(), ["a", "c"], "the action covers every checked chat, including ones the filter had hidden");
+
+  // 75. the JSONL is llama.cpp-readable (OpenAI `messages`) AND round-trips Strata's extras (thinking, tool rounds).
+  const rt = run({}, {});
+  await wait();
+  const rtChat = {id: "rt", title: "Trip", time: 1000, messages: [
+    {id: "m1", role: "user", text: "go", time: 1000},
+    {id: "m2", role: "assistant", text: "done", reasoning: "thinking here", time: 1001,
+     tools: [{id: "t1", name: "x", state: "done", at: 4, rat: 8, result: "r", round: 0}]}]};
+  const line75 = rt.s.chatToJsonl(rtChat);
+  assert.strictEqual(JSON.parse(line75).messages[0].role, "user", "OpenAI-shaped messages present for llama.cpp");
+  const parsed75 = rt.s.parseChatsJsonl(line75);
+  assert.strictEqual(parsed75.length, 1, "one chat parsed");
+  assert.strictEqual(parsed75[0].title, "Trip", "title kept");
+  assert.strictEqual(parsed75[0].messages[1].reasoning, "thinking here", "thinking round-trips");
+  assert.strictEqual(parsed75[0].messages[1].tools[0].at, 4, "tool round at/rat round-trips");
+  done.push("import-export: the picker defaults to all-checked, All/None act on visible rows, the action covers all checked even if filtered out; JSONL is llama.cpp-readable and round-trips Strata extras");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
