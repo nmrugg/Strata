@@ -214,7 +214,7 @@ function run(hooks, stored, seed) {
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
-    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, parseLlamaJsonl, parseImport, unzipEntries, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
+    "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, parseLlamaJsonl, parseImport, unzipEntries, zipTexts, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
                fetches, timers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
@@ -2601,6 +2601,30 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(ent81.length, 1, "one compressed entry");
   assert.strictEqual(zr.s.parseLlamaJsonl(ent81[0].text).length, 1, "the compressed entry inflates and parses to one chat");
   done.push("import-export: a DEFLATE-compressed zip entry (what llama.cpp writes) inflates correctly");
+
+  // 82. llama.cpp attachments in a message's `extra` (TEXT -> file, IMAGE -> image) import correctly.
+  const ex82 = run({}, {});
+  await wait();
+  const exText = [
+    JSON.stringify({type: "session", name: "Att", lastModified: 1, currNode: "u"}),
+    JSON.stringify({type: "message", message: {id: "u", role: "user", content: "look", parent: null, children: [],
+      extra: [{type: "TEXT", name: "a.txt", size: 2, content: "hi"}, {type: "IMAGE", name: "p.png", size: 3, base64Url: "data:image/png;base64,AAA"}]}}),
+  ].join("\n");
+  const exChat = ex82.s.parseLlamaJsonl(exText)[0];
+  assert.strictEqual(exChat.messages[0].files.length, 1, "TEXT extra -> a file");
+  assert.strictEqual(exChat.messages[0].files[0].text, "hi", "file content kept");
+  assert.strictEqual(exChat.messages[0].images.length, 1, "IMAGE extra -> an image");
+  assert.strictEqual(exChat.messages[0].images[0].url, "data:image/png;base64,AAA", "image data URL kept");
+
+  // 83. the Zip export round-trips through the same reader used for import.
+  const zc = run({}, {});
+  await wait();
+  const zbuf = zc.s.zipTexts([{name: "one.jsonl", text: ljText + "\n"}, {name: "two.txt", text: "hello"}]);
+  const zent = await zc.s.unzipEntries(zbuf);
+  assert.strictEqual(zent.length, 2, "two entries in the written zip");
+  assert.strictEqual(zent[1].text, "hello", "a stored entry round-trips");
+  assert.strictEqual(zc.s.parseLlamaJsonl(zent[0].text).length, 1, "the jsonl entry parses back to one chat");
+  done.push("import-export: llama.cpp `extra` attachments import as files/images; the Zip export round-trips through the importer");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

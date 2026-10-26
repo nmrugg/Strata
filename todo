@@ -293,6 +293,11 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Strata turns with at/rat, and restores thinking from reasoningContent.  Zip is read with the browser's
     DecompressionStream (deflate-raw).  Verified against the real 2026-10-26 export (a 282-message tool-heavy
     branch groups with every tool result matched).
+    FIXED (attachment chats not listed): the picker called chatSize -> JSON.stringify on every chat, and 800+ huge
+    chats froze the list.  chatSize is now a cheap sum of string lengths.  Also mapped llama.cpp's `extra`
+    attachments (TEXT -> file, IMAGE -> image with base64Url) so imported chats keep their attachments.  Added a
+    "Zip (one .jsonl per chat)" toggle to Export (writes a STORE-method zip via crc32, round-trips through the
+    importer).  Raised the toast layer above the modals so import warnings are readable.
 
 `edit-posts`  Edit and delete posts in a conversation, mine and the model's. [ui] [py] PARTLY DONE 2026-10-24
     PROGRESS (built in increments, decided with the human 2026-10-24):

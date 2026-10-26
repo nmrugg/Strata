@@ -772,13 +772,47 @@ function putChat(c) { writeChat(c); renderSidebar(); }   // memory only: the cha
 function dropChat(c) { dropRecord(c); renderSidebar(); }
 
 // ---- chat settings: import / export / delete conversations (todo #import-export) ----
-const chatSize = (c) => { try { return JSON.stringify(cleanChat(c)).length; } catch (e) { return (c.messages || []).reduce((s, m) => s + (m.text || "").length, 0); } };
+// cheap size estimate (sum of string lengths) - NOT JSON.stringify, which is ruinous when a picker lists
+// hundreds of large chats (some 11 MB) and froze the import list (todo #import-export).
+const chatSize = (c) => (c.messages || []).reduce((s, m) => s
+  + (m.text || "").length + (m.reasoning || "").length
+  + (m.images || []).reduce((a, i) => a + (i.url || "").length, 0)
+  + (m.files || []).reduce((a, f) => a + (f.text || "").length, 0)
+  + (m.tools || []).reduce((a, t) => a + (t.result || "").length, 0), 0);
 const chatAttCount = (c) => (c.messages || []).reduce((s, m) => s + (m.images || []).length + (m.files || []).length, 0);
-function downloadText(name, text) {
+function downloadBlob(name, blob) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], {type: "application/x-ndjson"}));
+  a.href = URL.createObjectURL(blob);
   a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+function downloadText(name, text) { downloadBlob(name, new Blob([text], {type: "application/x-ndjson"})); }
+// build a zip (STORE, no compression - a valid zip, simple and dependency-free) from {name, text} entries.
+function crc32(bytes) {
+  const t = crc32.t || (crc32.t = (() => { const a = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; a[n] = c >>> 0; } return a; })());
+  let c = 0xFFFFFFFF; for (const b of bytes) c = t[(c ^ b) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zipTexts(files) {
+  const td = new TextEncoder(); let offset = 0; const parts = [], centrals = [];
+  for (const f of files) {
+    const name = td.encode(f.name), data = td.encode(f.text), crc = crc32(data);
+    const lh = new Uint8Array(30 + name.length); const v = new DataView(lh.buffer);
+    v.setUint32(0, 0x04034b50, true); v.setUint16(4, 20, true); v.setUint16(8, 0, true);
+    v.setUint32(14, crc, true); v.setUint32(18, data.length, true); v.setUint32(22, data.length, true); v.setUint16(26, name.length, true);
+    lh.set(name, 30); parts.push(lh, data);
+    const cd = new Uint8Array(46 + name.length); const cv = new DataView(cd.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true); cv.setUint16(10, 0, true);
+    cv.setUint32(16, crc, true); cv.setUint32(20, data.length, true); cv.setUint32(24, data.length, true); cv.setUint16(28, name.length, true);
+    cv.setUint32(42, offset, true); cd.set(name, 46); centrals.push(cd);
+    offset += lh.length + data.length;
+  }
+  const cdStart = offset; let cdSize = 0; for (const c of centrals) cdSize += c.length;
+  const eocd = new Uint8Array(22); const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, files.length, true); ev.setUint16(10, files.length, true);
+  ev.setUint32(12, cdSize, true); ev.setUint32(16, cdStart, true);
+  const out = new Uint8Array(cdStart + cdSize + 22); let p = 0;
+  for (const part of [...parts, ...centrals, eocd]) { out.set(part, p); p += part.length; }
+  return out.buffer;
 }
 // one chat -> one JSONL line: a llama.cpp-readable `messages` array (OpenAI shape) plus a `strata` block that
 // keeps what llama.cpp drops (ids, time, reasoning, tool rounds with at/rat, files, usage) for a lossless round-trip.
@@ -796,11 +830,16 @@ function chatToJsonl(c) {
       reasoning: m.reasoning, tools: m.tools, images: m.images, files: m.files, usage: m.usage}))}});
 }
 const stripAtt = (c) => ({...c, messages: (c.messages || []).map((m) => ({...m, images: [], files: []}))});
-function exportChatsJsonl(list, withAtt = true) {
+function exportChatsJsonl(list, withAtt = true, zip = false) {
   if (!list.length) { toast("info", "Nothing selected"); return; }
-  const name = `strata-chats-${new Date().toISOString().slice(0, 10)}.jsonl`;
-  downloadText(name, list.map((c) => chatToJsonl(withAtt ? c : stripAtt(c))).join("\n") + "\n");
-  toast("success", "Exported", `${list.length} conversation${list.length > 1 ? "s" : ""} to ${name}`);
+  const stamp = new Date().toISOString().slice(0, 10);
+  if (zip) {
+    const files = list.map((c, i) => ({name: `${stamp}_${i + 1}_${safeFileName(chatTitle(c)) || "chat"}.jsonl`, text: chatToJsonl(withAtt ? c : stripAtt(c)) + "\n"}));
+    downloadBlob(`strata-chats-${stamp}.zip`, new Blob([zipTexts(files)], {type: "application/zip"}));
+  } else {
+    downloadText(`strata-chats-${stamp}.jsonl`, list.map((c) => chatToJsonl(withAtt ? c : stripAtt(c))).join("\n") + "\n");
+  }
+  toast("success", "Exported", `${list.length} conversation${list.length > 1 ? "s" : ""}`);
 }
 // parse llama.cpp JSONL (one chat per line, `messages` in OpenAI shape). If a `strata` block is present, restore
 // full fidelity (ids, thinking, tool rounds, files); otherwise import the plain messages (thinking/tools lost).
@@ -875,7 +914,13 @@ function parseLlamaJsonl(text) {
         const content = typeof m.content === "string" ? m.content
           : (Array.isArray(m.content) ? m.content.filter((p) => p.type === "text").map((p) => p.text).join("") : "");
         const images = Array.isArray(m.content) ? m.content.filter((p) => p.type === "image_url").map((p) => ({name: "image", url: (p.image_url || {}).url})) : [];
-        messages.push({id: mid(), role: "user", text: content, images, files: [], time: m.timestamp || Date.now()});
+        const files = [];
+        for (const ex of (m.extra || [])) {   // llama.cpp attachments: {type:TEXT|IMAGE, name, size, content|base64Url}
+          const ty = String(ex.type || "").toUpperCase();
+          if (ty === "IMAGE") images.push({name: ex.name || "image", url: ex.base64Url || ex.content || ""});
+          else if (ty === "TEXT") files.push({name: ex.name || "file", text: ex.content || ""});
+        }
+        messages.push({id: mid(), role: "user", text: content, images, files, time: m.timestamp || Date.now()});
         i++;
       } else if (m.role === "assistant") {
         const tools = []; let text = "", reasoning = "";
@@ -1080,7 +1125,9 @@ function openChatSettings() {
   const wrap = node("div", "settings-actions");
   const mk = (label, cls, fn) => { const b = node("button", "st-btn " + cls, label); b.type = "button"; b.onclick = fn; wrap.appendChild(b); };
   const go = (opts) => openChatPicker(Object.assign({onBack: openChatSettings}, opts));
-  mk("Export conversations", "st-btn--secondary", () => go({verb: "Export", toggles: [ATT_TOGGLES()], onRun: (sel, t) => exportChatsJsonl(sel, t.get("att") !== false)}));
+  mk("Export conversations", "st-btn--secondary", () => go({verb: "Export",
+    toggles: [ATT_TOGGLES(), {id: "zip", label: "Zip (one .jsonl per chat)", def: false}],
+    onRun: (sel, t) => exportChatsJsonl(sel, t.get("att") !== false, t.get("zip"))}));
   mk("Import conversations", "st-btn--secondary", () => importChatsFlow((sel, t) => importChats(sel, t.get("att") !== false)));
   mk("Delete conversations", "st-btn--primary danger", () => go({verb: "Delete", danger: true,
     toggles: [{id: "attOnly", label: "Delete only attachments (keep the chats)", def: false}],
