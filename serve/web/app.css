@@ -229,6 +229,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-picker__row:hover { background: var(--st-surface-2); }
 .chat-picker__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-sm); color: var(--st-ink); }
 .chat-picker__meta { flex: none; font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+.chat-picker__toggles { display: flex; flex-direction: column; gap: var(--st-s-2); margin-top: var(--st-s-3); }
 .chat-picker .st-btn--primary.danger, .settings-actions .st-btn--primary.danger { background: var(--st-danger); border-color: var(--st-danger); color: #fff; }
 /* the row menu (todo #chat-row-menu): a fixed popover, not a child of the row, because #sidebar-list is a
    scroll container (overflow-y: auto) and a menu inside a row would be clipped by it.  app.js positions it at

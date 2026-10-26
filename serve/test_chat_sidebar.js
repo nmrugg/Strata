@@ -2510,5 +2510,24 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(at77.s.attachments.length, 0, "attachments off -> addFiles does nothing");
   done.push("import-export: delete-only-attachments strips images/files but keeps the chats; the attachments toggle gates addFiles");
 
+  // 78. the Delete picker's "delete only attachments" toggle routes the action (keep chats vs delete them), and
+  // the picker passes its toggle state to the action (todo #import-export).
+  const dt = run({}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+                 {a: {id: "a", title: "keep", time: Date.now(),
+                      messages: [{id: "m", role: "user", text: "hi", time: Date.now(), images: [{name: "p.png", url: "data:image/png;base64,AAA"}]}]}});
+  await wait();
+  let togSeen = null;
+  dt.confirmAnswer.yes = true;
+  dt.s.openChatPicker({verb: "Delete", danger: true, list: dt.s.chats, toggles: [{id: "attOnly", def: false}],
+    onRun: (sel, t) => { togSeen = t.get("attOnly"); if (t.get("attOnly")) dt.s.deleteAttachmentsOnly(sel); }});
+  const panel78 = dt.s.settingsModal.children[0];
+  const togSw = panel78.querySelector(".chat-picker__toggles").children[0].children[1];   // the switch in the toggle row
+  togSw.onclick();                                                                        // turn "delete only attachments" on
+  panel78.querySelector(".msg-edit__bar").children[1].onclick();                          // the Delete action
+  assert.strictEqual(togSeen, true, "the picker passed the toggle state to the action");
+  assert.ok(dt.s.chats.some((c) => c.id === "a"), "toggle on -> the chat is kept");
+  assert.strictEqual(dt.s.chats.find((c) => c.id === "a").messages[0].images.length, 0, "toggle on -> attachments stripped");
+  done.push("import-export: the Delete picker's toggle routes to delete-attachments vs delete-chats and passes its state to the action");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

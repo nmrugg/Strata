@@ -278,10 +278,11 @@ all: fold-control replaced them, and the four overlapping switches became one co
     at/rat, files and usage, so thinking + tool rounds round-trip (a pure llama.cpp file would lose them and break
     the replay - the note below).  Import parses both (with or without the extras).  The sidebar now shows each
     chat's size and attachment count.
-    DONE (also): a global "Enable attachments" toggle in the settings modal (default on) that gates the composer's
-    attach button and addFiles; and a "Delete only attachments" action that strips images/files from the chosen
-    chats while keeping the chats themselves.  The picker's header has a back arrow to return to the settings menu,
-    and All/None sit on their own line.  Size/attachment count is shown in the picker rows (not the sidebar list).
+    DONE (also): a global "Enable attachments" toggle (default on) that gates the composer's attach button and
+    addFiles - surfaced inside the Export and Import pickers.  The Delete picker has a "Delete only attachments
+    (keep the chats)" toggle at the bottom that routes the action to strip attachments vs delete the chats.  The
+    picker's bottom button is "Back" (returns to the Chat settings menu); Escape and backdrop-click still close.
+    Size/attachment count shows in the picker rows (not the sidebar list).
     Note: tool rounds carry `at` and `rat` offsets that the replay depends on (assistantMessages, and
     serve/server.py on why they must match). An import that loses them re-creates the re-read bug - hence the
     `strata` block round-trips them; a strictly-llama.cpp import can't preserve them.

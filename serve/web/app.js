@@ -795,10 +795,11 @@ function chatToJsonl(c) {
     strata: {id: c.id, messages: c.messages.map((m) => ({id: m.id, role: m.role, time: m.time,
       reasoning: m.reasoning, tools: m.tools, images: m.images, files: m.files, usage: m.usage}))}});
 }
-function exportChatsJsonl(list) {
+const stripAtt = (c) => ({...c, messages: (c.messages || []).map((m) => ({...m, images: [], files: []}))});
+function exportChatsJsonl(list, withAtt = true) {
   if (!list.length) { toast("info", "Nothing selected"); return; }
   const name = `strata-chats-${new Date().toISOString().slice(0, 10)}.jsonl`;
-  downloadText(name, list.map(chatToJsonl).join("\n") + "\n");
+  downloadText(name, list.map((c) => chatToJsonl(withAtt ? c : stripAtt(c))).join("\n") + "\n");
   toast("success", "Exported", `${list.length} conversation${list.length > 1 ? "s" : ""} to ${name}`);
 }
 // parse llama.cpp JSONL (one chat per line, `messages` in OpenAI shape). If a `strata` block is present, restore
@@ -827,9 +828,11 @@ function parseChatsJsonl(text) {
   }
   return out;
 }
-function importChats(list) {
+function importChats(list, withAtt = true) {
   if (!list.length) { toast("info", "Nothing selected"); return; }
-  for (const c of list) { const fresh = {...c, id: newChat().id}; chats.push(fresh); writeChat(fresh); }
+  for (const c of list) { const fresh = {...c, id: newChat().id};
+    if (!withAtt) for (const m of fresh.messages || []) { m.images = []; m.files = []; }
+    chats.push(fresh); writeChat(fresh); }
   renderSidebar();
   toast("success", "Imported", `${list.length} conversation${list.length > 1 ? "s" : ""}`);
 }
@@ -844,7 +847,7 @@ function deleteChatsConfirmed(list) {
   renderSidebar();
   toast("success", "Deleted", `${list.length} conversation${list.length > 1 ? "s" : ""}`);
 }
-function importChatsFlow() {
+function importChatsFlow(onRun) {
   const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".jsonl,.json,application/json";
   inp.onchange = () => {
     const f = inp.files && inp.files[0]; if (!f) return;
@@ -852,20 +855,27 @@ function importChatsFlow() {
     r.onload = () => {
       const parsed = parseChatsJsonl(r.result);
       if (!parsed.length) { toast("warn", "Nothing to import", "No chats found in that file (expected llama.cpp JSONL)."); return; }
-      openChatPicker({title: "Import conversations", verb: "Import", list: parsed, onRun: importChats});
+      openChatPicker({title: "Import conversations", verb: "Import", list: parsed, onBack: openChatSettings,
+        toggles: [ATT_TOGGLES()], onRun});
     };
     r.readAsText(f);
   };
   inp.click();
 }
+// the shared "Enable attachments" toggle definition, used by the Export and Import pickers
+function ATT_TOGGLES() {
+  return {id: "att", label: "Enable attachments", def: settings.attachments !== false,
+          onChange: (on) => { settings.attachments = on; store.set("sampling", settings); updateAttachEnabled(); }};
+}
 // a shared picker: one checkbox per chat (default on), a name filter, a date range (from-only = everything on or
 // after; to-only = everything on or before), All/None acting on the VISIBLE rows, and an action that applies to
 // every CHECKED chat even if the current filter hides it.
-function openChatPicker({title, verb, danger, list, onRun, onBack}) {
+function openChatPicker({title, verb, danger, list, onRun, onBack, toggles}) {
   closeSettingsModal();
   const items = list || chats;
   const idOf = (c) => c.id;
   const checked = new Map(); items.forEach((c) => checked.set(idOf(c), true));
+  const togState = new Map(); (toggles || []).forEach((t) => togState.set(t.id, t.def !== false));
   const back = node("div", "att-viewer");
   back.onclick = (e) => { if (e.target === back) closeSettingsModal(); };
   const panel = node("div", "att-viewer__panel chat-picker");
@@ -911,11 +921,21 @@ function openChatPicker({title, verb, danger, list, onRun, onBack}) {
   allBtn.onclick = () => { visible().forEach((c) => checked.set(idOf(c), true)); render(); };
   noneBtn.onclick = () => { visible().forEach((c) => checked.set(idOf(c), false)); render(); };
   filter.addEventListener("input", render); from.addEventListener("change", render); to.addEventListener("change", render);
+  const togBox = node("div", "chat-picker__toggles");
+  for (const t of (toggles || [])) {
+    const row = node("label", "toggle-row");
+    row.appendChild(node("span", "", t.label));
+    const sw = document.createElement("button"); sw.className = "st-toggle"; sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", String(togState.get(t.id))); sw.setAttribute("aria-label", t.label);
+    sw.onclick = () => { const nv = !togState.get(t.id); togState.set(t.id, nv); sw.setAttribute("aria-checked", String(nv)); if (t.onChange) t.onChange(nv); };
+    row.appendChild(sw); togBox.appendChild(row);
+  }
+  panel.appendChild(togBox);
   const bar = node("div", "msg-edit__bar");
-  const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button"; cancel.onclick = closeSettingsModal;
+  const bk = node("button", "st-btn st-btn--secondary", "Back"); bk.type = "button"; bk.onclick = onBack || closeSettingsModal;
   const go = node("button", "st-btn st-btn--primary" + (danger ? " danger" : ""), verb); go.type = "button";
-  go.onclick = () => { const sel = items.filter((c) => checked.get(idOf(c)) !== false); closeSettingsModal(); onRun(sel); };
-  bar.append(cancel, go); panel.appendChild(bar);
+  go.onclick = () => { const sel = items.filter((c) => checked.get(idOf(c)) !== false); closeSettingsModal(); onRun(sel, togState); };
+  bar.append(bk, go); panel.appendChild(bar);
   back.appendChild(panel); document.body.appendChild(back); settingsModal = back;
   render();
 }
@@ -944,19 +964,14 @@ function openChatSettings() {
   back.onclick = (e) => { if (e.target === back) closeSettingsModal(); };
   const panel = node("div", "att-viewer__panel settings-modal");
   panel.appendChild(node("h3", "msg-del__title", "Chat settings"));
-  const trow = node("label", "toggle-row");
-  trow.appendChild(node("span", "", "Enable attachments"));
-  const tsw = document.createElement("button"); tsw.className = "st-toggle"; tsw.setAttribute("role", "switch");
-  tsw.setAttribute("aria-checked", String(settings.attachments !== false)); tsw.setAttribute("aria-label", "Enable attachments");
-  tsw.onclick = () => { settings.attachments = settings.attachments === false; tsw.setAttribute("aria-checked", String(settings.attachments !== false)); store.set("sampling", settings); updateAttachEnabled(); };
-  trow.appendChild(tsw); panel.appendChild(trow);
   const wrap = node("div", "settings-actions");
   const mk = (label, cls, fn) => { const b = node("button", "st-btn " + cls, label); b.type = "button"; b.onclick = fn; wrap.appendChild(b); };
   const go = (opts) => openChatPicker(Object.assign({onBack: openChatSettings}, opts));
-  mk("Export conversations", "st-btn--secondary", () => go({verb: "Export", onRun: exportChatsJsonl}));
-  mk("Import conversations", "st-btn--secondary", importChatsFlow);
-  mk("Delete only attachments", "st-btn--secondary", () => go({title: "Delete attachments", verb: "Delete attachments", onRun: deleteAttachmentsOnly}));
-  mk("Delete conversations", "st-btn--primary danger", () => go({verb: "Delete", danger: true, onRun: deleteChatsConfirmed}));
+  mk("Export conversations", "st-btn--secondary", () => go({verb: "Export", toggles: [ATT_TOGGLES()], onRun: (sel, t) => exportChatsJsonl(sel, t.get("att") !== false)}));
+  mk("Import conversations", "st-btn--secondary", () => importChatsFlow((sel, t) => importChats(sel, t.get("att") !== false)));
+  mk("Delete conversations", "st-btn--primary danger", () => go({verb: "Delete", danger: true,
+    toggles: [{id: "attOnly", label: "Delete only attachments (keep the chats)", def: false}],
+    onRun: (sel, t) => t.get("attOnly") ? deleteAttachmentsOnly(sel) : deleteChatsConfirmed(sel)}));
   panel.appendChild(wrap);
   back.appendChild(panel); document.body.appendChild(back); settingsModal = back;
 }
