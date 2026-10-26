@@ -927,7 +927,7 @@ async function unzipEntries(buf) {
     const raw = u8.subarray(dstart, dstart + csize);
     let bytes;
     if (method === 0) bytes = raw;
-    else if (method === 8) bytes = new Uint8Array(await (new Response(raw)).stream().pipeThrough(new DecompressionStream("deflate-raw")).arrayBuffer());
+    else if (method === 8) bytes = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
     if (bytes) files.push({name, text: td.decode(bytes)});
     off += 46 + nlen + elen + clen;
   }

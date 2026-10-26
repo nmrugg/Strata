@@ -2581,5 +2581,26 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(zp.length, 1, "the zipped JSONL parses to one chat");
   done.push("import-export: the new llama.cpp JSONL (session + message tree, tools + reasoning) and a zip of JSONL both import correctly");
 
+  // 81. a DEFLATE-compressed zip entry (method 8, what llama.cpp produces) inflates via DecompressionStream.
+  const cs81 = new CompressionStream("deflate-raw");
+  const comp81 = new Uint8Array(await new Response(new Blob([zraw]).stream().pipeThrough(cs81)).arrayBuffer());
+  const lh81 = new Uint8Array(30 + nm.length); const d81 = new DataView(lh81.buffer);
+  d81.setUint32(0, 0x04034b50, true); d81.setUint16(4, 20, true); d81.setUint16(8, 8, true);
+  d81.setUint32(18, comp81.length, true); d81.setUint32(22, zraw.length, true); d81.setUint16(26, nm.length, true);
+  lh81.set(nm, 30);
+  const cd81 = new Uint8Array(46 + nm.length); const c81 = new DataView(cd81.buffer);
+  c81.setUint32(0, 0x02014b50, true); c81.setUint16(4, 20, true); c81.setUint16(6, 20, true); c81.setUint16(10, 8, true);
+  c81.setUint32(20, comp81.length, true); c81.setUint32(24, zraw.length, true); c81.setUint16(28, nm.length, true);
+  c81.setUint32(42, 0, true); cd81.set(nm, 46);
+  const eo81 = new Uint8Array(22); const e81 = new DataView(eo81.buffer);
+  e81.setUint32(0, 0x06054b50, true); e81.setUint16(8, 1, true); e81.setUint16(10, 1, true);
+  e81.setUint32(12, comp81.length, true); e81.setUint32(16, lh81.length + comp81.length, true);
+  const zb81 = new Uint8Array(lh81.length + comp81.length + cd81.length + eo81.length); let q = 0;
+  for (const part of [lh81, comp81, cd81, eo81]) { zb81.set(part, q); q += part.length; }
+  const ent81 = await zr.s.unzipEntries(zb81.buffer);
+  assert.strictEqual(ent81.length, 1, "one compressed entry");
+  assert.strictEqual(zr.s.parseLlamaJsonl(ent81[0].text).length, 1, "the compressed entry inflates and parses to one chat");
+  done.push("import-export: a DEFLATE-compressed zip entry (what llama.cpp writes) inflates correctly");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

@@ -353,6 +353,9 @@ main { flex: 1; min-height: 0; display: flex; }
                                    box-shadow: var(--st-sh-card); }
 .drawer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-3); margin-top: var(--st-s-2); }
 .st-toast { animation: toast-in 180ms var(--st-ease); }
+/* toasts must sit above the modals/popovers (att-viewer 70, chat-menu 60) or warnings like "Nothing to import"
+   are hidden behind the very dialog that triggered them (todo #import-export) */
+.st-toasts { z-index: 200; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* ---------------------------------------------------------------- narrow screens */
