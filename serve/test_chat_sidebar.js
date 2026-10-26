@@ -2426,12 +2426,13 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const thinkEl = () => tel72.querySelector(".st-bubble")._blocks[0].el;
   assert.ok((thinkEl().querySelector(".thinking")._html || "").includes("<strong>bold</strong>"), "settled thinking renders markdown");
   assert.ok((thinkEl().querySelector(".thinking")._html || "").includes('<code class="inline">code</code>'), "and inline code");
-  const mdBtn72 = thinkEl().querySelector("[data-think-md]");
-  assert.ok(mdBtn72, "the thinking block has an md toggle");
-  thk.s.el("chat")._l["click"]({target: {closest: (s) => s === "[data-think-md]" ? mdBtn72 : (s === ".st-msg" ? tel72 : null)}, preventDefault() {}});
-  assert.strictEqual(thkMsg.mdthink, false, "the toggle turns thinking markdown off");
-  assert.strictEqual(thinkEl().querySelector(".thinking").textContent, "**bold** and `code` thought", "off -> plain text, exactly as written");
-  done.push("thinking-markdown: settled thinking renders as markdown (escaped); its md toggle switches to plain text");
+  assert.ok(!(thinkEl()._html || "").includes("data-think-md"), "no separate per-thinking-block md button");
+  // the message's single md control (the meta-row button) switches thinking (and the answer) to plain
+  const mdb72 = tel72.querySelector("[data-md-toggle]");
+  thk.s.el("chat")._l["click"]({target: {closest: (s) => s === "[data-md-toggle]" ? mdb72 : (s === ".st-msg" ? tel72 : null)}});
+  assert.strictEqual(thkMsg.md, false, "the message's md button turned markdown off");
+  assert.strictEqual(thinkEl().querySelector(".thinking").textContent, "**bold** and `code` thought", "thinking falls back to plain text");
+  done.push("thinking-markdown: thinking follows the message's single md control; no per-block button; the md button is hidden until content appears");
 
   // 73. user messages get a copy button too (todo): clicking it copies the post's own text.
   const cp73 = run({}, {});

@@ -1525,7 +1525,6 @@ function addBlocks(host, p, blks) {
 const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summary>${icon("thinking", "st-icon st-icon--sm")}` +
   `<span class="think-title"></span><span class="think-preview muted"></span>` +
   `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
-  `<button class="st-btn st-btn--md st-think-md" data-think-md role="switch" aria-label="Render this thinking as markdown">md</button>` +
   `<div class="st-collapse__body thinking"></div></details>`;
 // one line of a thinking run for the collapsed summary, the way a tool block previews its result.  The first
 // 200 characters are taken and CSS ellipsises what does not fit, so the line never wraps.
@@ -1561,9 +1560,7 @@ function syncThink(det, m, p, streaming) {           // det IS the details: quer
   if (det.dataset.touched !== "1" && det.open !== wantOpen) { det._auto = true; det.open = wantOpen; }
   const body = det.querySelector(".thinking");
   const follow = streaming && p.i === p.runs - 1 && nearEnd(body, 48);   // only the live block follows its own text
-  const mdOn = m.mdthink !== false;
-  const mdb = det.querySelector("[data-think-md]");
-  if (mdb) { mdb.setAttribute("aria-checked", String(mdOn)); mdb.title = `Render this thinking as markdown (${mdOn ? "on" : "off"})`; }
+  const mdOn = msgMd(m);   // thinking follows the message's one markdown setting - no separate per-block toggle
   if (det.open || thinkingNow) {
     renderThinkBody(body, text, mdOn && !thinkingNow);   // markdown once settled; plain while it streams
     if (follow) body.scrollTop = body.scrollHeight;
@@ -1701,7 +1698,7 @@ function liveMeta(m) {
   // estimate before the poll has reported anything.
   const chars = (m.text || "").length + (m.reasoning || "").length;
   const gen = (m._gen != null) ? m._gen : Math.round(chars / 4);
-  const secs = m.turnStart ? (Date.now() - m.turnStart) / 1000 : 0;
+  const secs = m._firstTok ? (Date.now() - m._firstTok) / 1000 : 0;   // generation time only, not the prompt read
   const rate = secs > 0.5 ? ` · ${fmt(gen / secs, 1)} tok/s` : "";
   const ran = (m.tools || []).length;   // count tool calls as soon as they start, not only after they finish
   const calls = ran ? ` · ${ran} tool call${ran > 1 ? "s" : ""}` : "";
@@ -1740,6 +1737,8 @@ function updateAssistant(el, m, streaming) {
   else { ctxEl.hidden = true; ctxEl.textContent = ""; ctxEl.title = ""; }
   const copyEl = el.querySelector("[data-msg-copy]");
   if (copyEl) copyEl.hidden = streaming || (m.role !== "user" && !m.text);   // user posts always have text to copy
+  const mdb = el.querySelector("[data-md-toggle]");
+  if (mdb) mdb.hidden = !m.text && !m.reasoning && !(m.tools && m.tools.length);   // no md control until something is shown (not while reading the prompt)
   // todo #no-placeholder: nothing that only pretends to be output.  There is no box until the model has produced something
   // real - an answer, a tool call, an error.  Thinking now lives inside the bubble, so a thinking-only message
   // keeps the element (hiding it would hide the thinking with it) and drops its chrome: .thinking-only below.
@@ -1806,12 +1805,6 @@ $("chat").addEventListener("click", (e) => {
     if (!busy) saveChat();                              // the choice belongs to the chat, not to this page load
     return;
   }
-  const tmd = e.target.closest("[data-think-md]");
-  if (tmd) {
-    const el = tmd.closest(".st-msg"), m = messages[+el.dataset.i];
-    if (m) { m.mdthink = m.mdthink === false; renderBubble(el, m, !!busy && busy.msg === m); if (!busy) saveChat(); }
-    return;
-  }
   const me = e.target.closest("[data-msg-edit]");
   if (me) {
     if (busy) { toast("info", "Can't edit yet", "Stop the answer first."); return; }   // editing mid-turn would fight the stream
@@ -1862,7 +1855,7 @@ $("chat").addEventListener("toggle", (e) => {
   if (d.open && body.dataset.pending) {              // a block that was closed while it streamed fills on opening
     const el = d.closest(".st-msg"), m = messages[+el.dataset.i];
     const p = (el.querySelector(".st-bubble")._blocks || []).find((x) => x.i === +d.dataset.think);
-    if (p && m) renderThinkBody(body, (m.reasoning || "").slice(p.from, p.to), m.mdthink !== false && !(busy && busy.msg === m));
+    if (p && m) renderThinkBody(body, (m.reasoning || "").slice(p.from, p.to), msgMd(m) && !(busy && busy.msg === m));
     delete body.dataset.pending;
   }
 }, true);
@@ -2029,6 +2022,7 @@ async function send(editOf) {
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
           if (!firstAt) firstAt = performance.now();
+          if (!m._firstTok) m._firstTok = Date.now();   // tok/s clock starts at the first token, not at send (excludes the prompt read)
           if (!thinkStart) thinkStart = performance.now();
           const newRun = !m.reasoning || (lastTool && lastTool.rat === m.reasoning.length);
           if (lastTool && m.reasoning && lastTool.rat === m.reasoning.length) {
@@ -2047,6 +2041,7 @@ async function send(editOf) {
         }
         if (d.content) {
           if (!firstAt) firstAt = performance.now();
+          if (!m._firstTok) m._firstTok = Date.now();
           if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
           if (lastTool && m.text && lastTool.at === m.text.length) m.text += "\n\n";
           m.text += d.content;

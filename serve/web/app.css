@@ -85,11 +85,6 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-collapse__body.thinking { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; }
 /* settled thinking rendered as markdown: block elements handle spacing, so drop pre-wrap (todo #thinking-markdown) */
 .st-collapse__body.thinking.md { white-space: normal; }
-/* the md toggle in a thinking block: a direct child of the <details> (not the summary), so clicking it never
-   toggles the block open/closed (todo #thinking-markdown) */
-.st-collapse.think > .st-think-md { align-self: flex-start; margin: 6px 10px 0 auto; width: auto; min-width: 26px; height: 20px;
-  padding: 0 6px; border-radius: 6px; font: 600 var(--st-fs-xs) var(--st-font-mono); color: var(--st-ink-muted); }
-.st-collapse.think > .st-think-md[aria-checked="true"] { background: var(--st-surface-2); }
 .st-msg__meta .st-btn--icon { width: 28px; height: 28px; }
 .st-msg__meta .st-btn--icon .st-icon { width: 16px; height: 16px; }
 /* the context percent on a finished answer's meta line (todo #context-percent): muted like the rest of the
