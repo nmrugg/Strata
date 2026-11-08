@@ -3482,6 +3482,11 @@ class Service:
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+            # The engine's PP position counts from token 0, so the prefix it reused is INSIDE it: llama.cpp's
+            # rule (see prompt_progress) is to take `cache` out again.  Without the figure here a 700K-token
+            # chat that reads 2,000 new tokens paints "reading 167,130 of 169,061", which reads exactly like a
+            # full re-read of the prompt.  Same source as prompt_progress's `cache`: the request's RESUME line.
+            live["prompt_cached"] = int(getattr(self.engine, "reused", 0) or 0)
         par = int(getattr(self.engine, "batch", 0) or 0)
         if par:                                         # #465: the requests running together, slot by slot
             with self.status_lock:

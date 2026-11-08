@@ -234,11 +234,19 @@ async function poll() {
   }
   schedulePoll(pollDelay(lastMetrics));
 }
+// #prompt-progress: the engine reports its read as an absolute position in the prompt (PP <reached> <total>),
+// so the prefix it reused is already counted in `prompt_read`.  llama.cpp's rule is to take `cache` out again;
+// the server sends it as live.prompt_cached (the request's RESUME figure).  Without that subtraction a chat of
+// 169,061 tokens that re-reads 1,931 of them paints "167,130 of 169,061" and reads as a full re-read.
+// An older server sends no prompt_cached: then the subtraction is 0 and every number below is what it was.
+const promptCached = (live) => Math.min(Math.max(0, live.prompt_cached || 0), live.prompt_total || 0);
+const promptUnreused = (live) => Math.max(0, (live.prompt_total || 0) - promptCached(live));
+const promptNew = (live) => Math.max(0, (live.prompt_read || 0) - promptCached(live));
 // the header pill on its own, which is all a lite answer carries
 function renderPill(m) {
   const live = m.live || {};
   if (live.state === "reading") {
-    const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
+    const pct = live.prompt_total ? Math.round((100 * promptNew(live)) / promptUnreused(live)) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
@@ -325,8 +333,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     label = "Reading prompt";
     prog.dataset.tone = "info";
     if (live.prompt_total) {
-      pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+      const cached = promptCached(live), left = promptUnreused(live);
+      pct = left ? (100 * promptNew(live)) / left : 100;
+      // the reused prefix is not work.  Say what is being read and what was already in place, so a warm
+      // chat's read is not mistaken for re-reading the whole prompt (see promptCached above).
+      detail = cached ? `${fmt(promptNew(live))} / ${fmt(left)} new tokens · ${fmt(pct)}% (${fmt(cached)} reused)`
+                      : `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
     } else {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }

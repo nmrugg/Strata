@@ -1277,6 +1277,29 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(pl.s.el("pill").dataset.state, "reading", "so it colours like a prompt read, not idle");
   done.push("pill: a running MCP tool reads Waiting · <tool>, in the reading colour");
 
+  // 41b. "Reading prompt" is the read of the NEW tokens, not of the whole prompt.  The engine's PP line is an
+  // absolute position (it counts the reused prefix), so the reused part has to come out again - the server sends
+  // it as live.prompt_cached, the same figure prompt_progress calls `cache`.  A 169,061-token chat that reads
+  // 1,931 new ones used to paint "167,130 / 169,061 tokens · 99%", which reads exactly like a full re-read.
+  const rg = run({}, {});
+  await wait();
+  const cards = {hardware: {}, hardware_static: {}, engine: {}, history: {}, requests: [], totals: {}};
+  rg.s.renderPill({live: {state: "reading", prompt_read: 168000, prompt_total: 169061, prompt_cached: 167130}});
+  assert.strictEqual(rg.s.el("pill-text").textContent, "Reading prompt · 45%",
+                     "the pill's percent is of the tokens still to read, not of the whole prompt");
+  rg.s.renderPill({live: {state: "reading", prompt_read: 167130, prompt_total: 169061}});
+  assert.strictEqual(rg.s.el("pill-text").textContent, "Reading prompt · 99%",
+                     "an older server sends no prompt_cached: the pill is byte-identical to what it was");
+  rg.s.setTab("monitor");
+  rg.s.render({live: {state: "reading", prompt_read: 168000, prompt_total: 169061, prompt_cached: 167130}, ...cards});
+  assert.strictEqual(rg.s.el("state-detail").textContent, "870 / 1,931 new tokens · 45% (167,130 reused)",
+                     "the Monitor's card names what is being read and what was already in place");
+  rg.s.render({live: {state: "reading", prompt_read: 167130, prompt_total: 169061}, ...cards});
+  assert.strictEqual(rg.s.el("state-detail").textContent, "167,130 / 169,061 tokens · 99%",
+                     "and with no prompt_cached the card is byte-identical to what it was");
+  rg.s.setTab("chat");
+  done.push("reading progress: the reused prefix comes out of the pill and of the Monitor's state card");
+
   // 42. the polling itself (todo #metrics-lite): the Chat tab asks for the lite answer, and the cadence follows what is
   // actually happening and whether the window is even being looked at.
   const po = run({}, {});

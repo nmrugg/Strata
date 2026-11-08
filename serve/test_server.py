@@ -2546,6 +2546,48 @@ class LiveRate(unittest.TestCase):
         self.svc.status["busy"] = False
         self.assertIsNone(self.metrics()["live"]["prefill_tok_s_mean"])
 
+    def test_the_live_read_view_carries_the_reused_prefix(self):
+        """live.prompt_cached: the engine's PP position counts from token 0, so the prefix it reused is inside
+        live.prompt_read.  The page takes it out again (llama.cpp's rule, the same figure prompt_progress calls
+        `cache`); without it a warm chat's read looks like a full re-read of the prompt - a 169,061-token chat
+        that read 1,931 new tokens painted "reading 167,130 of 169,061 tokens · 99%"."""
+        import io
+        import queue
+        from types import SimpleNamespace
+
+        def reading_engine(*lines):
+            e = StrataEngine.__new__(StrataEngine)
+            e.proc = SimpleNamespace(stdin=io.StringIO(), poll=lambda: None)   # alive() asks it (#208)
+            e.lines = queue.Queue()
+            e.can_stop = False
+            e.max_context = 262144
+            e.prefill_tok_s_mean = None
+            for line in lines:
+                e.lines.put(line)
+            return e
+
+        engine = reading_engine("RESUME 167130", "PP 168000 169061 7000 2800.0",
+                                "DONE 1 169061 7000 10 stop 0 0 167130")
+        gen = engine.generate([1], 1, {}, threading.Event())
+        self.assertIsNone(next(gen))                       # the PP line surfaces as a ping
+        self.assertEqual(engine.reused, 167130, "RESUME is the figure the read has to subtract")
+        self.svc.engine = engine
+        self.svc.status.update(busy=True, first_token=None)
+        live = self.metrics()["live"]
+        self.assertEqual(live["state"], "reading")
+        self.assertEqual((live["prompt_read"], live["prompt_total"]), (168000, 169061))
+        self.assertEqual(live["prompt_cached"], 167130, "the reused prefix, so the page can take it out")
+        self.assertEqual(live["prompt_read"] - live["prompt_cached"], 870, "what this request has really read")
+        # negative control: an engine that sends no RESUME line says nothing, and the server invents no
+        # subtraction - the page then paints exactly the numbers it painted before this field existed.
+        old = reading_engine("PP 168000 169061 7000 2800.0", "DONE 1 169061 7000 10 stop 0 0 167130")
+        gen = old.generate([1], 1, {}, threading.Event())
+        self.assertIsNone(next(gen))
+        self.svc.engine = old
+        self.assertEqual(self.metrics()["live"]["prompt_cached"], 0, "no RESUME: no subtraction to make")
+        self.svc.status["busy"] = False
+        self.assertNotIn("prompt_cached", self.metrics()["live"], "nothing reading: no progress figures either")
+
     def test_the_live_number_is_a_rate(self):
         live_samples, stop = [], threading.Event()
 
