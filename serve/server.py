@@ -2420,10 +2420,25 @@ def layer_split_value(cfg: dict) -> str:
     return ",".join(str(x) for x in vals)
 
 
+REMOTE_TIER_FLAGS = ("--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3")
+
+
 def layer_split_of(cfg: dict) -> bool:
     """Several GPUs in the config are a layer split, unless the args put the later card(s) to another use: with
-    --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split (#665)."""
-    return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
+    --peer-device the second card is an expert-cache tier, and the engine refuses that beside --layer-split (#665).
+    An AUTOMATIC split also yields to the remote expert tier: --expert-cache-device1..3 fill CUDA1..3 with experts,
+    and the engine maps those devices to the extra visible cards by taking the next device no stage runs on
+    (generate.cpp: remote_dev, "CUDA1..3 on one GPU; with a layer split, the visible GPUs no stage runs on") - so a
+    config that lists the cards, names the tier and says nothing about layers wants helper caches, not stages.
+    An EXPLICIT "layer_split" ("24", "16,32") is the user placing layers by hand: that stays a split, and the engine
+    then puts the helper caches on whatever cards no stage uses. device2/device3 imply device1 (the engine refuses
+    the gap), but all three are checked so a hand-written config cannot slip past."""
+    a = cfg.get("args") or []
+    if len(gpu_list(cfg)) <= 1 or "--peer-device" in a:
+        return False
+    v = cfg.get("layer_split")
+    automatic = v is None or (isinstance(v, str) and v.strip().lower() in ("", "auto"))
+    return not (automatic and any(f in a for f in REMOTE_TIER_FLAGS))
 
 
 def engine_args(cfg: dict) -> list[str]:

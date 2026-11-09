@@ -2015,6 +2015,40 @@ class PeerDevice(unittest.TestCase):
         env = child_env({"args": ["--peer-device", "1"], "gpu": [0, 1]})
         self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1")
 
+    def test_no_split_with_a_remote_expert_tier(self):
+        """--expert-cache-device1..3 put the extra visible cards to work as expert caches, NOT as split stages:
+        the engine maps CUDA1..3 to them only while no --layer-split is in play (generate.cpp: remote_dev = {1,2,3},
+        "CUDA1..3 on one GPU; with a layer split, the visible GPUs no stage runs on"). A config that lists the cards
+        and names the tier must not be handed --layer-split."""
+        for flag in ("--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3"):
+            args = ["--native", "x", flag, "auto"]
+            self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1, 2]}), args,
+                             f"{flag}: the later cards are caches, not stages")
+        # and the helper cards stay visible to the engine, in the config's order
+        from serve.server import child_env
+        both = ["--native", "x", "--expert-cache-device1", "auto", "--expert-cache-device2", "auto"]
+        env = child_env({"args": list(both), "gpu": [0, 1, 2], "gpu_order": "as_given"})
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1,2", "CUDA0 runs the model, CUDA1/2 hold the caches")
+
+    def test_split_still_added_for_three_cards_without_a_tier(self):
+        # the negative control: name no helper tier and three cards are still a layer split, exactly as before
+        self.assertEqual(engine_args({"args": ["--native", "x"], "gpu": [0, 1, 2]}),
+                         ["--native", "x", "--layer-split", "auto"])
+
+    def test_explicit_split_keeps_both_the_stages_and_the_helper_caches(self):
+        """An explicit split is the user placing layers, so it stays a split beside a helper tier - the engine maps
+        the cache onto the visible card no stage runs on (generate.cpp: remote_dev takes the next free device past
+        split_devs). The hand-written form is the usable one with three cards: --layer-split 24 stages CUDA0+CUDA1
+        and leaves CUDA2 for the cache; the config key "layer_split" must give one number per later GPU ("24,36"
+        for three), which would leave no card free for the tier - and that is the engine's refusal to make, not the
+        server's to guess at."""
+        args = ["--native", "x", "--layer-split", "24", "--expert-cache-device1", "auto"]
+        self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1, 2]}), args,
+                         "a --layer-split already in the args is left alone")
+        tier = ["--native", "x", "--expert-cache-device1", "auto"]
+        self.assertEqual(engine_args({"args": list(tier), "gpu": [0, 1, 2], "layer_split": "24,36"}),
+                         tier + ["--layer-split", "24,36"], "an explicit layer_split is not suppressed")
+
 
 class LearnedProfile(unittest.TestCase):
     """#477: "expert_profile_save" in the config: the engine saves its learned profile there, and the next start

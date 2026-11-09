@@ -1043,6 +1043,35 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(gm.reasoning, "first thought\n\nsecond thought", "and nothing rewrote the reasoning string");
   done.push("layout: think, text, call, think, text, call, answer - all top level, nothing folded");
 
+  // 33b. the thinking that follows the LAST tool call is the one the model wrote before its answer, and the engine
+  // decoded it: if the replay drops it, the template renders an EMPTY <think> for that turn (chat_template.jinja),
+  // the token prefix breaks at the turn boundary, and every later request re-reads from the last checkpoint before
+  // it - which for the first answer of a chat is the system prompt, and the whole conversation goes back to prefill.
+  // "Keep tool round's thinking" only ever re-sent thinking that PRECEDES a call; this is the run after the last one.
+  const tl = run({}, {});
+  await wait();
+  const th1 = "the thought that led to the call", th2 = "the thought before the answer";
+  const tlm = {role: "assistant", text: "beforeafter", time: Date.now(),
+               reasoning: th1 + "\n\n" + th2,
+               tools: [{id: "c1", name: "x", state: "done", at: 6, rat: th1.length, result: "r", round: 0}]};
+  assert.strictEqual(JSON.stringify(tl.s.assistantMessages(tlm, true)), JSON.stringify([
+    {role: "assistant", content: "before", tool_calls: [{id: "c1", type: "function",
+        function: {name: "x", arguments: "{}"}}], reasoning_content: th1},
+    {role: "tool", tool_call_id: "c1", content: "r"},
+    {role: "assistant", content: "after", reasoning_content: th2}]),
+    "the answer's own thinking goes back too, or the prefix breaks at the last turn boundary");
+  // the same for a turn with no tool calls at all: the model thought, then answered, and the engine holds both
+  const nt = {role: "assistant", text: "an answer", reasoning: "a long thought about it", time: Date.now()};
+  assert.strictEqual(JSON.stringify(tl.s.assistantMessages(nt, true)),
+                     JSON.stringify([{role: "assistant", content: "an answer",
+                                      reasoning_content: "a long thought about it"}]),
+                     "a plain thinking turn keeps its thinking in the replay");
+  // and the switch off still sends none of it - the default path is the smaller prompt, unchanged
+  assert.strictEqual(JSON.stringify(tl.s.assistantMessages(nt, false)),
+                     JSON.stringify([{role: "assistant", content: "an answer"}]),
+                     "switch off: the thinking stays out, exactly as before");
+  done.push("replay: the thinking after the last call, and a no-tool turn's thinking, go back to the server");
+
   // 34. a live thinking block grows with the reasoning.  The bug: the part kept the slice it was created with,
   // so a new thought bubble showed only its first chunk.
   const lv = run({}, {});

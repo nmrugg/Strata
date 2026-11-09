@@ -2260,7 +2260,12 @@ function assistantMessages(m, keepThinking) {
   // The server leaves such a turn out of the prompt itself (serve/frontend.py, #843); reasoning_content rides along.
   if (!ran.length) {
     const msg = {role: "assistant", content: m.text || ""};
-    if (!m.text && m.reasoning) msg.reasoning_content = m.reasoning;
+    // The engine decoded this turn's thinking as tokens of its own. If the replay leaves it out the template renders
+    // an EMPTY thinking block for the turn, the exact-prefix reuse breaks at this turn's boundary, and every later
+    // request re-reads from the last checkpoint before it - for the first answer of a chat, the whole conversation.
+    // With the switch off the prompt stays small, exactly as it was (#2100).
+    if (keepThinking && m.reasoning) msg.reasoning_content = m.reasoning.trim();
+    else if (!m.text && m.reasoning) msg.reasoning_content = m.reasoning;   // #1392: a thinking-only turn rides along either way
     return [msg];
   }
   const out = [];
@@ -2285,8 +2290,15 @@ function assistantMessages(m, keepThinking) {
     for (const t of calls) out.push({role: "tool", tool_call_id: t.id, content: t.result});
     pos = at;
   }
-  const rest = m.text.slice(pos).trim();
-  if (rest) out.push({role: "assistant", content: rest});
+  // The thinking after the LAST call is the run that led to the answer, and the engine decoded that too. Leaving it
+  // out makes the template render an empty thinking block for this turn, so the next request's prefix breaks at this
+  // turn's boundary: the answer's own thinking, the answer and the new message all go back through prefill.
+  const rest = m.text.slice(pos).trim(), tail = keepThinking ? reas.slice(rpos).trim() : "";
+  if (rest || tail) {
+    const msg = {role: "assistant", content: rest};
+    if (tail) msg.reasoning_content = tail;
+    out.push(msg);
+  }
   return out;
 }
 
