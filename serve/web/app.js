@@ -503,6 +503,8 @@ async function loadMcp() {
     const r = await fetch("mcp", {headers: headers()});
     if (!r.ok) return;
     mcpInfo = await r.json();
+    // the first answer of this page load is the baseline: anything different later was changed during this visit
+    if (mcpAtLoad === null) mcpAtLoad = mcpCurrentTools();
   } catch (e) { return; /* an older server: no MCP */ }
   renderMcp();
   clearTimeout(mcpRetry);                          // right after the start, servers may still be starting (npx downloads)
@@ -510,24 +512,137 @@ async function loadMcp() {
 }
 const MCP_STATE = {ready: ["st-badge--generating", "Connected"], starting: ["st-badge--reading", "Starting"],
                    failed: ["st-badge--error", "Failed"], stopped: ["st-badge--queued", "Stopped"], idle: ["", "Waiting"]};
+// Which tools a conversation was built with are part of its prompt (the tools block is the first system turn), so
+// the page remembers the list each chat started with and sends it on every request for that chat.  The map lives
+// in memory only, for this page load: a reload forgets it, and that chat then uses the current list and reads its
+// history once - the human asked for exactly that, because reloading is rare here and a re-read is not (todo
+// #mcp-live-toggles).  Nothing about it is written into the chat record.
+const mcpFrozen = new Map();
+const mcpCurrentTools = () => (mcpInfo.servers || []).flatMap((s) => (s.tools || [])
+  .filter((t) => t.enabled !== false).map((t) => t.name));
+function mcpChatTools(id) {
+  if (!mcpFrozen.has(id)) mcpFrozen.set(id, mcpCurrentTools());   // snapshotted the first time this chat sends
+  return mcpFrozen.get(id);
+}
+// The card is also the control (todo #mcp-server-toggle, #tool-exclude): the switch on a server card turns that
+// server off/on, and a chip turns one tool of it off/on.  Both write the run config AND update the running hub,
+// so they take effect without a restart - for new conversations.  A chat that is already open keeps the tools it
+// started with (mcpChatTools above), because the tools block is the first system turn and a different one there
+// costs that chat a full re-read.  A server the config has off is not in the hub at all, so its card comes from
+// "configured", not from the live list.
+function mcpServers() {
+  const cfg = mcpInfo.configured || {}, live = mcpInfo.servers || [];
+  const names = live.map((s) => s.name).concat(Object.keys(cfg).filter((n) => !live.some((s) => s.name === n)));
+  return names.map((n) => {
+    const s = live.find((x) => x.name === n) || {name: n, status: "off", tools: []};
+    const c = cfg[n] || {};
+    const offTools = c.disabled_tools || [];
+    const tools = (s.tools || []).map((t) => ({...t, enabled: t.enabled !== false}));
+    return {...s, off: c.disabled === true, tools,
+            // a server that is off never listed its tools, so the only ones we can show are the ones the config
+            // turned off - shown so the list is not silently empty when it comes back
+            chips: tools.length ? tools : offTools.map((t) => ({tool: t, name: `${n}__${t}`, enabled: false, description: ""}))};
+  });
+}
 function renderMcp() {
-  const servers = mcpInfo.servers || [];
-  $("mcp-card").hidden = !servers.length;
-  $("mcp-row").hidden = !servers.length;
-  const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
-  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
+  const list = mcpServers();
+  $("mcp-card").hidden = !list.length;
+  $("mcp-row").hidden = !list.length;
+  const ready = list.filter((s) => s.status === "ready" || s.status === "stopped");
+  const off = list.filter((s) => s.off).length;
+  $("mcp-sum").textContent = list.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${list.length} servers connected`
+                                       + (off ? ` · ${fmt(off)} off` : "") : "";
   $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
                                                : "no server is connected yet (see the Monitor)";
-  $("mcp-list").innerHTML = servers.map((s) => {
-    const [cls, text] = MCP_STATE[s.status] || ["", s.status];
+  $("mcp-list").innerHTML = list.map((s) => {
+    const [cls, text] = s.off ? ["st-badge--queued", "Off"] : (MCP_STATE[s.status] || ["", s.status]);
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
-    return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(text)}</span>` +
-      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
+    return `<div class="mcp-server" data-mcp-server="${esc(s.name)}"><div class="mcp-server__head">` +
+      `<button class="st-toggle" role="switch" data-mcp-toggle aria-checked="${String(!s.off)}" ` +
+      `aria-label="Use the MCP server ${esc(s.name)}"></button>` +
+      `<span class="st-badge ${cls}">${esc(text)}</span>` +
+      `<strong>${esc(s.name)}</strong>` +
+      `<span class="muted small">${esc(s.transport || "")} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
-      (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
+      (s.chips.length ? `<div class="mcp-server__tools">` + s.chips.map((t) =>
+        // the chip says only the tool's own name: the server's name is already the card it sits under, and the
+        // prefix repeated on every chip made the row hard to read.  The full name the model sees is in the
+        // tooltip, next to the description, because that is the name to look for in a transcript.
+        `<button class="chip mcp-tool${t.enabled ? "" : " off"}" data-mcp-tool="${esc(t.tool)}" ` +
+        `aria-pressed="${String(t.enabled)}" title="${esc(t.name)}${esc(t.description ? " — " + t.description : "")}">` +
+        `${esc(t.tool || t.name)}</button>`).join("") +
+        `</div>` : "") +
+      (s.off ? `<p class="mcp-note muted small">off in the config; its tools are not listed until it starts again</p>` : "") +
       `</div>`;
-  }).join("");
+  }).join("") + mcpSwitchNote();
 }
+// Does the chat on screen have anything to switch to?  It has a saved list - it has sent at least one message in
+// THIS page load - and that list is not what the server offers now.  Anything else and the button would do
+// nothing, so it is not shown at all: a greyed-out control that can never be used reads as a broken one.  The
+// status line says which of the three states the chat is in instead, and it is re-evaluated whenever a different
+// chat comes on screen (showChat calls renderMcp), which is what makes it right for several chats, not one.
+// What the tools were when this page loaded.  It is the only way the page can tell that you have changed the
+// set during this visit - and therefore that a chat it has never sent to (so it holds no saved list) may have to
+// read its history once, because the list that chat was built with is not this one any more.
+let mcpAtLoad = null;
+const mcpSame = (a, b) => !!a && !!b && a.length === b.length && a.every((n, i) => n === b[i]);
+function mcpSwitchState() {
+  const held = mcpFrozen.get(chatId), now = mcpCurrentTools();
+  if (!held) {
+    // A chat this page has never sent to is not holding anything: its next message uses the current list, and
+    // there is no switch to offer.  What it SHOULD say is whether that costs a re-read, and the only evidence
+    // available is that you changed the set during this visit and the chat already has a history.
+    if (mcpAtLoad && !mcpSame(mcpAtLoad, now) && messages.length)
+      return {need: false, why: `will use the current tools (${now.length}) on its next message - you changed the `
+                              + `set since this page loaded, and this chat was built with the old one, so that `
+                              + `message reads its history once`};
+    return {need: false, why: `will use the current tools (${now.length}) on its next message`};
+  }
+  if (mcpSame(held, now)) return {need: false, why: `already uses the current tools (${now.length})`};
+  return {need: true, why: `is holding the ${held.length} tools it started with; the server now offers ${now.length}`};
+}
+function mcpSwitchNote() {
+  const st = mcpSwitchState();
+  const name = chat ? chatTitle(chat) : "the chat on screen";
+  const label = `${name.length > 40 ? `${name.slice(0, 40)}…` : name}`;
+  const why = "The tools a conversation was built with are part of its prompt, so a chat you already have open "
+            + "keeps the list it started with instead of reading its whole history again.  A switch is live for a "
+            + "new conversation; pressing this moves this chat onto the current list, and that reads its history "
+            + "once.  Reloading the page does the same.";
+  return (st.need ? `<p class="mcp-note"><button class="st-btn st-btn--secondary" data-mcp-unfreeze ` +
+                    `title="${esc(why)}">Use the current tools in "${esc(label)}"</button></p>` : "") +
+         `<p class="mcp-note muted small" title="${esc(why)}">"${esc(label)}" ${esc(st.why)}.</p>`;
+}
+$("mcp-list").addEventListener("click", async (e) => {
+  const unfreeze = e.target.closest("[data-mcp-unfreeze]");
+  if (unfreeze) {                                 // the open chat moves onto the current list: one re-read
+    if (unfreeze.disabled) return;                // greyed means "this chat has nothing to switch to"
+    mcpFrozen.delete(chatId);
+    toast("info", "This chat will use the current tools", "Its next message reads the history again.");
+    renderMcp();                                  // and the button greys itself out again at once
+    return;
+  }
+  const card = e.target.closest(".mcp-server");
+  if (!card) return;
+  const chip = e.target.closest("[data-mcp-tool]"), sw = e.target.closest("[data-mcp-toggle]");
+  if (!chip && !sw) return;
+  const server = card.dataset.mcpServer;
+  const change = chip ? {server, tool: chip.dataset.mcpTool, enabled: chip.getAttribute("aria-pressed") !== "true"}
+                      : {server, disabled: sw.getAttribute("aria-checked") !== "false"};
+  try {
+    const r = await fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: [change]})});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    // A whole server going off is the one change an old chat cannot be shielded from: its tools can no longer be
+    // rendered at all, so say what that costs instead of letting the next message discover it.
+    toast("success", "Applied", (b.changed || []).join(", ") +
+          ((b.reloads || []).length ? ` · chats that used ${b.reloads.join(", ")} will read their history once more`
+                                    : " for new conversations; a chat already open keeps its own tools"));
+    loadMcp();
+  } catch (err) {
+    toast("error", "Not changed", String(err.message || err), 6000);
+  }
+});
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
 // A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The
@@ -1252,6 +1367,8 @@ function showChat(c) {
   writeChat(chat);            // renderChat renders the list, so the write here does not render it again
   loadDraft();                // and the box takes on the text that belongs to the chat you are entering
   renderChat();
+  renderMcp();                // the MCP card's "use the current tools" button is about THIS chat: its label and
+                              // whether it is greyed out follow whichever conversation is on screen (no fetch)
 }
 function openChat(id) {
   // no busy guard: the answer keeps streaming into its own message object, and paint() finds the row again when
@@ -2471,8 +2588,16 @@ async function send(editOf) {
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
-  if (settings.mcp !== false && mcpInfo.tools > 0) {          // this server may run MCP tools for it
+  if (settings.mcp !== false && (mcpInfo.tools > 0 || mcpChatTools(chatId).length)) {   // this server may run MCP tools
     body.strata_mcp = true;
+    // The tools a conversation was built with are part of its prompt (the tools block is the first system turn),
+    // so a toggle made afterwards must not quietly change it: the page sends the list THIS chat started with, and
+    // the server renders exactly that.  Kept for this page load only - a reload adopts the current list, and that
+    // chat reads its history once (todo #mcp-live-toggles, as the human asked).
+    body.strata_mcp_tools = mcpChatTools(chatId);
+    renderMcp();                                   // the Monitor's status line is about THIS chat, and it just
+                                                   // changed from "will use the current tools" to "is holding the
+                                                   // list it started with" - say so now, not at the next poll
     body.strata_mcp_args = true;               // todo #tool-args-stream: show the call's JSON as it is written, not "(being written)"
     // #2100: the same choice assistantMessages() renders with, so the two rebuilds of a tool turn agree
     body.strata_mcp_thinking = settings.mcpthink === true;

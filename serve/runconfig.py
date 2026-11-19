@@ -119,6 +119,80 @@ def check(key: str, v, cfg: dict):
     return _number(key, v, whole=True, lo=1, hi=64)
 
 
+MCP_KEYS = ("mcp_servers", "mcpServers")          # both spellings are read (serve/mcp.py, config_mcp)
+
+
+def mcp_block(cfg: dict) -> tuple[dict, str | None]:
+    """The run config's MCP server block and the key that holds it.  ({}, None) when the config names none -
+    servers that came from --mcp-config live in that other file and are not written from here."""
+    for k in MCP_KEYS:
+        if isinstance(cfg.get(k), dict):
+            return cfg[k], k
+    return {}, None
+
+
+def mcp_state(cfg: dict) -> dict:
+    """What the config says about every MCP server, INCLUDING the ones it turns off: the hub only ever holds the
+    enabled ones, so a disabled server would otherwise leave the page and could never be switched back on.
+    {"name": {"disabled": bool, "disabled_tools": [str, ...]}}"""
+    block, _ = mcp_block(cfg)
+    out = {}
+    for name, entry in block.items():
+        if not isinstance(entry, dict):
+            continue
+        out[str(name)] = {"disabled": entry.get("disabled") is True,
+                          "disabled_tools": sorted(str(t) for t in (entry.get("disabled_tools") or []))}
+    return out
+
+
+def set_mcp(cfg: dict, changes: list) -> tuple[dict, list[str]]:
+    """Turn one MCP server off/on, or one of its tools off/on, in a copy of the config; every other key stays as
+    it is.  A change is {"server": name, "disabled": true} or {"server": name, "tool": tool, "enabled": false}.
+    Bad or unknown names raise ValueError and nothing is written - the same all-or-nothing rule as apply().
+    The tool name is the server's own (what it lists), not the namespaced one the model sees."""
+    if not isinstance(changes, list) or not changes:
+        raise ValueError('send {"mcp": [{"server": "<name>", "disabled": true}, ...]}')
+    _, key = mcp_block(cfg)
+    if key is None:
+        raise ValueError("this run config names no MCP servers (a --mcp-config file is not written from here)")
+    new = json.loads(json.dumps(cfg))
+    block = new[key]
+    changed: list[str] = []
+    for ch in changes:
+        if not isinstance(ch, dict):
+            raise ValueError("each MCP change must be an object")
+        name = str(ch.get("server") or "")
+        entry = block.get(name)
+        if not isinstance(entry, dict):
+            raise ValueError(f"there is no MCP server {name!r} in {key}")
+        if "disabled" in ch:
+            if not isinstance(ch["disabled"], bool):
+                raise ValueError(f"MCP server {name!r}: \"disabled\" must be true or false")
+            want = ch["disabled"]
+            if (entry.get("disabled") is True) != want:
+                entry["disabled"] = want
+                changed.append(f"{name} ({'off' if want else 'on'})")
+        if ch.get("tool") is not None:
+            tool = str(ch["tool"])
+            if not isinstance(ch.get("enabled", True), bool):
+                raise ValueError(f"MCP tool {name}__{tool}: \"enabled\" must be true or false")
+            was = {str(t) for t in (entry.get("disabled_tools") or [])}
+            off = set(was)
+            if ch.get("enabled", True):
+                off.discard(tool)
+            else:
+                off.add(tool)
+            if off != was:
+                if off:
+                    entry["disabled_tools"] = sorted(off)
+                else:
+                    entry.pop("disabled_tools", None)
+                changed.append(f"{name}__{tool} ({'off' if tool in off else 'on'})")
+    if not changed:
+        raise ValueError("nothing to change")
+    return new, changed
+
+
 def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
     """The config with `changes` ({key: value or None}) made, and the keys that changed.  Every value is checked
     first, so a request with one bad value changes nothing (ValueError)."""

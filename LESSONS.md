@@ -343,11 +343,19 @@ gives the four-option control the same equal widths it had. Pinned by a regex on
 whole file - `repeat(4, 1fr)` still appears in the comment explaining why it went, and an `assertNotIn` over
 the file failed on its own comment.
 
-**The stub does not parse `data-*` out of inserted HTML, so a tool block the page made is invisible to the
-toggle listener.** `+d.dataset.tool` is `NaN`, `m.tools[NaN]` is `undefined`, and the listener returns at
-`if (!t)` — a test that opens such a block "as the reader" silently tests nothing. Case 24 has always worked
-around it by building the block by hand (`test_chat_sidebar.js:588`); case 45 sets `dataset.tool` on the node
-the page made instead. Either is fine, doing neither is a silent pass.
+**The stub only parses `data-*` on the ROOT element of inserted HTML — a handler that reads a name off an
+ancestor can still ship broken.** First recorded because `+d.dataset.tool` was `NaN`, so a test that opened a
+tool block "as the reader" silently tested nothing (case 24 worked around it by building the block by hand,
+case 45 by setting `dataset.tool` on the node the page made). On 2026-11-19 the stub was extended to register a
+root element's `data-*` into `dataset`, camel-cased as a real DOM does — and the same class of bug shipped
+anyway: the Monitor's MCP card was written without `data-mcp-server`, so in a browser the handler read
+`undefined` and the server answered "there is no MCP server '' in mcp_servers", while the harness passed because
+the test hand-built the card with the dataset value it wanted. Two rules follow: (1) elements inside an
+`innerHTML` string are still not nodes at all — only the root of an `insertAdjacentHTML` is; (2) when a handler
+reads a value off an element the page built, take the expected value out of the HTML the page wrote
+(`el._html`) and drive the click with that, so dropping the attribute fails the case. Control that proves it:
+delete `data-mcp-server` from `renderMcp` and case 90 fails with "the card the page wrote carries
+data-mcp-server" — before the fix it passed.
 
 **In the fake stream, one `step()` delivers one chunk; the paint for that chunk needs a second flush.** The
 stub's `step()` calls `flush()` *before* resolving the read, so the frame the page schedules for the chunk it

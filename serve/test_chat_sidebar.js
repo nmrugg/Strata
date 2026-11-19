@@ -45,6 +45,12 @@ function makeEl() {
       // shell that starts hidden looks visible to the tests, and "the container vanished" tests green
       const openTag = /^<[a-z][\w-]*([^>]*)>/i.exec(html);
       if (openTag && /[\s](hidden)(?=[\s>]|$)/.test(openTag[1])) n.hidden = true;
+      // data-* on the element the page just made lands in dataset, camel-cased as a real DOM does.  Without it a
+      // handler that reads card.dataset.x works in the page and is invisible to a test, which is exactly how the
+      // missing data-mcp-server got through: the case had to set the value by hand (LESSONS.md, "the stub does
+      // not parse data-* out of inserted HTML").
+      if (openTag) for (const d of openTag[1].matchAll(/\sdata-([\w-]+)="([^"]*)"/g))
+        n.dataset[d[1].replace(/-(\w)/g, (_, c) => c.toUpperCase())] = d[2];
       if (where === "beforeend") { this._ins = (this._ins || 0) + 1; this.children.push(n); n._parent = this; }
       else if (where === "afterend") {
         const p = this._parent; if (!p) throw new Error("insertAdjacentHTML afterend with no parent");
@@ -221,13 +227,18 @@ function run(hooks, stored, seed) {
     "get SIDEBAR_MAX() { return SIDEBAR_MAX; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
+    "loadMcp, renderMcp, mcpServers, get mcpInfo() { return mcpInfo; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, parseLlamaJsonl, parseImport, unzipEntries, zipTexts, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
                fetches, timers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
 }
 
-const wait = () => new Promise((r) => setTimeout(r, 30));
+// One turn of the event loop, not a sleep.  This was setTimeout(r, 30) and the harness had 228 of them: 6.8 s
+// of waiting to do 0.3 s of work (measured 2026-11-19: 7.97 s wall, 0.30 s CPU, 3%).  What the code needs is
+// the microtask/promise boundary - the stub IndexedDB answers on queueMicrotask and the stub fetch answers on
+// a promise - and setImmediate comes after both, so a request still cannot look like it answered too early.
+const wait = () => new Promise((r) => setImmediate(r));
 const rows = (s) => s.el("sidebar-list").children.filter((c) => c.className.split(" ").includes("chat-item")).length;
 const groups = (s) => s.el("sidebar-list").children.filter((c) => c.className.split(" ").includes("sidebar-group")).map((c) => c.textContent);
 // the warning is a promise to the user, so its kind and its title are part of what is checked here
@@ -2921,6 +2932,203 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await settled89;
   done.push("autoscroll-cooldown: a scroll up during a turn holds the follow off for a moment, and it resumes " +
             "when the reader comes back to the bottom");
+
+  // 90. the Monitor's MCP chips are the control (todo #mcp-server-toggle, #tool-exclude): clicking a tool chip
+  //     POSTs the change to /mcp, the card says the change is for the next start, and a server the config has
+  //     turned off still gets a card - the hub does not hold it at all, so without "configured" it would vanish
+  //     from the page and could never be switched back on.
+  const posts90 = [];
+  let cfg90 = {files: {disabled: false, disabled_tools: []}};
+  const s90 = run({fetch: async (url, opts) => {
+    if (opts && opts.method === "POST") { posts90.push(JSON.parse(opts.body)); return {ok: true, json: async () => ({changed: ["files__read_file (off)"], configured: cfg90, restart: true})}; }
+    return {ok: true, json: async () => ({servers: [{name: "files", transport: "stdio", status: "ready", error: null,
+              info: {}, tools: [{name: "files__read_file", tool: "read_file", enabled: true, description: "d"},
+                                {name: "files__write_file", tool: "write_file", enabled: false, description: "d"}]}],
+              tools: 1, configured: cfg90})};
+  }}, {});
+  await wait();
+  await s90.s.loadMcp();
+  const list90 = () => s90.s.mcpServers();
+  assert.strictEqual(list90().length, 1, "one card for the one server");
+  assert.strictEqual(list90()[0].tools.find((x) => x.tool === "write_file").enabled, false,
+                     "a tool the config turned off is shown, as off");
+  cfg90 = {files: {disabled: false, disabled_tools: ["read_file"]}, extra: {disabled: true, disabled_tools: []}};
+  await s90.s.loadMcp();
+  assert.strictEqual(list90().length, 2, "a server the config has off still gets a card");
+  const off90 = list90().find((x) => x.name === "extra");
+  assert.strictEqual(off90.off, true, "and it reads as off");
+  assert.deepStrictEqual(off90.chips, [], "with no tools to show until it starts again");
+  // the click: a chip sends the change, and the page does not pretend it is live.  The names come out of the HTML
+  // the page itself wrote, not out of the test: the handler reads card.dataset.mcpServer off the card, and a card
+  // built by hand would pass even if the page never wrote that attribute - which is the bug this case missed.
+  const wrote = s90.s.el("mcp-list")._html || "";
+  const cardAttr = /data-mcp-server="([^"]*)"/.exec(wrote);
+  const chipAttr = /data-mcp-tool="([^"]*)"/.exec(wrote);
+  assert.ok(cardAttr, "the card the page wrote carries data-mcp-server: the handler reads the name off it");
+  assert.ok(chipAttr, "and each chip carries data-mcp-tool with the server's own tool name");
+  assert.strictEqual(cardAttr[1], "files", "the card names its server");
+  assert.ok(["read_file", "write_file"].includes(chipAttr[1]), `the chip names a tool, got ${chipAttr[1]}`);
+  const card = {className: "mcp-server", dataset: {mcpServer: cardAttr[1]}};
+  const chip = {className: "chip mcp-tool off", dataset: {mcpTool: chipAttr[1]}, attrs: {"aria-pressed": "false"},
+                getAttribute(k) { return this.attrs[k]; },
+                closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-tool]" ? this : null; }};
+  card._parent = null;
+  await s90.s.el("mcp-list")._l.click({target: chip});
+  assert.deepStrictEqual(posts90, [{mcp: [{server: cardAttr[1], tool: chipAttr[1], enabled: true}]}],
+                         "a chip that reads off is clicked back ON");
+  const toast90 = s90.s.el("toasts").children.map((c) => c.querySelector(".st-toast__title").textContent);
+  assert.ok(toast90.includes("Applied"), toast90.join(" | "));
+  const toastText90 = s90.s.el("toasts").children.map((c) => c.querySelector(".t-text").textContent).join(" | ");
+  assert.ok(/new conversations|read their history once more/.test(toastText90),
+            `the toast says what the change costs: ${toastText90}`);
+  // and the server switch: aria-checked is the current state, so the change is the opposite of it
+  const sw90 = {className: "st-toggle", attrs: {"aria-checked": "true"}, getAttribute(k) { return this.attrs[k]; },
+              closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-toggle]" ? this : null; }};
+  await s90.s.el("mcp-list")._l.click({target: sw90});
+  assert.deepStrictEqual(posts90[1], {mcp: [{server: cardAttr[1], disabled: true}]},
+                         "the card's switch turns the server off");
+
+  done.push("mcp-chips: a chip POSTs one tool's change to /mcp, and a server the config has off keeps a card");
+
+  // 91. the page carries each conversation's own tool list (todo #mcp-live-toggles): a chip change is live for
+  //     a NEW chat, an open chat keeps the list it started with (so its prompt prefix still matches and it does
+  //     not re-read its history), and a reload forgets that - which is what the human asked for, because a
+  //     reload is rare here and one re-read then is cheap.
+  const toolsWith = (twoOn) => ({servers: [{name: "a", transport: "stdio", status: "ready", error: null, info: {},
+      tools: [{name: "a__one", tool: "one", enabled: true, description: ""},
+              {name: "a__two", tool: "two", enabled: twoOn, description: ""}]}],
+      tools: twoOn ? 2 : 1, configured: {a: {disabled: false, disabled_tools: twoOn ? [] : ["two"]}}});
+  const MCP_ON = toolsWith(true), MCP_OFF = toolsWith(false);
+  let mcpNow = MCP_ON;
+  const sent = [];
+  const mk91 = () => run({fetch: async (url, opts) => {
+    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => mcpNow};
+    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
+    sent.push(JSON.parse(opts.body));                       // the chat request: this is what the server would read
+    return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
+  }}, {});
+  const s91 = mk91();
+  await wait();
+  await s91.s.loadMcp();
+  s91.s.el("input").value = "go";
+  await s91.s.send();
+  assert.strictEqual(sent[0].strata_mcp, true, "the chat asks for MCP tools");
+  assert.deepStrictEqual(sent[0].strata_mcp_tools, ["a__one", "a__two"], "and names the list this chat started with");
+  mcpNow = MCP_OFF;                                           // the chip was clicked: "two" is off now
+  await s91.s.loadMcp();                                      // the page re-reads the card
+  s91.s.el("input").value = "again";
+  await s91.s.send();
+  assert.deepStrictEqual(sent[1].strata_mcp_tools, ["a__one", "a__two"],
+                         "the same chat still carries its own list - that is what saves it a re-read");
+  s91.s.startChat();                                        // a new conversation gets the current list
+  await wait();
+  s91.s.el("input").value = "fresh";
+  await s91.s.send();
+  assert.deepStrictEqual(sent[2].strata_mcp_tools, ["a__one"], "a chat started after the switch sees the switch");
+  const s92 = mk91();                                          // a reload: the map is gone, by design
+  await wait();
+  await s92.s.loadMcp();
+  s92.s.el("input").value = "after reload";
+  await s92.s.send();
+  assert.deepStrictEqual(sent[3].strata_mcp_tools, ["a__one"], "after a reload the chat moves onto the current list");
+  // and the button does the same without a reload: it drops this chat's snapshot
+  mcpNow = MCP_ON;
+  const s93 = mk91();
+  await wait();
+  await s93.s.loadMcp();
+  s93.s.el("input").value = "one";
+  await s93.s.send();
+  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one", "a__two"], "it started with both");
+  mcpNow = MCP_OFF;                          // a chip turned "two" off while this chat was open
+  await s93.s.loadMcp();
+  s93.s.el("input").value = "two";
+  await s93.s.send();
+  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one", "a__two"], "and keeps them");
+  const unfreeze = {className: "st-btn", closest(sel) { return sel === "[data-mcp-unfreeze]" ? this : null; }};
+  await s93.s.el("mcp-list")._l.click({target: unfreeze});
+  s93.s.el("input").value = "three";
+  await s93.s.send();
+  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one"],
+                         "the button moves the open chat onto the current list");
+
+  done.push("mcp-frozen-list: an open chat carries the tool list it started with, a new chat gets the current one, and a reload (or the button) switches it over");
+
+  // 92. what the MCP card shows (todo #tool-exclude, #mcp-live-toggles): a chip says only the tool's own name -
+  //     the server's name is already the card it sits under - with the full name the model sees in the tooltip;
+  //     and the "use the current tools" button is greyed until the chat ON SCREEN has something to switch to,
+  //     naming that chat so "this chat" is not a riddle.
+  let mcp92 = MCP_ON;
+  const sc92 = run({fetch: async (url, opts) => {
+    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => mcp92};
+    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
+    return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
+  }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+     {a: {id: "a", title: "Refactor the parser", time: Date.now(), messages: [msg("first")]},
+      b: {id: "b", title: "second chat", time: Date.now(), messages: [msg("older")]}});
+  await wait();
+  await sc92.s.loadMcp();
+  const wrote92 = () => sc92.s.el("mcp-list")._html || "";
+  assert.ok(/>one<\/button>/.test(wrote92()), `the chip shows the tool's own name: ${wrote92().slice(0, 200)}`);
+  assert.ok(!/>a__one</.test(wrote92()), "and not the server prefix again");
+  assert.ok(wrote92().includes('title="a__one"'), "the full name the model sees is in the tooltip");
+  assert.ok(!wrote92().includes("data-mcp-unfreeze"),
+            "a chat that has not sent in this page load is not shielded, so no button at all");
+  assert.ok(wrote92().includes('will use the current tools (2) on its next message'), wrote92().slice(-260));
+  // the state the human actually hit: reload, then change a switch before sending in this chat.  There is no
+  // shield to drop, so no button - but the card must say what that costs, because this chat's history was built
+  // with the other list and its next message will read it again.
+  mcp92 = MCP_OFF;
+  await sc92.s.loadMcp();
+  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "still nothing to switch away from, so still no button");
+  assert.ok(wrote92().includes("you changed the set since this page loaded, and this chat was built with the old one"),
+            wrote92().slice(-320));
+  mcp92 = MCP_ON; await sc92.s.loadMcp();                    // back to the load-time set: the warning goes
+  assert.ok(!wrote92().includes("reads its history once</p>") && !wrote92().includes("you changed the set since"),
+            wrote92().slice(-320));
+  assert.ok(wrote92().includes("will use the current tools (2) on its next message"), wrote92().slice(-320));
+
+  sc92.s.el("input").value = "go";
+  await sc92.s.send();                                       // the chat snapshots the current list
+  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "and while nothing changed, still no button");
+  assert.ok(wrote92().includes('already uses the current tools (2)'), wrote92().slice(-260));
+  mcp92 = MCP_OFF;                                          // a chip turned "two" off
+  await sc92.s.loadMcp();
+  assert.ok(wrote92().includes("data-mcp-unfreeze"), "now the shielded chat gets the button");
+  assert.ok(wrote92().includes("is holding the 2 tools it started with; the server now offers 1"),
+            wrote92().slice(-260));
+  assert.ok(!wrote92().includes('data-mcp-unfreeze disabled'), "the button is live, not greyed");
+  assert.ok(wrote92().includes('Use the current tools in "Refactor the parser"'),
+            `it says which chat: ${/(data-mcp-unfreeze[^>]*>)[^<]*/.exec(wrote92())[0]}`);
+  assert.ok(wrote92().includes("reads its history once"), "the long explanation is still there (in the title)");
+  const note92 = /<p class="mcp-note muted small"[^>]*>([^<]*)<\/p>/.exec(wrote92());
+  assert.ok(note92 && note92[1].length < 120, `the visible line is short, got ${note92 && note92[1].length}`);
+  assert.ok(note92[0].includes("title="), "and the detail is on the tooltip");
+  // and it follows the chat you switch to, not just the last time the card was drawn.  a started with both
+  // tools; "two" went off while it was open, so it has something to switch to.  b has never sent in this page
+  // load, so it has nothing to switch to and the button greys out again for it.
+  sc92.s.openChat("b");
+  assert.ok(sc92.s.chatId === "b", "openChat switched (chats: " + sc92.s.chats.map((c) => c.id).join(",") + ")");
+  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "b is not shielded yet: no button, and the line says why");
+  assert.ok(wrote92().includes('"second chat" will use the current tools (1) on its next message'),
+            wrote92().slice(-200));
+  sc92.s.el("input").value = "in b";
+  await sc92.s.send();                                   // b snapshots the CURRENT list: only "one"
+  mcp92 = MCP_ON;                                        // "two" comes back on: now b differs from the list too
+  await sc92.s.loadMcp();
+  assert.ok(wrote92().includes('Use the current tools in "second chat"'),
+            `b gets the button, named for b: ${/(data-mcp-unfreeze[^>]*>)[^<]*/.exec(wrote92())[0]}`);
+  sc92.s.openChat("a");                                  // a started with BOTH tools, and both are on again:
+  assert.ok(wrote92().includes('"Refactor the parser" already uses the current tools (2)'),
+            "for a there is nothing to switch to - the line says so, and there is no dead button");
+  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "and no button for it, greyed or otherwise");
+  mcp92 = MCP_OFF;                                       // turn "two" off again: now a differs too
+  await sc92.s.loadMcp();
+  assert.ok(wrote92().includes('Use the current tools in "Refactor the parser"'),
+            `a is offered the switch again, by name: ${/(data-mcp-unfreeze[^>]*>)[^<]*/.exec(wrote92())[0]}`);
+
+  done.push("mcp-card: chips show the tool's own name with the model-facing name in the tooltip, and the switch " +
+            "button only exists when the chat on screen is holding a different list - otherwise the line says what " +
+            "that chat is doing");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

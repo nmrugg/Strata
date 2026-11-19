@@ -80,7 +80,9 @@ class Apply(unittest.TestCase):
         self.assertNotIn("mcp_servers", got)
 
 
-class Http(unittest.TestCase):
+class Fixture(unittest.TestCase):
+    """One run config file on disk, one server reading it, and the HTTP call the page makes."""
+
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.path = Path(self.dir.name) / "strata-q2_0.json"
@@ -96,9 +98,9 @@ class Http(unittest.TestCase):
         self.httpd.server_close()
         self.dir.cleanup()
 
-    def call(self, method, body=None, headers=None):
+    def call(self, method, body=None, headers=None, path="/config"):
         h = {"Content-Type": "application/json", **(headers or {})}
-        req = urllib.request.Request(f"http://{self.host}/config", method=method, headers=h,
+        req = urllib.request.Request(f"http://{self.host}{path}", method=method, headers=h,
                                      data=None if body is None else (body if isinstance(body, bytes)
                                                                      else json.dumps(body).encode()))
         try:
@@ -111,6 +113,14 @@ class Http(unittest.TestCase):
     def saved(self):
         return json.loads(self.path.read_text(encoding="utf-8"))
 
+    def post(self, payload, origin=True):
+        """A POST from Strata's own page, with the start-up print swallowed."""
+        h = {"Origin": f"http://{self.host}"} if origin else {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            return self.call("POST", payload, h)
+
+
+class Http(Fixture):
     def test_read_and_write_from_the_page(self):
         status, v = self.call("GET")
         self.assertEqual(status, 200, v)
@@ -164,6 +174,115 @@ class Http(unittest.TestCase):
         for el in ("cfg-card", "cfg-form", "cfg-save", "cfg-msg"):
             self.assertIn(f'id="{el}"', html)
         self.assertIn('fetch("config", {method: "POST", headers: headers(true)', js)
+
+
+class McpApply(unittest.TestCase):
+    """runconfig.set_mcp / mcp_state: one flag of one server, every other key of the file left alone
+    (todo #mcp-server-toggle, #tool-exclude)."""
+
+    def test_a_server_off_and_back_on(self):
+        new, changed = runconfig.set_mcp(CFG, [{"server": "files", "disabled": True}])
+        self.assertEqual(changed, ["files (off)"])
+        self.assertIs(new["mcp_servers"]["files"]["disabled"], True)
+        for k in ("exe", "args", "sampling", "cors_origins", "port", "host", "api_key", "model_name"):
+            self.assertEqual(new[k], CFG[k], k)                       # everything else, exactly as it was
+        self.assertIsNone(CFG["mcp_servers"]["files"].get("disabled"))  # the input dict is left alone
+        back, changed = runconfig.set_mcp(new, [{"server": "files", "disabled": False}])
+        self.assertEqual(changed, ["files (on)"])
+        self.assertIs(back["mcp_servers"]["files"]["disabled"], False)
+
+    def test_one_tool_off_and_back_on(self):
+        one, changed = runconfig.set_mcp(CFG, [{"server": "files", "tool": "read_file", "enabled": False}])
+        self.assertEqual(changed, ["files__read_file (off)"])
+        self.assertEqual(one["mcp_servers"]["files"]["disabled_tools"], ["read_file"])
+        two, _ = runconfig.set_mcp(one, [{"server": "files", "tool": "write_file", "enabled": False}])
+        self.assertEqual(two["mcp_servers"]["files"]["disabled_tools"], ["read_file", "write_file"])   # sorted
+        back, _ = runconfig.set_mcp(two, [{"server": "files", "tool": "read_file", "enabled": True}])
+        self.assertEqual(back["mcp_servers"]["files"]["disabled_tools"], ["write_file"])
+        clean, _ = runconfig.set_mcp(back, [{"server": "files", "tool": "write_file", "enabled": True}])
+        self.assertNotIn("disabled_tools", clean["mcp_servers"]["files"])   # the last one back: the key goes
+
+    def test_state_lists_every_configured_server(self):
+        off, _ = runconfig.set_mcp(CFG, [{"server": "files", "disabled": True},
+                                         {"server": "files", "tool": "x", "enabled": False}])
+        self.assertEqual(runconfig.mcp_state(off), {"files": {"disabled": True, "disabled_tools": ["x"]}})
+        self.assertEqual(runconfig.mcp_state(CFG), {"files": {"disabled": False, "disabled_tools": []}})
+        # the other spelling, read the way serve/mcp.py reads it
+        self.assertEqual(runconfig.mcp_state({"mcpServers": {"a": {"url": "http://x"}}}),
+                         {"a": {"disabled": False, "disabled_tools": []}})
+
+    def test_refused(self):
+        for changes in ([], None, "x", [{"server": "nope", "disabled": True}], [{"server": "files"}],
+                        [{"server": "files", "disabled": "yes"}],
+                        [{"server": "files", "tool": "x", "enabled": "no"}], [{"tool": "x"}]):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                runconfig.set_mcp(CFG, changes)
+        with self.assertRaises(ValueError):        # a server that came from --mcp-config, not this file
+            runconfig.set_mcp({"mcp_servers": "not an object"}, [{"server": "files", "disabled": True}])
+        with self.assertRaises(ValueError):
+            runconfig.set_mcp({"exe": "x"}, [{"server": "files", "disabled": True}])
+
+
+class McpHttp(Fixture):
+    """POST /mcp - the Monitor's chips.  The same guard as /config, and it writes the file WITHOUT touching the
+    running hub: the tool list is rendered into the system turn and reuse is exact token-prefix matching, so
+    applying it live would make every chat read its history again.  Used from the next start."""
+
+    def call(self, method, body=None, headers=None):
+        return super().call(method, body, headers, path="/mcp")
+
+    def test_a_server_off_writes_the_file_and_nothing_else(self):
+        status, v = self.post({"mcp": [{"server": "files", "disabled": True}]})
+        self.assertEqual(status, 200, v)
+        self.assertEqual(v["changed"], ["files (off)"])
+        self.assertEqual(v["live"], [], "this fixture has no hub, so there is nothing to apply live")
+        self.assertEqual(v["reloads"], [])
+        self.assertEqual(v["configured"], {"files": {"disabled": True, "disabled_tools": []}})
+        cfg = self.saved()
+        self.assertIs(cfg["mcp_servers"]["files"]["disabled"], True)
+        for k in ("exe", "args", "sampling", "cors_origins", "port", "host", "api_key"):
+            self.assertEqual(cfg[k], CFG[k], k)
+        self.assertEqual(json.loads((self.path.parent / "strata-q2_0.json.bak").read_text(encoding="utf-8")), CFG)
+
+    def test_a_tool_chip(self):
+        status, v = self.post({"mcp": [{"server": "files", "tool": "read_file", "enabled": False}]})
+        self.assertEqual(status, 200, v)
+        self.assertEqual(self.saved()["mcp_servers"]["files"]["disabled_tools"], ["read_file"])
+
+    def test_get_lists_what_the_config_says_even_with_no_hub(self):
+        self.post({"mcp": [{"server": "files", "disabled": True}]})
+        status, v = self.call("GET")
+        self.assertEqual(status, 200, v)
+        self.assertEqual(v["servers"], [])                             # this fixture has no hub at all
+        self.assertEqual(v["configured"], {"files": {"disabled": True, "disabled_tools": []}})
+
+    def test_the_same_guard_as_the_config_view(self):
+        before = self.path.read_bytes()
+        self.assertEqual(self.call("POST", {"mcp": [{"server": "files", "disabled": True}]},
+                                   {"Origin": "https://evil.example"})[0], 403)
+        for body in ({}, {"mcp": []}, {"mcp": [{"server": "nope", "disabled": True}]}, b"not json"):
+            status, b = self.call("POST", body, {"Origin": f"http://{self.host}"})
+            self.assertEqual(status, 400, (body, b))
+        self.assertEqual(self.path.read_bytes(), before)               # nothing written
+
+    def test_the_api_key(self):
+        self.svc.api_key = "secret"
+        self.assertEqual(self.call("GET")[0], 401)
+        self.assertEqual(self.call("POST", {"mcp": [{"server": "files", "disabled": True}]})[0], 401)
+
+    def test_the_page_has_the_chips(self):
+        js = (ROOT / "serve" / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: [change]})})', js)
+        self.assertIn('data-mcp-server', js)
+        self.assertIn('data-mcp-tool', js)
+        self.assertIn('data-mcp-toggle', js)
+        self.assertIn('data-mcp-unfreeze', js)                   # the way to move one chat onto the current list
+        self.assertIn('body.strata_mcp_tools = mcpChatTools(chatId);', js)   # the chat sends its own list
+        self.assertIn("for new conversations; a chat already open keeps its own tools", js)
+        self.assertIn("reads its history once", js)              # the cost of switching a chat is said out loud
+        self.assertNotIn("Saved for the next start", js)         # no longer true: the hub is updated live
+        self.assertIn(".mcp-tool.off { opacity: .55; text-decoration: line-through; }",
+                      (ROOT / "serve" / "web" / "app.css").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

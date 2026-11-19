@@ -200,6 +200,47 @@ class Client(unittest.TestCase):
         self.assertTrue(any("cancelled" in e for e in seen), seen)   # notifications/cancelled reached the server
 
 
+
+class ToolOff(unittest.TestCase):
+    """One tool of a server turned off in the config (todo #tool-exclude).  The model must never be told it
+    exists, a call naming it must get the same answer as a tool that was never there, and the Monitor must still
+    show it - as off, under the name the model would have seen - so it can be switched back on."""
+
+    def setUp(self):
+        self.log = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
+        self.log.close()
+        os.environ["FAKE_MCP_LOG"] = self.log.name
+        self.hub = McpHub({"fake": stdio(disabled_tools=["echo"])},
+                          {"timeout_s": 10, "max_result_chars": 500})
+        self.hub.start(wait=True)
+
+    def tearDown(self):
+        self.hub.close()
+        del os.environ["FAKE_MCP_LOG"]
+        os.unlink(self.log.name)
+
+    def test_offered_not_routed_and_still_listed(self):
+        self.assertIn("fake__add", self.hub.routes())                # the server's other tools stay
+        self.assertNotIn("fake__echo", self.hub.routes())
+        self.assertNotIn("fake__echo", [t["name"] for t in self.hub.template_tools()])
+        st = self.hub.status()
+        self.assertEqual(st["tools"], len(self.hub.routes()))        # the count the Monitor prints
+        row = {t["tool"]: t for t in st["servers"][0]["tools"]}
+        self.assertIs(row["echo"]["enabled"], False)
+        self.assertEqual(row["echo"]["name"], "fake__echo")          # the name the model would have seen
+        self.assertIs(row["add"]["enabled"], True)
+        r = self.hub.call("fake__echo", {"text": "x"})
+        self.assertFalse(r["ok"])
+        self.assertIn("no tool named", r["text"])
+
+    def test_the_shape_is_checked_at_the_start(self):
+        for bad in ("echo", {"a": 1}, ["ok", 5], ["  "], [""], 7):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                mcp_mod.servers_from({"x": {"command": "c", "disabled_tools": bad}}, "test")
+        self.assertEqual(mcp_mod.servers_from({"x": {"command": "c", "disabled_tools": ["a", "b"]}},
+                                              "test")["x"]["disabled_tools"], ["a", "b"])
+
+
 class HttpClient(unittest.TestCase):
     """Streamable HTTP: JSON answers, an event-stream answer, the session id."""
 
@@ -553,6 +594,56 @@ class ToolLoop(unittest.TestCase):
         self.svc.api_key = ""
 
 
+    def test_a_request_can_carry_its_own_tool_list(self):
+        # todo #mcp-live-toggles: the tools block is the FIRST system turn (serve/chat_template.jinja), and reuse
+        # is exact token-prefix matching, so a conversation must keep seeing exactly the list it started with or
+        # its next message re-reads its whole history.  "strata_mcp_tools" is how the client says which list that is.
+        self.start("</think>\n\nhi")
+        code, text = self.post({"strata_mcp": True, "strata_mcp_tools": ["fake__add"]})
+        self.assertEqual(code, 200, text)
+        p = self.engine.prompt_text(0)
+        self.assertIn("fake__add", p)
+        self.assertNotIn("fake__echo", p)                      # the server's other tools are not in this prompt
+        self.assertNotIn("fake__sleep", p)
+        self.assertIn("# Tools", p)                            # the block is there, just smaller
+
+    def test_a_bad_tool_list_is_refused_before_anything_runs(self):
+        self.start("</think>\n\nhi")
+        for bad in ("x", [1], [""], {"a": 1}):
+            code, text = self.post({"strata_mcp": True, "strata_mcp_tools": bad})
+            self.assertEqual(code, 400, (bad, text))
+            self.assertIn("strata_mcp_tools", text)
+
+    def test_the_chip_switch_is_live_and_a_frozen_chat_keeps_its_tool(self):
+        # the Monitor's chip changes what NEW conversations see, with no restart; a conversation that already
+        # carries the tool in its prompt keeps rendering AND running it, because a tool the model can see but
+        # cannot call is a broken turn and dropping it would cost that chat a re-read.
+        offered = lambda: [t["name"] for t in self.hub.template_tools()]
+        self.assertIn("fake__echo", offered())
+        self.assertTrue(self.hub.set_tool_disabled("fake", "echo", True))     # the chip, live
+        self.assertNotIn("fake__echo", offered())                             # new chats: gone, no restart
+        self.assertIn("fake__echo", [t["name"] for t in
+                                     self.hub.template_tools(only=["fake__echo"], include_disabled=True)])
+        self.start(call_script("fake__echo", text="still here"), "</think>\n\nran.")
+        code, text = self.post({"strata_mcp": True, "strata_mcp_tools": ["fake__echo"]})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        self.assertEqual([m["event"] for m in mcp][-2:], ["call", "result"], "the frozen tool still runs")
+        last = mcp[-1]
+        self.assertTrue(last["ok"], last)                 # an error result has the same two events: check it ran
+        self.assertIn("still here", last["text"], last)   # and the tool really produced its answer
+        self.assertTrue(self.hub.set_tool_disabled("fake", "echo", False))    # and back on again
+        self.assertIn("fake__echo", offered())
+
+    def test_turning_a_whole_server_off_and_on_live(self):
+        self.assertTrue(self.hub.set_server_disabled("fake", True))
+        self.assertNotIn("fake", self.hub.servers)
+        self.assertEqual(self.hub.template_tools(), [])              # nothing to offer: the chat runs without them
+        self.assertTrue(self.hub.set_server_disabled("fake", False, stdio()))
+        self.hub.wait(10)
+        self.assertIn("fake__echo", [t["name"] for t in self.hub.template_tools()])
+        self.assertFalse(self.hub.set_server_disabled("nope", True))  # a name that is not there changes nothing
+
 class NoServers(unittest.TestCase):
     def test_opt_in_without_servers_is_a_plain_chat(self):
         tok = ByteTokenizer()
@@ -561,7 +652,7 @@ class NoServers(unittest.TestCase):
         try:
             base = f"http://127.0.0.1:{httpd.server_address[1]}"
             with urllib.request.urlopen(base + "/mcp", timeout=10) as r:
-                self.assertEqual(json.loads(r.read()), {"servers": [], "tools": 0})
+                self.assertEqual(json.loads(r.read()), {"servers": [], "tools": 0, "configured": {}})
             req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(
                 {"model": "m", "messages": [{"role": "user", "content": "x"}], "strata_mcp": True}).encode(),
                 headers={"Content-Type": "application/json"})

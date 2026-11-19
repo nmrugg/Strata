@@ -4489,7 +4489,7 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names, keep_thinking=False, stream_args=False):
+                 mcp_names, keep_thinking=False, stream_args=False, frozen=False):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
@@ -4497,7 +4497,11 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
 
     `mcp_names`: the MCP tools this request offered; any other call is one of the request's own tools and ends the
     turn as always (the client answers it).  MCP calls written in the same answer are then not run (their results
-    could not reach the model before the client's)."""
+    could not reach the model before the client's).
+
+    `frozen`: the request named its own tool list (strata_mcp_tools, todo #mcp-live-toggles), so a tool the config
+    has since turned off is still routed for THIS request - it is already in that conversation's prompt, and a tool
+    the model can see but cannot call is a broken turn, not a safe one."""
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     messages = list(messages)
@@ -4557,7 +4561,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
 
             def work(c=c, box=box):
                 try:
-                    box["r"] = hub.call(c.name, c.arguments, cancel)
+                    box["r"] = hub.call(c.name, c.arguments, cancel, include_disabled=frozen)
                 except McpCancelled:
                     box["cancelled"] = True
             worker = threading.Thread(target=work, daemon=True)
@@ -5309,9 +5313,11 @@ def make_handler(svc: Service):
                     self._config_get()
                 return
             if path == "/mcp":
-                # the MCP servers, their state and tools (the web app's switch and Monitor card)
+                # the MCP servers, their state and tools (the web app's switch and Monitor card), plus what the
+                # run config says about them: a server the config turns off is not in the hub at all, so without
+                # that second half the page could not show it, and could never switch it back on.
                 if self._authorized():
-                    self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
+                    self._json(200, mcp_answer(svc))
                 return
             if path == "" or (path == "/api-monitor" and svc.api_monitor):
                 # the page itself gets the same validator: with no Cache-Control at all a browser could serve a
@@ -5396,6 +5402,9 @@ def make_handler(svc: Service):
                 return
             if path == "/config":
                 self._config_post()
+                return
+            if path == "/mcp":                              # the Monitor's chips: an MCP server or tool off/on
+                self._mcp_post()
                 return
             if path in ("/unload", "/load") and not self._control_body():
                 return
@@ -5653,6 +5662,57 @@ def make_handler(svc: Service):
                 print(f"[strata] the Settings view changed {', '.join(changed)} in {Path(svc.config_path).name} "
                       f"(the earlier file: {bak.name}); used from the next start", flush=True)
             self._json(200, {**runconfig.view(new, svc.config_path), "changed": changed})
+
+        def _mcp_post(self):
+            """The Monitor's chips: turn an MCP server, or one tool of it, off or on in the run config.  JSON from
+            Strata's own page only, as /config (the key is checked before).
+
+            What it deliberately does NOT do is touch the running hub.  The tool list is rendered into the system
+            turn, and conversation reuse is exact token-prefix matching (docs/DETAILS.md, "Multiple
+            conversations"), so a chat whose tool list changed mid-way re-reads its whole history - minutes on a
+            long chat, the thing item pin-conversation exists to avoid.  So the change is written and used from
+            the next start, and the page says so (todo #mcp-server-toggle, #tool-exclude)."""
+            body = self._body()
+            if not self._own_page("the MCP servers can be changed"):
+                return
+            if not svc.config_path:
+                self._json(404, {"error": {"message": "this server was started without a run config"}})
+                return
+            try:
+                req = json.loads(body or b"{}")
+                with svc.config_lock:
+                    cfg = runconfig.load(svc.config_path)
+                    new, changed = runconfig.set_mcp(cfg, req.get("mcp") if isinstance(req, dict) else None)
+                    bak = runconfig.save(svc.config_path, new)
+            except ValueError as e:
+                self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                return
+            except OSError as e:
+                self._json(500, {"error": {"type": "server_error", "message": f"the run config cannot be written: {e}"}})
+                return
+            # Apply it to the running hub too (todo #mcp-live-toggles): a new conversation sees the change from its
+            # next request, with no restart.  A conversation that already carries the old list sends it
+            # (strata_mcp_tools) and keeps its prompt - except when a whole server goes off, whose tools can no
+            # longer be rendered at all: that chat re-reads, and "reloads" tells the page to say so.
+            live, reloads = [], []
+            if svc.mcp is not None:
+                block = runconfig.mcp_block(new)[0] or {}
+                for ch in req["mcp"]:
+                    name = str(ch.get("server") or "")
+                    if ch.get("tool") is not None:
+                        if svc.mcp.set_tool_disabled(name, str(ch["tool"]), ch.get("enabled", True) is not True):
+                            live.append(f"{name}__{ch['tool']}")
+                    elif "disabled" in ch:
+                        off = ch["disabled"] is True
+                        if svc.mcp.set_server_disabled(name, off, block.get(name)):
+                            live.append(f"{name} ({'off' if off else 'on'})")
+                            if off:
+                                reloads.append(name)
+            print(f"[strata] the Monitor changed the MCP servers: {', '.join(changed)} in "
+                  f"{Path(svc.config_path).name} (the earlier file: {bak.name}); live for new conversations",
+                  flush=True)
+            self._json(200, {"changed": changed, "configured": runconfig.mcp_state(new),
+                             "live": live, "reloads": reloads})
         def _foreign_origin(self) -> bool:
             """A web page of another origin sent this.  The Origin must be this server's own address (host and port),
             or an origin the config trusts (trusted_origins: the web app behind a reverse proxy or tunnel); no Origin
@@ -5762,7 +5822,8 @@ def make_handler(svc: Service):
                 if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
                     return
                 svc.mcp.wait(10)                                  # servers still starting (only right after start)
-                extra = svc.mcp.template_tools(exclude=own)       # the request's own tools win a name clash
+                only = mcp_only(req)                              # this conversation's own tool list, if it sent one
+                extra = svc.mcp.template_tools(exclude=own, only=only, include_disabled=only is not None)
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
             if force and use_mcp:
@@ -5776,7 +5837,7 @@ def make_handler(svc: Service):
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}, svc.mcp_keep_thinking(req),
-                               svc.mcp_stream_args(req)) if use_mcp else None
+                               svc.mcp_stream_args(req), frozen=only is not None) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
@@ -6303,12 +6364,45 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
     return bool(name) and (name in LOOPBACK_NAMES or name.endswith(".localhost") or _name_in(name, names))
 
 
+def mcp_only(req: dict) -> list[str] | None:
+    """The tool list one conversation already carries in its prompt (todo #mcp-live-toggles).  The web app sends
+    it so that a toggle made after that chat started does not change the START of its prompt - the tools block is
+    the first system turn (serve/chat_template.jinja), and reuse is exact token-prefix matching, so anything
+    different there costs the chat a full re-read of its history.  Names are the ones the model sees, "server__tool".
+    None: offer whatever is enabled right now.  A list is a request from a client that owns its own prefix; it can
+    only name tools that exist, and it never grants a tool from a server that has been stopped."""
+    v = req.get("strata_mcp_tools")
+    if v is None:
+        return None
+    if not isinstance(v, list) or len(v) > 512 or not all(isinstance(x, str) and x.strip() for x in v):
+        raise ValueError('strata_mcp_tools: a list of tool names the model sees, like ["files__read_file"]')
+    return [str(x).strip() for x in v]
+
+
+def mcp_answer(svc: Service) -> dict:
+    """GET /mcp's answer: the hub's live state, plus "configured" - what the run config says about every MCP
+    server, including the ones it turns off.  The hub holds only the enabled ones (serve/mcp.py, servers_from),
+    so a server switched off would otherwise vanish from the page and could never be switched back on from it."""
+    out = svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0}
+    out["configured"] = {}
+    if svc.config_path:
+        try:
+            out["configured"] = runconfig.mcp_state(runconfig.load(svc.config_path))
+        except (OSError, ValueError):
+            pass                                    # an unreadable config: the live state is still worth showing
+    return out
+
+
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
     httpd = Server((host, port), make_handler(svc))
     httpd.svc = svc
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    # poll_interval: serve_forever's default is 0.5 s, so every shutdown waited out a poll - 24 tests in
+    # test_static_cache alone cost ~520 ms each, all of it waiting.  0.02 s makes the whole fast suite 36.8 s
+    # into 9.4 s (todo #test-suite-speed), and the same line means a restart of the real server notices in
+    # <=20 ms instead of <=500 ms.  The cost is 50 idle wakeups a second instead of 2.
+    threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.02), daemon=True).start()
     return httpd
 
 

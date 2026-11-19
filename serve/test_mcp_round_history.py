@@ -60,7 +60,9 @@ class FakeHub:
     def routes(self):
         return {TOOL: (None, "noop")}
 
-    def call(self, name, arguments, cancel):
+    def call(self, name, arguments, cancel, include_disabled=False):
+        # the same signature as McpHub.call (serve/mcp.py): a request that carries its own tool list asks for
+        # include_disabled (todo #mcp-live-toggles), and a double that drifts from the real one hides that.
         return {"ok": True, "text": "7", "chars": 1, "truncated": False, "ms": 0, "images": []}
 
 

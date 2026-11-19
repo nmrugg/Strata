@@ -65,13 +65,72 @@ all: fold-control replaced them, and the four overlapping switches became one co
     engine's C++ tests, which need a GPU. Worth including: the node-missing skip (test_chat_sidebar.py skips
     the JS harness when node is absent) and a non-zero exit on failure.
 
-`mcp-server-toggle`  Enable and disable a whole MCP server from the front end. [ui] [py] EASY
-    The config already supports "disabled": true per entry, and the server leaves it out with
-    one log line. So this is a checkbox that writes that flag - the smallest item in the
-    MCP set.
-    Care: it writes the run config, so it needs the same origin guard as GET/POST /config,
-    and it takes effect only on restart. Say so in the UI.
+`mcp-server-toggle`  Enable and disable a whole MCP server from the front end. [ui] [py] EASY DONE 2026-11-19
+    DONE: the switch on a server card in the Monitor POSTs {"mcp": [{"server": name, "disabled": true|false}]} to
+    a new POST /mcp (serve/server.py, _mcp_post), which writes the run config through runconfig.set_mcp - same
+    .bak, same _own_page guard and API key as /config, every other key of the file left exactly as it is.
+    DECIDED (asked; the ask popup could not reach the human, so the safe reading was taken and stated in the UI,
+    then revisited on 2026-11-19 when they asked for live toggles - see item mcp-live-toggles): the write is
+    immediate now, and a conversation that is already open keeps the tool list it started with.
+    A server the config has off is not in the hub at all (serve/mcp.py, servers_from), so GET /mcp now answers a
+    second half, "configured", read from the file (runconfig.mcp_state) - without it a disabled server would
+    vanish from the page and could never be switched back on.
+    Tests: serve/test_runconfig.py McpApply (4) and McpHttp (6) - off/on round trip, other keys untouched, .bak,
+    403 foreign Origin, 400 unknown server, 401 with the key, and GET listing a server the hub does not hold.
+    Control: dropping the _own_page guard fails the 403 check.  Harness case 90: the switch POSTs the opposite of
+    what it shows, and the toast says what the change costs (item mcp-live-toggles changed that copy).
 
+`mcp-live-toggles`  Make an MCP switch take effect without restarting Strata. [py] [ui] DONE 2026-11-19
+    ASKED FOR by the human after the chips shipped ("is there any way we can make it take effect without
+    restarting?").  The obstacle is not the process, it is the prompt: the tools block is the FIRST system turn
+    (serve/chat_template.jinja, the `if tools` branch), and reuse is exact token-prefix matching, so changing the
+    set changes the start of every conversation's prompt and costs it a full re-read - measured here at
+    328,811 prompt tokens for the live chat, roughly 3 minutes at this box's read rate.  Nothing about the engine
+    needs restarting: the list is fetched per request (server.py, `extra = svc.mcp.template_tools(...)`).
+    DONE, the "frozen per chat" shape, chosen with the human:
+      - POST /mcp now also updates the running hub (McpHub.set_tool_disabled / set_server_disabled): a tool
+        toggle re-routes at once; a server going off is closed and dropped, one coming back is constructed and
+        started on its own thread.  New conversations see the change with no restart.
+      - A conversation that already has the old list in its prompt sends it: the request key `strata_mcp_tools`
+        (server.py, mcp_only) filters what template_tools renders, and `include_disabled` lets that same request
+        still CALL a tool the config has since turned off - a tool the model can see but cannot run is a broken
+        turn.  run_with_mcp carries `frozen` for that.
+      - The page keeps the list per chat in memory only (app.js, mcpFrozen / mcpChatTools).  The human asked for
+        the reload to reset it: after a reload the chat uses the current list and pays the one re-read.  A
+        "Use the current tools in this chat" button does the same without a reload.  Nothing is written into the
+        chat record, so a chat carried across a reload is not pinned to an old tool set.
+      - The one change an open chat cannot be shielded from: a whole server going off, whose tools can no longer
+        be rendered at all.  POST /mcp answers "reloads": [names] and the toast says those chats will read their
+        history once more, instead of letting the next message discover it.
+    Tests: serve/test_mcp.py ToolLoop +4 (the request's list is what reaches the prompt; a bad list is a 400
+    before anything runs; the chip is live and a frozen chat still RUNS its tool - asserted on ok and the tool's
+    text, not just on the events, because an error result looks the same; a server off/on live).  Harness case 91
+    drives send(): an open chat keeps its list, a new chat gets the current one, a reload switches it over, and
+    the button does the same.  serve/test_mcp_round_history.py's FakeHub.call gained the new kwarg - a double that
+    drifts from the real signature hides exactly this.
+    Controls: template_tools ignoring `only` fails the prompt check; hub.call ignoring include_disabled fails the
+    frozen-call check (ok: False); dropping body.strata_mcp_tools fails case 91; set_tool_disabled returning
+    False fails the live check.  One control had to be strengthened first: asserting only the call/result events
+    passed even when the tool errored.
+    NOT verified in a browser: the re-read arithmetic (it is the engine's, and the numbers are the measured ones
+    above), and what a chat does when a server it used is turned off mid-conversation.
+    POLISH from the human's read of the card (2026-11-19): the chip now shows only the tool's own name - the
+    server's name is already the card it sits under, and `easyCMP__` on every chip was noise - with the full
+    model-facing name in the tooltip beside the description.  The "use the current tools" button names the chat
+    it applies to ("Use the current tools in \"Refactor the parser\"") and only EXISTS when that chat is holding
+    a list different from what the server offers now (mcpSwitchState): a chat that has not sent in this page load
+    is not shielded, and a chat whose list already matches has nothing to switch to, so in both cases there is no
+    button at all and a status line says which state it is in ("will use the current tools (2) on its next
+    message" / "already uses the current tools (2)" / "is holding the 2 tools it started with; the server now
+    offers 1").  Greyed-out was tried first and failed in the browser: the human reloads the page for every
+    web-app change, so they always landed in the not-shielded state and the button looked permanently broken.
+    The state is re-evaluated whenever a different chat comes on screen (showChat calls renderMcp) and whenever a
+    chat sends (send calls renderMcp), which is what makes it right for several chats rather than one.  The long
+    explanation moved into the tooltip; the visible line is one sentence.
+    Tests: harness case 92 (the chip label, the tooltip, no button before a send, the button appearing for the
+    shielded chat, the status line naming whichever chat is on screen).  Controls: rendering the button always
+    fails the "no button at all" check; dropping renderMcp() from send() leaves the status line stale and fails;
+    dropping it from showChat fails the per-chat check.
 
 `block-reload-while-editing`  Ask before a reload/navigation while a message edit box is open. [ui]
     Raised with item edit-posts.  There is already a beforeunload guard while a live turn runs (warnOnLeave,

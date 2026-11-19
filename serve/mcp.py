@@ -394,6 +394,10 @@ class McpServer:
         self.transport = None
         self.lock = threading.Lock()
         self.last_start = 0.0
+        # tools this config leaves out of the model's reach (todo #tool-exclude): the server's own tool names,
+        # as the server lists them, not the namespaced name the model would see.  A disabled tool is not in
+        # routes(), so the model is never told about it and a call naming it gets the "no such tool" answer.
+        self.disabled_tools = {str(t) for t in (cfg.get("disabled_tools") or [])}
 
     def start(self) -> bool:
         with self.lock:
@@ -533,29 +537,38 @@ class McpHub:
         for t in self.threads:
             t.join(None if end is None else max(0.0, end - time.monotonic()))
 
-    def routes(self) -> dict[str, tuple[McpServer, str]]:
+    def routes(self, include_disabled: bool = False) -> dict[str, tuple[McpServer, str]]:
         """tool name the model sees -> (server, the tool's own name).  A server that stopped after it was ready keeps
-        its tools here: a call starts it again."""
+        its tools here: a call starts it again.
+
+        `include_disabled`: also route the tools the config turned off.  Only a request that carries its own tool
+        list (strata_mcp_tools, todo #mcp-live-toggles) asks for that - an older conversation whose prompt already
+        names the tool must keep rendering AND running it, or its prompt changes and it re-reads.  Every other
+        request sees exactly the enabled set."""
         out = {}
         for s in self.servers.values():
             if s.status not in ("ready", "stopped"):
                 continue
             for t in s.tools:
+                if t["name"] in s.disabled_tools and not include_disabled:
+                    continue                                  # the config turned this one off (todo #tool-exclude)
                 name = f"{_clean(s.name)}__{_clean(t['name'])}"[:64]
                 n = 2
                 while name in out:                       # two names that differ only in cleaned characters
                     name = f"{name[:60]}_{n}"
                     n += 1
                 out[name] = (s, t["name"])
-        self._routes = out
+        if not include_disabled:
+            self._routes = out
         return out
 
-    def template_tools(self, exclude=()) -> list[dict]:
+    def template_tools(self, exclude=(), only=None, include_disabled: bool = False) -> list[dict]:
         """The tools in the chat template's form ({name, description, parameters}); `exclude`: names the request
-        brought itself (those win)."""
+        brought itself (those win).  `only`: the names one conversation already has in its prompt - the list is
+        then exactly that subset, so its prefix keeps matching (todo #mcp-live-toggles)."""
         out = []
-        for name, (s, tool) in self.routes().items():
-            if name in exclude:
+        for name, (s, tool) in self.routes(include_disabled=include_disabled).items():
+            if name in exclude or (only is not None and name not in only):
                 continue
             t = next(x for x in s.tools if x["name"] == tool)
             schema = t.get("inputSchema") if isinstance(t.get("inputSchema"), dict) else {}
@@ -566,12 +579,17 @@ class McpHub:
     def openai_tools(self) -> list[dict]:
         return [{"type": "function", "function": t} for t in self.template_tools()]
 
-    def call(self, name: str, arguments: dict, cancel: threading.Event | None = None) -> dict:
+    def call(self, name: str, arguments: dict, cancel: threading.Event | None = None,
+             include_disabled: bool = False) -> dict:
         """Run one tool -> {"ok", "text" (what the model reads, capped), "images" (its pictures, as parts of the
         tool's message; they are not part of the character cap), "chars" (its full length), "truncated", "ms",
-        "server", "tool"}.  Errors become text starting with "error:"; only McpCancelled is raised."""
+        "server", "tool"}.  Errors become text starting with "error:"; only McpCancelled is raised.
+        `include_disabled` matches the request's template_tools call: a conversation that already carries a
+        turned-off tool in its prompt can still run it (todo #mcp-live-toggles)."""
         t0 = time.monotonic()
-        server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
+        routes = self.routes(include_disabled=include_disabled) if include_disabled else (
+            self._routes or self.routes())
+        server, tool = routes.get(name, (None, name))
         out = {"server": server.name if server else None, "tool": tool}
         images: list[dict] = []
         if server is None:
@@ -605,10 +623,50 @@ class McpHub:
             names = {tool: n for n, (srv, tool) in routes.items() if srv is s}
             servers.append({"name": s.name, "transport": s.kind, "status": s.status, "error": s.error,
                             "info": s.info,
-                            "tools": [{"name": names.get(t["name"], t["name"]), "tool": t["name"],
-                                       "description": str(t.get("description") or "")[:300]} for t in s.tools]})
+                            # "enabled" is what the config says about this tool (todo #tool-exclude): a disabled
+                            # one is not in routes(), so the model is never told it exists and cannot call it.
+                            # Its name is shown the way the model would see it, route or no route.
+                            "tools": [{"name": names.get(t["name"], f"{_clean(s.name)}__{_clean(t['name'])}"),
+                                      "tool": t["name"],
+                                      "enabled": t["name"] not in s.disabled_tools,
+                                      "description": str(t.get("description") or "")[:300]} for t in s.tools]})
         return {"servers": servers, "tools": len(routes),
                 "settings": {k: self.settings[k] for k in ("timeout_s", "max_result_chars", "max_rounds")}}
+
+    def set_tool_disabled(self, server: str, tool: str, off: bool) -> bool:
+        """Apply a tool toggle to the hub that is already running (todo #mcp-live-toggles), so no restart is
+        needed: a new conversation's next request sees the new set, and a conversation that already carries the
+        tool in its prompt keeps it - its request names its own list, and rendering anything else would change
+        the start of its prompt and make it re-read its whole history."""
+        s = self.servers.get(server)
+        if s is None:
+            return False
+        (s.disabled_tools.add if off else s.disabled_tools.discard)(str(tool))
+        self.routes()                                     # refresh the cached map the Monitor and calls use
+        return True
+
+    def set_server_disabled(self, name: str, off: bool, cfg: dict | None = None) -> bool:
+        """Take a server out of the running hub, or start it again, without restarting Strata.  Turning it off ends
+        its process, so a conversation that had its tools cannot render them any more and re-reads on its next
+        message - the honest cost of a live switch, and the page says it out loud."""
+        if off:
+            s = self.servers.pop(name, None)
+            if s is None:
+                return False
+            try:
+                s.close()
+            except Exception as e:                        # a server that will not die must not fail the toggle
+                print(f"[strata] MCP server {name}: closing it after turning it off failed: {e}", flush=True)
+            self.routes()
+            return True
+        if name in self.servers or not isinstance(cfg, dict):
+            return False
+        s = McpServer(name, cfg, self.settings)
+        self.servers[name] = s
+        t = threading.Thread(target=s.start, daemon=True, name=f"mcp-{name}")
+        self.threads.append(t)
+        t.start()
+        return True
 
     def close(self):
         for s in self.servers.values():
@@ -635,6 +693,9 @@ def _check_server(name, cfg, where) -> dict:
         raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"args\" must be a list")
     if not isinstance(cfg.get("env") or {}, dict):
         raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"env\" must be an object")
+    if not isinstance(cfg.get("disabled_tools") or [], list) or \
+            not all(isinstance(t, str) and t.strip() for t in (cfg.get("disabled_tools") or [])):
+        raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"disabled_tools\" must be a list of tool names")
     return cfg
 
 
