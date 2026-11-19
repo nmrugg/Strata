@@ -27,7 +27,11 @@ all: fold-control replaced them, and the four overlapping switches became one co
 
 ## 1. Trivial - minutes to an hour, one file, no design decision
 
-`hide-preview-when-open`  Do not show tool-call__preview while the block is open. [ui] TRIVIAL
+`hide-preview-when-open`  Do not show tool-call__preview while the block is open. [ui] TRIVIAL DONE 2026-11-19
+    DONE: one rule, `.tool-call[open] .tool-call__preview { display: none; }` (app.css, right after the
+    preview's own rule), mirroring the thinking block.  CSS only - the span is still built and toolSync still
+    updates it, so a closed block keeps its preview.  Pinned by a new check in serve/test_chat_sidebar.py
+    (fast suite 190 -> 191); control: deleting the rule fails it.
     .tool-call__preview (app.css, and toolPreview() at app.js:1041) is the one-line summary in the summary row;
     when the block is open the arguments and result are right below it, so the line is noise. The thinking
     block already does exactly this: .st-collapse.think[open] .think-preview { display: none; } (app.css:81).

@@ -154,6 +154,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call > summary { min-width: 0; padding: 8px 12px; }
 .tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap; }
 .tool-call__preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-xs); }
+/* the preview goes away once the block is open, exactly as .think-preview does above: the arguments and the
+   result are right there under it, so the line is noise (todo #hide-preview-when-open) */
+.tool-call[open] .tool-call__preview { display: none; }
 .tool-call .st-badge, .tool-call summary .small { flex: none; }
 .tool-call[data-state="error"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
 .tool-call[data-state="running"] .st-badge::before, .tool-call[data-state="writing"] .st-badge::before { animation: blink 1s steps(2) infinite; }

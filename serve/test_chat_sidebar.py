@@ -187,6 +187,17 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("p.from = w.from; p.to = w.to; p.runs = w.runs;", self.js)
         self.assertNotIn(".st-work", css)                              # the container is gone, and so is its CSS
 
+    def test_an_open_tool_block_hides_its_one_line_preview(self):
+        # todo #hide-preview-when-open: the preview line in the summary row duplicates the arguments and the
+        # result that appear right below it once the block is open.  The thinking block has done this for a
+        # while; a tool block did not.  CSS only - the element is still built, so a closed block keeps it and
+        # toolSync keeps updating it every frame.
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".tool-call[open] .tool-call__preview { display: none; }", css)
+        self.assertIn(".tool-call__preview { flex: 1;", css)           # the closed block's rule is untouched
+        self.assertIn('<span class="tool-call__preview muted">', self.js)
+        self.assertIn('d.querySelector(".tool-call__preview")', self.js)   # still refreshed, just not shown
+
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
         self.assertIn("function closeDrawer()", self.js)
