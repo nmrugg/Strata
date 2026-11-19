@@ -270,13 +270,24 @@ class ChatSidebar(unittest.TestCase):
         for el in ("mcp-btn", "mcp-dot"):
             self.assertIn(f'id="{el}"', self.html)
             self.assertIn(f'"{el}"', self.js)
+        self.assertIn('id="mcp-btn" title="MCP Servers" aria-label="MCP Servers"', self.html)
         css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
         self.assertIn(".mcp-dot { position: absolute;", css)
         self.assertIn("background: var(--st-info); }", css)          # a state, not a fault: blue, not red
-        self.assertIn(".mcp-picker__tool.on { border-color: var(--st-info);", css)
+        # the panel scrolls inside the window instead of running off the bottom, and its chips are the Monitor's
+        self.assertIn("flex-direction: column; gap: 8px; overflow-y: auto; }", css)
+        self.assertIn('node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool)', self.js)
+        self.assertIn('node("button", `chip mcp-server-chip${anyOn ? "" : " off"}`, s.name)', self.js)
+        self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
+        self.assertIn('Reset Tools', self.js)
+        self.assertIn("if (!mcpSame([...held], now)) {", self.js)    # and only when this chat is off the current set
+        self.assertIn('if (changed) panel.appendChild(node("div", "mcp-picker__cost', self.js)   # cost after a change
+        self.assertIn("placePopover(menu, anchor);", self.body("openPopover"))
+        self.assertIn("placePopover(panel, anchor);", self.body("openMcpPicker"))
+        self.assertIn("el.style.maxHeight = `${Math.max(120, space)}px`;", self.body("placePopover"))
         dot = self.body("updateMcpDot")
         self.assertIn("btn.hidden = !mcpServers().length;", dot)     # no MCP at all: no button
-        self.assertIn('$("mcp-dot").hidden = !(held && !mcpSame(held, mcpCurrentTools()));', dot)
+        self.assertIn('$("mcp-dot").hidden = !(held && base && !mcpSame(held, now) && !mcpSame(base, now));', dot)
         self.assertIn("updateMcpDot();", self.body("renderChat"))    # the dot is about THIS chat
         self.assertIn("updateMcpDot();", self.body("renderMcp"))
         self.assertIn('$("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));', self.js)

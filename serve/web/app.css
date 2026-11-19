@@ -259,15 +259,15 @@ main { flex: 1; min-height: 0; display: flex; }
    server's tools as switches.  On = info blue, the same colour the pill and the badges use for "the engine is
    not producing tokens" - here it means "this chat asks for it". */
 .mcp-picker { min-width: 320px; max-width: min(92vw, 460px); padding: 10px; display: flex;
-              flex-direction: column; gap: 8px; }
-.mcp-picker__head { font: 600 var(--st-fs-sm) var(--st-font); color: var(--st-ink); }
+              flex-direction: column; gap: 8px; overflow-y: auto; }   /* placePopover caps the height to the room
+                                                                         there is, so a long list scrolls in place */
 .mcp-picker__server { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .mcp-picker__server-name { font: 600 var(--st-fs-xs) var(--st-font-mono); color: var(--st-ink-muted); }
-.mcp-picker__tool { display: inline-flex; align-items: center; height: 26px; padding: 0 9px; border-radius: var(--st-r-pill);
-                    border: 1px solid var(--st-line); background: transparent; cursor: pointer;
-                    font: 500 var(--st-fs-xs) var(--st-font-mono); color: var(--st-ink-muted); }
-.mcp-picker__tool.on { border-color: var(--st-info); color: var(--st-ink);
-                       background: color-mix(in srgb, var(--st-info) 18%, transparent); }
+/* the server's own chip: one click takes the whole server out of this conversation, or puts it back */
+.mcp-server-chip { font-weight: 600; border-color: var(--st-info); color: var(--st-ink);
+                   background: color-mix(in srgb, var(--st-info) 18%, transparent); }
+.mcp-server-chip.off { background: transparent; border-color: var(--st-line); color: var(--st-ink-muted);
+                       text-decoration: none; }
 .mcp-picker__cost { line-height: 1.4; }
 .sidebar-empty { margin: 0; padding: var(--st-s-2) 8px; }
 .sidebar-foot { margin: 0; }

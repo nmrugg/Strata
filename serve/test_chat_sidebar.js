@@ -3093,8 +3093,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   mcp92 = MCP_OFF;                                          // a chip turned "two" off
   await sc92.s.loadMcp();
   assert.ok(wrote92().includes("data-mcp-unfreeze"), "now the shielded chat gets the button");
-  assert.ok(wrote92().includes("is holding the 2 tools it started with; the server now offers 1"),
-            wrote92().slice(-260));
+  assert.ok(wrote92().includes("has 2 tools and the settings now offer 1"), wrote92().slice(-260));
   assert.ok(!wrote92().includes('data-mcp-unfreeze disabled'), "the button is live, not greyed");
   assert.ok(wrote92().includes('Use the current tools in "Refactor the parser"'),
             `it says which chat: ${/(data-mcp-unfreeze[^>]*>)[^<]*/.exec(wrote92())[0]}`);
@@ -3150,26 +3149,42 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   mcp94 = toolsWith(false);                                // a tool is switched off globally
   await s94.s.loadMcp();
   assert.strictEqual(s94.s.el("mcp-dot").hidden, false, "now the chat is holding a list that is not the current one");
-  assert.ok(s94.s.el("mcp-btn").title.includes("uses 2 tools") && s94.s.el("mcp-btn").title.includes("1 are switched on"),
-            s94.s.el("mcp-btn").title);
   s94.s.el("mcp-btn").onclick();                            // open the picker
   const findIn = (el, attr, out = []) => { (el.children || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findIn(c, attr, out); }); return out; };
+  // the panel rebuilds itself after every click, so "open it again" has to close it first or it just closes
+  const reopen = () => { if (s94.s.chatMenu) s94.s.el("mcp-btn").onclick(); s94.s.el("mcp-btn").onclick(); return s94.s.chatMenu; };
   let panel = s94.s.chatMenu;
   assert.ok(panel && panel.className.includes("mcp-picker"), "the panel opened");
+  assert.ok(!/reads the conversation again/.test(panel.children.map((c) => c.textContent).join(" ")),
+            "no cost line before the reader has changed anything");
   assert.strictEqual(findIn(panel, "data-mcp-pick").length, 2, "both tools of the server are listed");
   assert.strictEqual(findIn(panel, "data-mcp-pick").filter((b) => b.attrs["aria-checked"] === "true").length, 2,
                      "checked as this chat has them");
-  const off = findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two");
+  // untick the tool that IS still offered, so the chat ends up different from the settings on purpose: that is
+  // the case where the baseline matters - a change made here must not leave the dot lit.
+  const off = findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one");
   panel._l.click({target: off});                            // untick it: applies at once, no Apply button here
-  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one"], "the chat's list changed on the click");
-  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "and it now matches the current list, so the dot goes");
+  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__two"], "the chat's list changed on the click");
+  assert.strictEqual(s94.s.el("mcp-dot").hidden, true,
+                     "a change made in this panel never raises the dot - the dot is for the config moving elsewhere");
   panel = s94.s.chatMenu;
-  assert.ok(findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two")
+  assert.strictEqual(findIn(panel, "data-mcp-match").length, 1, "and Reset Tools shows, because the chat is off the current set");
+  assert.ok(findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one")
               .attrs["aria-checked"] === "false", "the panel rebuilt with the new state");
-  assert.ok(/328,811 tokens/.test(findIn(panel, "data-mcp-pick").length ? panel.children.map((c) => c.textContent).join(" ") : ""),
-            "the cost is said in tokens, from the chat's own last turn");
+  const text94 = () => panel.children.map((c) => c.textContent).join(" ");
+  assert.ok(/328,811 tokens/.test(text94()), "after a change, the cost is said in tokens from the chat's own last turn");
   // the panel rebuilds itself after every click, so "open it again" has to close it first or it just closes
-  const reopen = () => { if (s94.s.chatMenu) s94.s.el("mcp-btn").onclick(); s94.s.el("mcp-btn").onclick(); return s94.s.chatMenu; };
+  // the server's own chip: one click drops every tool of that server from this conversation
+  panel = reopen();
+  const srvChip = findIn(panel, "data-mcp-server")[0];
+  assert.strictEqual(srvChip.attrs["aria-checked"], "true", "the server chip reads on while any of its tools are used");
+  assert.ok(srvChip.className.includes("chip") && srvChip.className.includes("mcp-server-chip"),
+            `styled like the Monitor's chips: ${srvChip.className}`);
+  panel._l.click({target: srvChip});
+  assert.deepStrictEqual(s94.s.chat.mcpTools, [], "clicking the name takes the whole server out of this chat");
+  panel = reopen();
+  panel._l.click({target: findIn(panel, "data-mcp-server")[0]});
+  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one"], "clicking it again puts the server's available tools back");
   s94.s.chat.mcpTools = ["a__one", "ghost__gone"];          // a tool the server no longer offers
   await s94.s.loadMcp();
   panel = reopen();

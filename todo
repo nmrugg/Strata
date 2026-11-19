@@ -604,6 +604,10 @@ all: fold-control replaced them, and the four overlapping switches became one co
     refuses a server that is not in the run config - one that came from --mcp-config lives in that other file
     and has to be edited there.  And the warning that decided item mcp-server-toggle still holds: the tool list
     is part of the system turn, so any change to it costs every chat one re-read.
+    ASKED FOR AGAIN (2026-11-19): "we are missing the edit and add/remove mcp server options on this menu and the
+    MCP settings page" - so the entry points are wanted in BOTH the per-chat picker and the settings page.  The
+    picker half is per-chat and cheap (its tools are already grouped by server there); the settings half is the
+    real thing: a form for name / command or url / args / env, and deleting the whole entry.
 
 `tool-exclude`  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM DONE 2026-11-19
     DONE: a server entry can carry "disabled_tools": [its own tool names], checked at the start (serve/mcp.py,
@@ -678,6 +682,20 @@ all: fold-control replaced them, and the four overlapping switches became one co
     skipped there), how the tool grid reads at 31 tools, and the dot's size/position on the icon.
     OPEN, asked and unanswered: whether the off-default dot also goes on the sidebar chat row, so you can see
     which conversations differ without opening them.
+    REVISED from the human's read of it (2026-11-19, same day): the button is titled "MCP Servers"; the "Tools for
+    X" heading is gone; the server's NAME is itself a switch that takes the whole server out of this conversation
+    (or brings back what the settings offer now, not what used to be there); the chips are the Monitor's chips
+    (`chip mcp-tool` + .off), not a new style; the panel is capped to the room on the better side of the anchor
+    and scrolls inside the window (placePopover, now shared with the row menu - with 31 tools it ran off the
+    bottom before); the cost line appears only after you change something in the panel; "Match the current tools"
+    is "Reset Tools" and appears only when this chat is off the current set.
+    THE DOT'S MEANING CHANGED, and this is the part worth keeping: it is NOT "this chat differs from the
+    defaults". Editing this chat's own list never raises it. It means the CONFIG moved under the chat: the chat
+    remembers what it was synced to (c.mcpDefault), and the dot is (chat list != current) AND (the baseline !=
+    current). setChatTools re-syncs the baseline, which is why an edit here leaves the dot dark.
+    Control that proves it: dropping the baseline re-sync fails only in the case where the chat ends up different
+    from the settings on purpose - the first version of the test unticked a tool until the chat matched the
+    settings again, and passed for the wrong reason.
 
 `mcp-settings-page`  MCP servers and tools on the Settings page, with an Apply button. [ui] [py] MEDIUM
     DECIDED with the human: clicking a chip must NEVER apply on its own.  Settings > MCP holds the global default -

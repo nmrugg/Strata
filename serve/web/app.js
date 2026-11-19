@@ -518,7 +518,10 @@ const mcpCurrentTools = () => (mcpInfo.servers || []).flatMap((s) => (s.tools ||
   .filter((t) => t.enabled !== false).map((t) => t.name));
 const mcpSame = (a, b) => !!a && !!b && a.length === b.length && a.every((n, i) => n === b[i]);
 function chatToolsFor(c) {
-  if (!Array.isArray(c.mcpTools)) c.mcpTools = mcpCurrentTools();   // sendChat/saveChat persists it with the chat
+  if (!Array.isArray(c.mcpTools)) {
+    c.mcpTools = mcpCurrentTools();               // the migration: a chat with no list takes the current one
+    c.mcpDefault = c.mcpTools.slice();            // ... and remembers what it was synced to (the dot's baseline)
+  }
   return c.mcpTools;
 }
 // The card is also the control (todo #mcp-server-toggle, #tool-exclude): the switch on a server card turns that
@@ -590,10 +593,11 @@ function updateMcpDot() {
   const btn = $("mcp-btn");
   btn.hidden = !mcpServers().length;
   const held = chat && Array.isArray(chat.mcpTools) ? chat.mcpTools : null;
-  $("mcp-dot").hidden = !(held && !mcpSame(held, mcpCurrentTools()));
-  btn.title = held && !mcpSame(held, mcpCurrentTools())
-    ? `This chat uses ${held.length} tools; ${mcpCurrentTools().length} are switched on now`
-    : "The tools this chat can use";
+  // The dot is NOT "this chat differs from the defaults" - editing this chat's own list never raises it.  It
+  // means the config moved: the chat was synced to one set of servers and the settings page now says another.
+  const base = Array.isArray(chat && chat.mcpDefault) ? chat.mcpDefault : null;
+  const now = mcpCurrentTools();
+  $("mcp-dot").hidden = !(held && base && !mcpSame(held, now) && !mcpSame(base, now));
 }
 // The tool list for the chat on screen (todo #mcp-chat-picker).  Every server the hub has, each tool a switch,
 // checked the way THIS chat has them - and a tick applies at once, because the change belongs to this
@@ -606,23 +610,35 @@ function chatPromptTokens() {
   }
   return (lastLive && lastLive.prompt_tokens) || 0;
 }
-function setChatTools(list) { chat.mcpTools = list; saveChat(chat); renderMcp(); }
-function openMcpPicker(anchor) {
+function setChatTools(list) {
+  chat.mcpTools = list;
+  chat.mcpDefault = mcpCurrentTools();      // a change made HERE is not a change the chat needs warning about
+  saveChat(chat); renderMcp();
+}
+function openMcpPicker(anchor, changed) {
   if (activePopover && activePopover.classList.contains("mcp-picker")) { closePopover(); return null; }
   closePopover();
   const now = mcpCurrentTools(), held = new Set(chatToolsFor(chat));
   const panel = node("div", "chat-menu mcp-picker");
-  panel.appendChild(node("div", "mcp-picker__head", `Tools for "${chatTitle(chat)}"`));
+  panel.setAttribute("data-changed", changed ? "1" : "");
   for (const s of mcpServers()) {
     if (s.off || !s.chips.length) continue;
     const row = node("div", "mcp-picker__server");
-    row.appendChild(node("span", "mcp-picker__server-name", s.name));
-    for (const t of s.chips) {
-      const on = held.has(t.name);
-      const b = node("button", `mcp-picker__tool${on ? " on" : ""}`, t.tool);
-      b.setAttribute("data-mcp-pick", t.name); b.setAttribute("role", "switch");
+    const names = s.chips.map((c) => c.name);
+    const anyOn = names.some((n) => held.has(n));
+    // the server's name is itself a switch: one click takes the whole server out of this conversation, or puts
+    // it back.  It reads like the chips on the Monitor card because it is the same kind of thing.
+    const head = node("button", `chip mcp-server-chip${anyOn ? "" : " off"}`, s.name);
+    head.setAttribute("data-mcp-server", s.name); head.setAttribute("role", "switch");
+    head.setAttribute("aria-checked", String(anyOn));
+    head.title = anyOn ? `Take every ${s.name} tool out of this conversation` : `Use the ${s.name} tools in this conversation`;
+    row.appendChild(head);
+    for (const c of s.chips) {
+      const on = held.has(c.name);
+      const b = node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool);
+      b.setAttribute("data-mcp-pick", c.name); b.setAttribute("role", "switch");
       b.setAttribute("aria-checked", String(on));
-      b.title = `${t.name}${t.description ? " — " + t.description : ""}`;
+      b.title = `${c.name}${c.description ? " — " + c.description : ""}`;
       row.appendChild(b);
     }
     panel.appendChild(row);
@@ -638,31 +654,42 @@ function openMcpPicker(anchor) {
     }
     panel.appendChild(row);
   }
+  // the cost of a change, and only once there IS one - before you touch anything it is a warning about nothing
   const cost = chatPromptTokens();
-  panel.appendChild(node("div", "mcp-picker__cost muted small",
-    cost ? `Changing this list makes the next message read the conversation again (${fmt(cost)} tokens).`
+  if (changed) panel.appendChild(node("div", "mcp-picker__cost muted small",
+    cost ? `This reads the conversation again on the next message (${fmt(cost)} tokens).`
          : "This chat has no history to re-read yet."));
-  const match = node("button", "st-btn st-btn--secondary", "Match the current tools");
-  match.setAttribute("data-mcp-match", "1");
-  panel.appendChild(match);
+  if (!mcpSame([...held], now)) {                        // only offered when this chat is not on the current set
+    const reset = node("button", "st-btn st-btn--secondary", "Reset Tools");
+    reset.setAttribute("data-mcp-match", "1");
+    reset.title = `Use the ${now.length} tools the settings offer now, instead of the ${held.size} this chat has`;
+    panel.appendChild(reset);
+  }
   document.body.appendChild(panel);
   activePopover = panel;
-  if (anchor.getBoundingClientRect) {
-    const r = anchor.getBoundingClientRect(), w = panel.offsetWidth || 320, h = panel.offsetHeight || 240;
-    panel.style.left = `${Math.max(4, Math.min(r.left, (innerWidth || 0) - w - 4))}px`;
-    panel.style.top = (r.bottom + h > (innerHeight || 0) && r.top - h > 0) ? `${r.top - h - 4}px` : `${r.bottom + 4}px`;
-  }
+  placePopover(panel, anchor);
   panel.addEventListener("click", (e) => {
     const pick = e.target.closest("[data-mcp-pick]"), forget = e.target.closest("[data-mcp-forget]");
-    if (pick) {
+    const srv = e.target.closest("[data-mcp-server]");
+    if (srv) {
+      const keep = srv.getAttribute("data-mcp-server"), set = new Set(chatToolsFor(chat));
+      const s = mcpServers().find((x) => x.name === keep) || {chips: []};
+      const anyOn = s.chips.some((c) => set.has(c.name));
+      // off takes every name of that server out of the conversation, even one the settings have switched off but
+      // this chat is still carrying; on brings back what the settings offer now, not what used to be there
+      if (anyOn) s.chips.forEach((c) => set.delete(c.name));
+      else s.chips.filter((c) => c.enabled).forEach((c) => set.add(c.name));
+      setChatTools(now.filter((n) => set.has(n)).concat([...set].filter((n) => !now.includes(n))));
+      closePopover(); openMcpPicker(anchor, true);
+    } else if (pick) {
       const name = pick.getAttribute("data-mcp-pick"), set = new Set(chatToolsFor(chat));
       if (set.has(name)) set.delete(name); else set.add(name);
       setChatTools(now.filter((n) => set.has(n)).concat([...set].filter((n) => !now.includes(n))));
-      closePopover(); openMcpPicker(anchor);          // rebuild it: the counts and the dot are part of what it shows
+      closePopover(); openMcpPicker(anchor, true);    // rebuild it: the cost line and Reset appear once it changes
     } else if (forget) {
       const name = forget.getAttribute("data-mcp-forget");
       setChatTools(chatToolsFor(chat).filter((n) => n !== name));
-      closePopover(); openMcpPicker(anchor);
+      closePopover(); openMcpPicker(anchor, true);
     } else if (e.target.closest("[data-mcp-match]")) {
       setChatTools(mcpCurrentTools());
       closePopover();
@@ -675,7 +702,7 @@ function mcpSwitchState() {
   const held = chat && Array.isArray(chat.mcpTools) ? chat.mcpTools : null, now = mcpCurrentTools();
   if (!held) return {need: false, why: `will use the current tools (${now.length}) on its next message`};
   if (mcpSame(held, now)) return {need: false, why: `already uses the current tools (${now.length})`};
-  return {need: true, why: `is holding the ${held.length} tools it started with; the server now offers ${now.length}`};
+  return {need: true, why: `has ${held.length} tools and the settings now offer ${now.length}`};
 }
 function mcpSwitchNote() {
   const st = mcpSwitchState();
@@ -1539,6 +1566,17 @@ function exportChatMd(c) {
 // open at a time; a click outside it or Escape closes it.
 let activePopover = null;
 function closePopover() { if (activePopover) activePopover.remove(); activePopover = null; }
+// Put a popover on the side of its anchor with more room, and cap its height to that room so a long list
+// scrolls inside the window instead of running off the bottom (the MCP panel with 31 tools did exactly that).
+function placePopover(el, anchor) {
+  if (!anchor.getBoundingClientRect) return;               // the harness stub has no layout; skip geometry
+  const r = anchor.getBoundingClientRect(), w = el.offsetWidth || 168, h = el.offsetHeight || 0;
+  const below = (innerHeight || 0) - r.bottom - 8, above = r.top - 8;
+  const space = Math.max(below, above);
+  el.style.maxHeight = `${Math.max(120, space)}px`;        // .mcp-picker / .chat-menu then scroll their own body
+  el.style.left = `${Math.max(4, Math.min(r.left, Math.max(4, (innerWidth || 0) - w - 4)))}px`;
+  el.style.top = below >= above ? `${r.bottom + 4}px` : `${Math.max(4, r.top - Math.min(h, space) - 4)}px`;
+}
 function openPopover(anchor, items, onPick) {
   closePopover();
   const menu = node("div", "chat-menu");
@@ -1554,12 +1592,7 @@ function openPopover(anchor, items, onPick) {
   });
   document.body.appendChild(menu);
   activePopover = menu;
-  if (anchor.getBoundingClientRect) {               // the harness stub has no layout; skip geometry (verified in the browser)
-    const r = anchor.getBoundingClientRect();
-    const h = menu.offsetHeight || 0, w = menu.offsetWidth || 168;
-    menu.style.left = `${Math.max(4, Math.min(r.left, (innerWidth || 0) - w - 4))}px`;
-    menu.style.top = (r.bottom + h > (innerHeight || 0) && r.top - h > 0) ? `${r.top - h - 4}px` : `${r.bottom + 4}px`;
-  }
+  placePopover(menu, anchor);
   return menu;
 }
 function chatMenuAction(act, row, c) {

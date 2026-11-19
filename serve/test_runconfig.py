@@ -278,7 +278,8 @@ class McpHttp(Fixture):
         self.assertIn('data-mcp-toggle', js)
         self.assertIn('data-mcp-unfreeze', js)                   # the way to move one chat onto the current list
         self.assertIn('body.strata_mcp_tools = chatToolsFor(chat);', js)   # the chat sends its own list
-        self.assertIn("if (!Array.isArray(c.mcpTools)) c.mcpTools = mcpCurrentTools();", js)  # migrated on first use
+        self.assertIn("c.mcpTools = mcpCurrentTools();", js)                   # migrated on first use
+        self.assertIn("c.mcpDefault = c.mcpTools.slice();", js)               # and the baseline the dot compares to
         self.assertIn("strata: {id: c.id, mcpTools: c.mcpTools,", js)      # and it round-trips through export
         self.assertNotIn("mcpFrozen", js)                                  # the page-session map is gone
         self.assertIn("for new conversations; a chat already open keeps its own tools", js)
