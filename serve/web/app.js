@@ -627,12 +627,11 @@ function setChatTools(list) {
   chat.mcpDefault = mcpCurrentTools();      // a change made HERE is not a change the chat needs warning about
   saveChat(chat); renderMcp();
 }
-function openMcpPicker(anchor, changed) {
+function openMcpPicker(anchor) {
   if (activePopover && activePopover.classList.contains("mcp-picker")) { closePopover(); return null; }
   closePopover();
   const now = mcpCurrentTools(), held = new Set(chatToolsFor(chat));
   const panel = node("div", "chat-menu mcp-picker");
-  panel.setAttribute("data-changed", changed ? "1" : "");
   for (const s of mcpServers()) {
     if (s.off || !s.chips.length) continue;
     const row = node("div", "mcp-server");
@@ -681,10 +680,13 @@ function openMcpPicker(anchor, changed) {
   // read well in a screenshot and badly in use: the panel jumped on every click.  They are there, and greyed
   // when there is nothing to say or nothing to do.
   const cost = chatPromptTokens();
+  // shown while the chat's list differs from the one its last message was built with - so it clears on its own
+  // when you change it back, and it survives closing and reopening the panel until you actually send
+  const sent = Array.isArray(chat.mcpSent) ? chat.mcpSent : [...held];
   const foot = node("div", "mcp-picker__foot");
-  foot.appendChild(node("span", "mcp-picker__cost muted small", changed
-    ? (cost ? `This reads the conversation again on the next message (${fmt(cost)} tokens).`
-            : "This chat has no history to re-read yet.") : ""));
+  foot.appendChild(node("span", "mcp-picker__cost muted small", mcpSame([...held], sent) ? ""
+    : cost ? `This reads the conversation again on the next message (${fmt(cost)} tokens).`
+           : "This chat has no history to re-read yet."));
   const reset = node("button", "st-btn st-btn--secondary", "Reset Tools");
   reset.setAttribute("data-mcp-match", "1");
   reset.disabled = mcpSame([...held], now);
@@ -707,20 +709,20 @@ function openMcpPicker(anchor, changed) {
       if (anyOn) s.chips.forEach((c) => set.delete(c.name));
       else s.chips.filter((c) => c.enabled).forEach((c) => set.add(c.name));
       setChatTools(now.filter((n) => set.has(n)).concat([...set].filter((n) => !now.includes(n))));
-      closePopover(); openMcpPicker(anchor, true);
+      closePopover(); openMcpPicker(anchor);
     } else if (pick) {
       const name = pick.getAttribute("data-mcp-pick"), set = new Set(chatToolsFor(chat));
       if (set.has(name)) set.delete(name); else set.add(name);
       setChatTools(now.filter((n) => set.has(n)).concat([...set].filter((n) => !now.includes(n))));
-      closePopover(); openMcpPicker(anchor, true);    // rebuild it: the cost line and Reset appear once it changes
+      closePopover(); openMcpPicker(anchor);          // rebuild it: the cost line and Reset follow the state
     } else if (forget) {
       const name = forget.getAttribute("data-mcp-forget");
       setChatTools(chatToolsFor(chat).filter((n) => n !== name));
-      closePopover(); openMcpPicker(anchor, true);
+      closePopover(); openMcpPicker(anchor);
     } else if (e.target.closest("[data-mcp-match]")) {
       if (e.target.closest("[data-mcp-match]").disabled) return;
       setChatTools(mcpCurrentTools());
-      closePopover(); openMcpPicker(anchor, true);      // stay open: the panel is where you are working
+      closePopover(); openMcpPicker(anchor);            // stay open: the panel is where you are working
     }
   });
   return panel;
@@ -2752,6 +2754,8 @@ async function send(editOf) {
     // whatever happens to be enabled now would change the start of its prompt and make it read its history again.
     // It rides on the chat record, so a reload does not lose it (todo #mcp-chat-tools).
     body.strata_mcp_tools = chatToolsFor(chat);
+    chat.mcpSent = body.strata_mcp_tools.slice();   // what its prompt was built with last: the baseline for the
+                                                    // "this re-reads" warning, so it clears when you change back
     renderMcp();                                   // the Monitor's status line is about THIS chat, and it just
                                                    // changed from "will use the current tools" to "is holding the
                                                    // list it started with" - say so now, not at the next poll

@@ -723,10 +723,15 @@ all: fold-control replaced them, and the four overlapping switches became one co
     empty until something changes, and Reset is greyed (disabled, with a title saying why) when the chat already
     matches the defaults.  The Monitor card's Apply gets the same treatment, so the card does not reflow either.
     Reset rebuilds the panel in place instead of closing it - the panel is where the work is happening.
-    Control: making Reset close the panel again fails the "it stays open" check.  Two test bugs of my own showed
-    up while wiring this: after a rebuild the old panel handle is a REMOVED element (every click needs
-    `panel = s94.s.chatMenu` again), and the cost text moved inside the footer, so a top-level text join stopped
-    seeing it - the helper now walks the subtree.
+    THE WARNING IS STATE, NOT "DID YOU CLICK" (the human: it "should disappear when it changes back").  send()
+    records what the chat actually sent (c.mcpSent), and the cost text shows while the chat's list differs from
+    THAT.  So ticking something back clears it, and it survives closing and reopening the panel until you send -
+    which is the honest version: the re-read is coming whether or not the panel is open.  The session flag
+    (`changed`, and a data-changed attribute on the panel) is gone with it.
+    Control: making the cost text ignore that comparison fails the "changing back clears the warning" check.
+    Two test bugs of my own showed up while wiring this: after a rebuild the old panel handle is a REMOVED element
+    (every click needs `panel = s94.s.chatMenu` again), and the cost text moved inside the footer, so a top-level
+    text join stopped seeing it - the helper now walks the subtree.
     A bug the tests caught here: renderMcp called chatToolsFor(), which CREATES the list - so merely drawing the
     card made a chat look like it had chosen one.  Reading must not write (heldNow reads chat.mcpTools directly).
     Tests: harness case 93 extended (the card mirrors an unticked chip, no Apply while the chat matches the

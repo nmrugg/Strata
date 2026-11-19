@@ -288,7 +288,8 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
         self.assertIn('Reset Tools', self.js)
         self.assertIn("reset.disabled = mcpSame([...held], now);", self.js)   # greyed, not hidden: no reflow
-        self.assertIn('node("span", "mcp-picker__cost muted small", changed', self.js)  # text only after a change
+        self.assertIn('node("span", "mcp-picker__cost muted small", mcpSame([...held], sent) ? ""', self.js)
+        self.assertIn("chat.mcpSent = body.strata_mcp_tools.slice();", self.js)   # the baseline the warning uses
         self.assertIn('node("div", "mcp-picker__foot")', self.js)              # one row of fixed height
         self.assertNotIn("closePopover();\n    }", self.js)                    # Reset no longer closes the panel
         self.assertIn("placePopover(menu, anchor);", self.body("openPopover"))

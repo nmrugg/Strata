@@ -3188,6 +3188,11 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   panel = s94.s.chatMenu;      // every click rebuilds the panel, so the old handle is a removed element
   assert.ok(findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one")
               .attrs["aria-checked"] === "false", "the panel rebuilt with the new state");
+  // tick it back: the warning is about the chat's state, not about having clicked, so it clears on its own
+  panel._l.click({target: findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one")});
+  panel = s94.s.chatMenu;
+  assert.ok(!/reads the conversation again/.test(allText(panel)),
+            "changing back to what the chat last sent clears the warning: " + allText(panel).slice(-160));
   panel = s94.s.chatMenu;
   assert.strictEqual(findIn(panel, "data-mcp-match").length, 1, "Reset Tools is there, because the chat is off the current set");
   assert.strictEqual(resetBtn().disabled, false, "and it is live now");
