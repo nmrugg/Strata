@@ -5664,14 +5664,14 @@ def make_handler(svc: Service):
             self._json(200, {**runconfig.view(new, svc.config_path), "changed": changed})
 
         def _mcp_post(self):
-            """The Monitor's chips: turn an MCP server, or one tool of it, off or on in the run config.  JSON from
-            Strata's own page only, as /config (the key is checked before).
-
-            What it deliberately does NOT do is touch the running hub.  The tool list is rendered into the system
-            turn, and conversation reuse is exact token-prefix matching (docs/DETAILS.md, "Multiple
-            conversations"), so a chat whose tool list changed mid-way re-reads its whole history - minutes on a
-            long chat, the thing item pin-conversation exists to avoid.  So the change is written and used from
-            the next start, and the page says so (todo #mcp-server-toggle, #tool-exclude)."""
+            """The MCP switches - the Monitor's chips and the composer's wrench panel, which post the same change
+            through the same endpoint.  JSON from Strata's own page only, as /config (the key is checked before).
+            It writes the run config AND updates the running hub, so a switch is live without a restart.  What it
+            costs: the tool list is rendered into the first system turn and reuse is exact token-prefix matching,
+            so a conversation whose list changed reads its history again on its next message - the page says so
+            where the switches are (todo #mcp-server-toggle, #tool-exclude, #mcp-chat-picker).
+            A change that turns out to be a no-op answers 200 with changed: []: two views of one switch can send
+            the same click twice, and a 400 there broke the card."""
             body = self._body()
             if not self._own_page("the MCP servers can be changed"):
                 return
@@ -5685,7 +5685,7 @@ def make_handler(svc: Service):
                     # a whole-server change needs the tool names, and only the running hub has them
                     known = {s.name: [t["name"] for t in s.tools] for s in svc.mcp.servers.values()} if svc.mcp else None
                     new, changed = runconfig.set_mcp(cfg, req.get("mcp") if isinstance(req, dict) else None, known)
-                    bak = runconfig.save(svc.config_path, new)
+                    bak = runconfig.save(svc.config_path, new) if changed else None
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
                 return
@@ -5717,9 +5717,9 @@ def make_handler(svc: Service):
                             live.append(f"{name} ({'off' if off else 'on'})")
                             if off:
                                 reloads.append(name)
-            print(f"[strata] the Monitor changed the MCP servers: {', '.join(changed)} in "
-                  f"{Path(svc.config_path).name} (the earlier file: {bak.name}); live for new conversations",
-                  flush=True)
+            if changed:
+                print(f"[strata] the MCP switches changed {', '.join(changed)} in "
+                      f"{Path(svc.config_path).name} (the earlier file: {bak.name}); live, no restart", flush=True)
             self._json(200, {"changed": changed, "configured": runconfig.mcp_state(new),
                              "live": live, "reloads": reloads})
         def _foreign_origin(self) -> bool:

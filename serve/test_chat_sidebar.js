@@ -2971,8 +2971,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const toast90 = s90.s.el("toasts").children.map((c) => c.querySelector(".st-toast__title").textContent);
   assert.ok(toast90.includes("Applied"), toast90.join(" | "));
   const toastText90 = s90.s.el("toasts").children.map((c) => c.querySelector(".t-text").textContent).join(" | ");
-  assert.ok(/new conversations|read their history once more/.test(toastText90),
-            `the toast says what the change costs: ${toastText90}`);
+  assert.ok(/files__read_file|already set to that/.test(toastText90), `the toast reports the change: ${toastText90}`);
   // and the server switch: aria-checked is the current state, so the change is the opposite of it
   const sw90 = {className: "st-toggle", attrs: {"aria-checked": "true"}, getAttribute(k) { return this.attrs[k]; },
               closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-toggle]" ? this : null; }};
@@ -2982,262 +2981,66 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
 
   done.push("mcp-chips: a chip POSTs one tool's change to /mcp, and a server the config has off keeps a card");
 
-  // 91. the page carries each conversation's own tool list (todo #mcp-live-toggles): a chip change is live for
-  //     a NEW chat, an open chat keeps the list it started with (so its prompt prefix still matches and it does
-  //     not re-read its history), and a reload forgets that - which is what the human asked for, because a
-  //     reload is rare here and one re-read then is cheap.
+  // 91. one MCP state, two views (todo #mcp-chat-picker): the wrench panel is a shortcut to the Monitor card,
+  //     not a second, per-conversation setting.  Both read the same answer and write the same change.
   const toolsWith = (twoOn) => ({servers: [{name: "a", transport: "stdio", status: "ready", error: null, info: {},
       tools: [{name: "a__one", tool: "one", enabled: true, description: ""},
               {name: "a__two", tool: "two", enabled: twoOn, description: ""}]}],
       tools: twoOn ? 2 : 1, configured: {a: {disabled: false, disabled_tools: twoOn ? [] : ["two"]}}});
-  const MCP_ON = toolsWith(true), MCP_OFF = toolsWith(false);
-  let mcpNow = MCP_ON;
-  const sent = [];
-  const fetchFor = (get) => ({fetch: async (url, opts) => {
-    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => get()};
-    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
-    sent.push(JSON.parse(opts.body));                       // the chat request: this is what the server would read
-    return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
-  }});
-  const mk91 = () => run(fetchFor(() => mcpNow), {});
-  const s91 = mk91();
-  await wait();
-  await s91.s.loadMcp();
-  s91.s.el("input").value = "go";
-  await s91.s.send();
-  assert.strictEqual(sent[0].strata_mcp, true, "the chat asks for MCP tools");
-  assert.deepStrictEqual(sent[0].strata_mcp_tools, ["a__one", "a__two"], "and names the list this chat started with");
-  const chatA91 = s91.s.chat.id;                               // the chat that started with both tools
-  mcpNow = MCP_OFF;                                           // the chip was clicked: "two" is off now
-  await s91.s.loadMcp();                                      // the page re-reads the card
-  s91.s.el("input").value = "again";
-  await s91.s.send();
-  assert.deepStrictEqual(sent[1].strata_mcp_tools, ["a__one", "a__two"],
-                         "the same chat still carries its own list - that is what saves it a re-read");
-  s91.s.startChat();                                        // a new conversation gets the current list
-  await wait();
-  s91.s.el("input").value = "fresh";
-  await s91.s.send();
-  assert.deepStrictEqual(sent[2].strata_mcp_tools, ["a__one"], "a chat started after the switch sees the switch");
-  // the headline of todo #mcp-chat-tools: the list is ON THE RECORD, so a reload does not change what the chat
-  // sends.  The old behaviour (a reload drops the shield and the chat re-reads) is withdrawn.
-  const seed91 = {}; Object.values(s91.records).forEach((c) => { seed91[c.id] = JSON.parse(JSON.stringify(c)); });
-  const s92 = run(fetchFor(() => mcpNow), {"strata.chatId": JSON.stringify(chatA91)}, seed91);
-  await wait();
-  await s92.s.loadMcp();
-  assert.deepStrictEqual(s92.s.chat.mcpTools, ["a__one", "a__two"], "the record kept the list this chat uses");
-  s92.s.el("input").value = "after reload";
-  await s92.s.send();
-  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one", "a__two"],
-                         "and after a reload it still sends it, though the current list is only a__one");
-  // export and import carry it, or a re-imported chat silently re-reads
-  const line = s92.s.chatToJsonl(s92.s.chat);
-  const back91 = s92.s.parseChatsJsonl(line)[0];
-  assert.deepStrictEqual(back91.mcpTools, ["a__one", "a__two"], "the strata block round-trips the chat's tool list");
-  // and the button does the same without a reload: it drops this chat's snapshot
-  mcpNow = MCP_ON;
-  const s93 = mk91();
-  await wait();
-  await s93.s.loadMcp();
-  s93.s.el("input").value = "one";
-  await s93.s.send();
-  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one", "a__two"], "it started with both");
-  mcpNow = MCP_OFF;                          // a chip turned "two" off while this chat was open
-  await s93.s.loadMcp();
-  s93.s.el("input").value = "two";
-  await s93.s.send();
-  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one", "a__two"], "and keeps them");
-  const unfreeze = {className: "st-btn", closest(sel) { return sel === "[data-mcp-unfreeze]" ? this : null; }};
-  await s93.s.el("mcp-list")._l.click({target: unfreeze});
-  s93.s.el("input").value = "three";
-  await s93.s.send();
-  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one"],
-                         "the button moves the open chat onto the current list");
-
-  done.push("mcp-frozen-list: an open chat carries the tool list it started with, a new chat gets the current one, and a reload (or the button) switches it over");
-
-  // 92. what the MCP card shows (todo #tool-exclude, #mcp-live-toggles): a chip says only the tool's own name -
-  //     the server's name is already the card it sits under - with the full name the model sees in the tooltip;
-  //     and the "use the current tools" button is greyed until the chat ON SCREEN has something to switch to,
-  //     naming that chat so "this chat" is not a riddle.
-  let mcp92 = MCP_ON;
-  const sc92 = run({fetch: async (url, opts) => {
-    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => mcp92};
-    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
-    return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
-  }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
-     {a: {id: "a", title: "Refactor the parser", time: Date.now(), messages: [msg("first")]},
-      b: {id: "b", title: "second chat", time: Date.now(), messages: [msg("older")]}});
-  await wait();
-  await sc92.s.loadMcp();
-  const wrote92 = () => sc92.s.el("mcp-list")._html || "";
-  assert.ok(/>one<\/button>/.test(wrote92()), `the chip shows the tool's own name: ${wrote92().slice(0, 200)}`);
-  assert.ok(!/>a__one</.test(wrote92()), "and not the server prefix again");
-  assert.ok(wrote92().includes('title="a__one"'), "the full name the model sees is in the tooltip");
-  assert.ok(!wrote92().includes("data-mcp-unfreeze"),
-            "a chat that has not sent in this page load is not shielded, so no button at all");
-  assert.ok(wrote92().includes('will use the current tools (2) on its next message'), wrote92().slice(-260));
-  // a chat that has never sent has no list on its record, so there is nothing to switch and the card says what
-  // it will do instead.  No inference about "changed since this page loaded": the list is on the record now, so
-  // the state is exact.
-  mcp92 = MCP_OFF;
-  await sc92.s.loadMcp();
-  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "no list on the record yet, so no button");
-  assert.ok(wrote92().includes("will use the current tools (1) on its next message"), wrote92().slice(-320));
-  mcp92 = MCP_ON; await sc92.s.loadMcp();
-
-  sc92.s.el("input").value = "go";
-  await sc92.s.send();                                       // the chat snapshots the current list
-  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "and while nothing changed, still no button");
-  assert.ok(wrote92().includes('already uses the current tools (2)'), wrote92().slice(-260));
-  mcp92 = MCP_OFF;                                          // a chip turned "two" off
-  await sc92.s.loadMcp();
-  assert.ok(wrote92().includes("data-mcp-unfreeze"), "now the shielded chat gets the button");
-  assert.ok(wrote92().includes("has 2 tools and the settings now offer 1"), wrote92().slice(-260));
-  assert.ok(!wrote92().includes('data-mcp-unfreeze disabled'), "the button is live, not greyed");
-  assert.ok(wrote92().includes('Use the current tools in "Refactor the parser"'),
-            `it says which chat: ${/(data-mcp-unfreeze[^>]*>)[^<]*/.exec(wrote92())[0]}`);
-  assert.ok(wrote92().includes("reads its history once"), "the long explanation is still there (in the title)");
-  const note92 = /<p class="mcp-note muted small"[^>]*>([^<]*)<\/p>/.exec(wrote92());
-  assert.ok(note92 && note92[1].length < 120, `the visible line is short, got ${note92 && note92[1].length}`);
-  assert.ok(note92[0].includes("title="), "and the detail is on the tooltip");
-  // and it follows the chat you switch to, not just the last time the card was drawn.  a started with both
-  // tools; "two" went off while it was open, so it has something to switch to.  b has never sent in this page
-  // load, so it has nothing to switch to and the button greys out again for it.
-  sc92.s.openChat("b");
-  assert.ok(sc92.s.chatId === "b", "openChat switched (chats: " + sc92.s.chats.map((c) => c.id).join(",") + ")");
-  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "b is not shielded yet: no button, and the line says why");
-  assert.ok(wrote92().includes('"second chat" will use the current tools (1) on its next message'),
-            wrote92().slice(-200));
-  sc92.s.el("input").value = "in b";
-  await sc92.s.send();                                   // b snapshots the CURRENT list: only "one"
-  mcp92 = MCP_ON;                                        // "two" comes back on: now b differs from the list too
-  await sc92.s.loadMcp();
-  assert.ok(wrote92().includes('Use the current tools in "second chat"'),
-            `b gets the button, named for b: ${/(data-mcp-unfreeze[^>]*>)[^<]*/.exec(wrote92())[0]}`);
-  sc92.s.openChat("a");                                  // a started with BOTH tools, and both are on again:
-  assert.ok(wrote92().includes('"Refactor the parser" already uses the current tools (2)'),
-            "for a there is nothing to switch to - the line says so, and there is no dead button");
-  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "and no button for it, greyed or otherwise");
-  mcp92 = MCP_OFF;                                       // turn "two" off again: now a differs too
-  await sc92.s.loadMcp();
-  assert.ok(wrote92().includes('Use the current tools in "Refactor the parser"'),
-            `a is offered the switch again, by name: ${/(data-mcp-unfreeze[^>]*>)[^<]*/.exec(wrote92())[0]}`);
-
-  done.push("mcp-card: chips show the tool's own name with the model-facing name in the tooltip, and the switch " +
-            "button only exists when the chat on screen is holding a different list - otherwise the line says what " +
-            "that chat is doing");
-
-  // 93. the per-chat tool picker (todo #mcp-chat-picker): the composer button, the dot that says "this chat is
-  //     not on the current list", and a panel where a tick applies to THIS chat at once - with the cost said in
-  //     tokens, because changing the tools block re-reads the conversation.
-  let mcp94 = toolsWith(true);
-  const posts94 = [];
-  const s94 = run({fetch: async (url, opts) => {
+  let mcpU = toolsWith(true);
+  const postsU = [];
+  const sU = run({fetch: async (url, opts) => {
     if (String(url).split("?")[0] === "mcp") {
-      if (opts && opts.method === "POST") { posts94.push(JSON.parse(opts.body)); return {ok: true, json: async () => ({changed: ["a (1 of 2 tools on)"], configured: {}, live: ["a"], reloads: []})}; }
-      return {ok: true, json: async () => mcp94};
+      if (opts && opts.method === "POST") {
+        const ch = JSON.parse(opts.body).mcp[0];
+        postsU.push(ch);
+        if (ch.tool !== undefined) mcpU = toolsWith(!!ch.enabled);          // the real endpoint changes the state;
+        else mcpU = {...toolsWith(true), configured: {a: {disabled: !!ch.disabled, disabled_tools: []}}};   // so must the stub
+        return {ok: true, json: async () => ({changed: ["a__two"], configured: mcpU.configured, live: [], reloads: []})};
+      }
+      return {ok: true, json: async () => mcpU};
     }
     if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
     return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
   }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
-     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first"),
-       {role: "assistant", text: "done", time: Date.now(), usage: {prompt_tokens: 328811}}]}});
+     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first")]}});
   await wait();
-  await s94.s.loadMcp();
-  assert.strictEqual(s94.s.el("mcp-btn").hidden, false, "the button is there when the server has MCP tools");
-  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "no list on the record yet, so no dot");
-  s94.s.el("input").value = "go";
-  await s94.s.send();                                       // the chat takes the current list
-  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "matching the current list is not a state worth a dot");  assert.ok(/data-mcp-apply disabled/.test(s94.s.el("mcp-list")._html || ""),
-            "the card's Apply is there but greyed while the chat matches the defaults - the row does not appear and vanish");
-  mcp94 = toolsWith(false);                                // a tool is switched off globally
-  await s94.s.loadMcp();
-  assert.strictEqual(s94.s.el("mcp-dot").hidden, false, "now the chat is holding a list that is not the current one");
-  s94.s.el("mcp-btn").onclick();                            // open the picker
-  const allText = (el) => [el.textContent || "", ...(el.children || []).map(allText)].join(" ");
-  const findIn = (el, attr, out = []) => { (el.children || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findIn(c, attr, out); }); return out; };
-  // the panel rebuilds itself after every click, so "open it again" has to close it first or it just closes
-  const reopen = () => { if (s94.s.chatMenu) s94.s.el("mcp-btn").onclick(); s94.s.el("mcp-btn").onclick(); return s94.s.chatMenu; };
-  let panel = s94.s.chatMenu;
-  assert.ok(panel && panel.className.includes("mcp-picker"), "the panel opened");
-  assert.ok(!/reads the conversation again/.test(allText(panel)),
-            "no cost text before the reader has changed anything");
-  const resetBtn = () => findIn(s94.s.chatMenu, "data-mcp-match")[0];
-  assert.ok(resetBtn(), "the Reset button is in the panel even before anything is clicked");
-  assert.strictEqual(resetBtn().disabled, false, "live here, because the settings changed under this chat");  assert.strictEqual(findIn(panel, "data-mcp-pick").length, 2, "both tools of the server are listed");
-  assert.strictEqual(findIn(panel, "data-mcp-pick").filter((b) => b.attrs["aria-checked"] === "true").length, 2,
-                     "checked as this chat has them");
-  // untick the tool that IS still offered, so the chat ends up different from the settings on purpose: that is
-  // the case where the baseline matters - a change made here must not leave the dot lit.
-  const off = findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one");
-  panel._l.click({target: off});                            // untick it: applies at once, no Apply button here
-  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__two"], "the chat's list changed on the click");
-  assert.strictEqual(s94.s.el("mcp-dot").hidden, true,
-                     "a change made in this panel never raises the dot - the dot is for the config moving elsewhere");
-  // the Monitor's card mirrors THIS chat (the human's ask): the chip the panel just unticked reads off there too,
-  // and the card offers to make that set the defaults - which is the only thing that touches other chats.
-  const wrote94 = () => s94.s.el("mcp-list")._html || "";
-  assert.ok(/data-mcp-tool="one"[^>]*aria-pressed="false"/.test(wrote94()), wrote94().slice(0, 400));
-  assert.ok(wrote94().includes("data-mcp-apply"), "the card offers to make this chat's set the defaults");
-  s94.s.el("mcp-list")._l.click({target: {className: "st-btn",
-                                          closest(sel) { return sel === "[data-mcp-apply]" ? this : null; }}});
+  await sU.s.loadMcp();
+  const findU = (el, attr, out = []) => { (el.children || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findU(c, attr, out); }); return out; };
+  const wroteU = () => sU.s.el("mcp-list")._html || "";
+  assert.strictEqual(sU.s.el("mcp-btn").hidden, false, "the wrench is offered wherever the card is");
+  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="true"/.test(wroteU()), wroteU().slice(0, 300));
+  sU.s.el("mcp-btn").onclick();
+  const pan = sU.s.chatMenu;
+  assert.ok(pan && pan.className.includes("mcp-picker"), "the panel opened");
+  const chipIn = findU(pan, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two");
+  assert.strictEqual(chipIn.attrs["aria-checked"], "true", "the panel shows the same state as the card");
+  pan._l.click({target: chipIn});                            // click it in the panel
   await wait();
-  assert.deepStrictEqual(posts94, [{mcp: [{server: "a", tools: ["two"]}]}],
-                         "it sends the whole server at once, as the tools that should be ON");
-  panel = s94.s.chatMenu;      // every click rebuilds the panel, so the old handle is a removed element
-  assert.ok(findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one")
-              .attrs["aria-checked"] === "false", "the panel rebuilt with the new state");
-  // tick it back: the warning is about the chat's state, not about having clicked, so it clears on its own
-  panel._l.click({target: findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one")});
-  panel = s94.s.chatMenu;
-  assert.ok(!/reads the conversation again/.test(allText(panel)),
-            "changing back to what the chat last sent clears the warning: " + allText(panel).slice(-160));
-  panel = s94.s.chatMenu;
-  assert.strictEqual(findIn(panel, "data-mcp-match").length, 1, "Reset Tools is there, because the chat is off the current set");
-  assert.strictEqual(resetBtn().disabled, false, "and it is live now");
-  s94.s.chatMenu._l.click({target: resetBtn()});
-  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one"], "Reset puts the chat back on the current set");
-  assert.ok(s94.s.chatMenu && s94.s.chatMenu.className.includes("mcp-picker"),
-            "and it stays open - the panel is where the work is happening");
-  panel = s94.s.chatMenu;
-  assert.ok(/reads the conversation again/.test(allText(panel)),
-            "it still says what that costs, because going back to the defaults is a change too");
-  assert.strictEqual(resetBtn().disabled, true, "and Reset greys itself once the chat is on the current set");
-  const text94 = () => allText(panel);
-  assert.ok(/328,811 tokens/.test(text94()), "after a change, the cost is said in tokens from the chat's own last turn");
-  // the panel rebuilds itself after every click, so "open it again" has to close it first or it just closes
-  // the server's own chip: one click drops every tool of that server from this conversation
-  panel = reopen();
-  const srvChip = findIn(panel, "data-mcp-server")[0];
-  assert.strictEqual(srvChip.attrs["aria-checked"], "true", "the server chip reads on while any of its tools are used");
-  assert.strictEqual(srvChip.className, "st-toggle", "the server switch is the Monitor card's switch");
-  const card94 = findIn(panel, "data-mcp-server-card");
-  assert.strictEqual(card94.length, 1, "the panel is built from the Monitor's card markup");
-  assert.ok(card94[0].className === "mcp-server", card94[0].className);
-  panel._l.click({target: srvChip});
-  assert.deepStrictEqual(s94.s.chat.mcpTools, [], "clicking the name takes the whole server out of this chat");
-  panel = reopen();
-  panel._l.click({target: findIn(panel, "data-mcp-server")[0]});
-  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one"], "clicking it again puts the server's available tools back");
-  s94.s.chat.mcpTools = ["a__one", "ghost__gone"];          // a tool the server no longer offers
-  await s94.s.loadMcp();
-  panel = reopen();
-  const goneBtn = findIn(panel, "data-mcp-forget");
-  assert.strictEqual(goneBtn.length, 1, "the unavailable tool is shown as such, and can be dropped");
-  panel._l.click({target: goneBtn[0]});
-  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one"], "clicking it drops it from the chat's list");
-  mcp94 = toolsWith(true); await s94.s.loadMcp();           // the tool is back on: match it
-  panel = reopen();
-  const matchBtn = findIn(panel, "data-mcp-match");
-  assert.strictEqual(matchBtn.length, 1, "the panel offers to match the current tools");
-  panel._l.click({target: matchBtn[0]});
-  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one", "a__two"], "and that sets the chat onto the current list");
-  assert.ok(s94.s.chatMenu && s94.s.chatMenu.className.includes("mcp-picker"),
-            "and Reset leaves the panel open, rebuilt in place");
+  assert.deepStrictEqual(postsU, [{server: "a", tool: "two", enabled: false}],
+                         "and posts exactly what the card's chip would post");
+  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
+            "the card redraws from the same answer - one state, not two");
+  const pan2 = sU.s.chatMenu;
+  assert.strictEqual(findU(pan2, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two")
+                     .attrs["aria-checked"], "false", "and the panel rebuilt to match it");
+  // the server switch is the same in both places
+  const srv = findU(pan2, "data-mcp-server")[0];
+  assert.strictEqual(srv.attrs["aria-checked"], "true", "the server reads on");
+  pan2._l.click({target: srv});
+  await wait();
+  assert.deepStrictEqual(postsU[1], {server: "a", disabled: true}, "the panel's switch posts the card's change");
+  // and the card's own chip posts the identical shape
+  sU.s.el("mcp-list")._l.click({target: {className: "chip mcp-tool", attrs: {"aria-pressed": "false"},
+      dataset: {mcpTool: "two", mcpServer: "a"},
+      getAttribute(k) { return this.attrs[k]; },
+      closest(sel) { return sel === ".mcp-server" ? {dataset: this.dataset} : sel === "[data-mcp-tool]" ? this : null; }}});
+  await wait();
+  assert.deepStrictEqual(postsU[2], {server: "a", tool: "two", enabled: true}, "same change, same endpoint, from either view");
+  // no per-conversation tool list survives anywhere in the page
+  for (const gone of ["mcpTools", "mcpDefault", "mcpSent"]) assert.ok(!sU.s.chat[gone], `the chat carries no ${gone}`);
 
-  done.push("mcp-picker: the composer button, a dot only when the chat is off the current list, and a panel that " +
-            "applies per chat on the click, names the cost in tokens, and can drop a tool that no longer exists");
+  done.push("mcp-one-state: the wrench panel and the Monitor card are two views of one setting, posting the same change");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

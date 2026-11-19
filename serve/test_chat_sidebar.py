@@ -262,48 +262,39 @@ class ChatSidebar(unittest.TestCase):
         self.assertEqual(self.js.count("const follow = following();"), 2)   # the live paint and the final one
         self.assertNotIn("const follow = nearBottom();", self.js)           # neither may bypass the hold
 
-    def test_the_chat_tool_picker_is_wired(self):
-        # todo #mcp-chat-picker: the composer button, the dot, and the panel that changes ONE chat's tools.
-        # The panel itself is driven by clicks in serve/test_chat_sidebar.js (case 93); what is checked here is
-        # the wiring the harness cannot reach cheaply - the button exists, the dot is drawn from the same facts,
-        # and the edit box offers the same panel (the wrong-tools moment is usually the resend).
-        for el in ("mcp-btn", "mcp-dot"):
-            self.assertIn(f'id="{el}"', self.html)
-            self.assertIn(f'"{el}"', self.js)
+    def test_the_mcp_panel_is_the_same_control_as_the_card(self):
+        # todo #mcp-chat-picker: the wrench panel is a shortcut to the Monitor's MCP card - one state, one write
+        # path, no per-conversation tool list.  The clicks are driven in serve/test_chat_sidebar.js (case 91);
+        # what is pinned here is the wiring the harness cannot reach cheaply.
         self.assertIn('id="mcp-btn" title="MCP Servers" aria-label="MCP Servers"', self.html)
+        self.assertIn('"mcp-btn"', self.js)
         css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
-        self.assertIn(".mcp-dot { position: absolute;", css)
-        self.assertIn("background: var(--st-info); }", css)          # a state, not a fault: blue, not red
-        # the panel scrolls inside the window instead of running off the top, and its chips are the Monitor's
+        # the panel scrolls inside the window instead of running off the top, and it is wide so the tools wrap
         picker_rule = re.search(r"\.mcp-picker \{([^}]*)\}", css).group(1)
         self.assertIn("overflow-y: auto;", picker_rule)
-        self.assertIn("width: min(92vw, 640px);", picker_rule)   # wide: the tools wrap instead of stacking tall
-        self.assertIn('node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool)', self.js)
-        self.assertIn('node("div", "mcp-server__head")', self.js)   # the Monitor card's markup, not a second style
-        # ... and the row menu's item rule must be class-scoped: the panel is a .chat-menu too, and a bare
-        # descendant rule reached every chip in it and turned them into full-width block rows
+        self.assertIn("width: min(92vw, 640px);", picker_rule)
+        # the same markup as the card, so there is one look for "which tools" and no second style to keep in step
+        self.assertIn('node("div", "mcp-server__head")', self.js)
+        self.assertIn('node("div", "mcp-server__tools")', self.js)
+        self.assertIn('`chip mcp-tool${c.enabled ? "" : " off"}`', self.js)
+        self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
+        # the row menu's item rule must be class-scoped: the panel is a .chat-menu too, and a bare descendant
+        # rule reached every chip in it and turned them into full-width block rows
         self.assertNotIn(".chat-menu button", css)
         self.assertIn(".chat-menu__item { display: block;", css)
         self.assertIn("chat-menu__item${danger", self.js)
-        self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
-        self.assertIn('Reset Tools', self.js)
-        self.assertIn("reset.disabled = mcpSame([...held], now);", self.js)   # greyed, not hidden: no reflow
-        self.assertIn('node("span", "mcp-picker__cost muted small", mcpSame([...held], sent) ? ""', self.js)
-        self.assertIn("chat.mcpSent = body.strata_mcp_tools.slice();", self.js)   # the baseline the warning uses
-        self.assertIn('node("div", "mcp-picker__foot")', self.js)              # one row of fixed height
-        self.assertNotIn("closePopover();\n    }", self.js)                    # Reset no longer closes the panel
         self.assertIn("placePopover(menu, anchor);", self.body("openPopover"))
         self.assertIn("placePopover(panel, anchor);", self.body("openMcpPicker"))
         self.assertIn("el.style.maxHeight = `${Math.max(120, space)}px`;", self.body("placePopover"))
-        dot = self.body("updateMcpDot")
-        self.assertIn("btn.hidden = !mcpServers().length;", dot)     # no MCP at all: no button
-        self.assertIn('$("mcp-dot").hidden = !(held && base && !mcpSame(held, now) && !mcpSame(base, now));', dot)
-        self.assertIn("updateMcpDot();", self.body("renderChat"))    # the dot is about THIS chat
-        self.assertIn("updateMcpDot();", self.body("renderMcp"))
         self.assertIn('$("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));', self.js)
         self.assertIn("mcpBtn.onclick = () => openMcpPicker(mcpBtn);", self.body("openEditBox"))
+        self.assertIn('$("mcp-btn").hidden = !list.length;', self.body("renderMcp"))   # no MCP: no button
         # the panel is a popover like the row menu, so the outside-click rule must not close it on its own opener
         self.assertIn('!e.target.closest("#mcp-btn")', self.js)
+        # and nothing per-conversation survives: one setting, not two
+        for gone in ("mcpFrozen", "chatToolsFor", "mcpDefault", "mcpSent", "updateMcpDot", "mcp-dot",
+                     "mcpSwitchState", "data-mcp-unfreeze", "data-mcp-apply", "chatPromptTokens"):
+            self.assertNotIn(gone, self.js)
 
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence

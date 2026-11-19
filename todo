@@ -629,7 +629,18 @@ all: fold-control replaced them, and the four overlapping switches became one co
     stub registers a root element's data-* into dataset, and case 90 reads the names out of the HTML the page
     wrote (el._html) so dropping either attribute fails it.  LESSONS.md carries the entry.
 
-`mcp-chat-tools`  Make the MCP tool list a property of the conversation, and keep it. [ui] [py] MEDIUM DONE 2026-11-19
+`mcp-chat-tools`  Make the MCP tool list a property of the conversation, and keep it. [ui] [py] WITHDRAWN 2026-11-19 (built, then removed at the human's request)
+    BUILT and then UNBUILT the same day.  The human tried it and said: "the wrench menu is like a symlink to the
+    monitor page. It is just a convenience. A shortcut. Nothing is different. Everything behaves the same."  So
+    there is one tool list - the run config, as the hub holds it - and both surfaces read and write it.  Gone:
+    c.mcpTools / c.mcpDefault / c.mcpSent, the dot, the per-chat re-read warning, the card mirroring the chat,
+    the card's "Use these tools as the defaults", and the export round-trip of the list.
+    The SERVER half stays: strata_mcp_tools, template_tools(only=..., include_disabled=...) and the frozen-call
+    path are tested and harmless, and any client that wants a per-conversation list can still ask for one.  The
+    page sends nothing there now.
+    What the experiment bought, and is kept: the layout work (wide panel, the card's markup, placePopover with a
+    height cap and scroll), the no-op-click fix below, and the proof that two views of one setting must share
+    both the state and the write path.
     DONE: the list now lives on the chat record as `c.mcpTools` and is sent as strata_mcp_tools, so it survives a
     reload - the "a reload drops the shield and the chat re-reads" behaviour from item mcp-live-toggles is
     WITHDRAWN (the human changed their mind: "I'm changing the old behavior").  A chat with no stored list takes the
@@ -732,6 +743,20 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Two test bugs of my own showed up while wiring this: after a rebuild the old panel handle is a REMOVED element
     (every click needs `panel = s94.s.chatMenu` again), and the cost text moved inside the footer, so a top-level
     text join stopped seeing it - the helper now walks the subtree.
+    THE 400s THE HUMAN HIT, and the cause: the card had been made to show the CHAT's list while it wrote the
+    CONFIG's - so a click could land on the state the config already had, and set_mcp answered a no-op with
+    ValueError("nothing to change") -> 400, which is why the Monitor's chips stopped toggling.  Fixed twice over:
+    one shared state (above), and set_mcp now answers a no-op with 200 and changed: [] while still refusing a
+    change object that names nothing to change ("disabled", "tool" or "tools").  The file is not rewritten and no
+    .bak is made when nothing changed.
+    Tests: harness case 91 (one case replaces the three per-chat ones) clicks a chip in the panel and asserts the
+    card redraws from the same answer, then the server switch, then the card's own chip, and that the chat object
+    carries no per-conversation list; serve/test_runconfig.py adds test_a_click_that_changes_nothing_is_not_an_error.
+    83 harness cases, fast suite 223, serve.test_server 317, all OK.
+    Controls: the panel writing a change the card would not write fails the "posts exactly what the card's chip
+    would post" check; making a no-op an error again fails the 200 check; making the panel read a per-chat state
+    fails "the panel shows the same state as the card" - an earlier version of that control only changed the
+    chip's class, not its aria-checked, and passed for the wrong reason.
     A bug the tests caught here: renderMcp called chatToolsFor(), which CREATES the list - so merely drawing the
     card made a chat look like it had chosen one.  Reading must not write (heldNow reads chat.mcpTools directly).
     Tests: harness case 93 extended (the card mirrors an unticked chip, no Apply while the chat matches the

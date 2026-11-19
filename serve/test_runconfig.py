@@ -296,20 +296,36 @@ class McpHttp(Fixture):
         self.assertEqual(self.call("GET")[0], 401)
         self.assertEqual(self.call("POST", {"mcp": [{"server": "files", "disabled": True}]})[0], 401)
 
+    def test_a_click_that_changes_nothing_is_not_an_error(self):
+        # the two views of these switches redraw from the answer, so the same click can arrive twice.  It used to
+        # come back 400 "nothing to change", which is what broke the Monitor's chips once the card and the config
+        # were showing different things.
+        status, v = self.post({"mcp": [{"server": "files", "disabled": False}]})     # already not disabled
+        self.assertEqual(status, 200, v)
+        self.assertEqual(v["changed"], [])
+        self.assertEqual(self.saved(), CFG)                                          # the file was not rewritten
+        # but a change that names nothing to change is still a caller bug, and it is refused before any write
+        status, v = self.post({"mcp": [{"server": "files"}]})
+        self.assertEqual(status, 400, v)
+        self.assertIn('"disabled", "tool" or "tools"', v["error"]["message"])
+
     def test_the_page_has_the_chips(self):
         js = (ROOT / "serve" / "web" / "app.js").read_text(encoding="utf-8")
         self.assertIn('fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: [change]})})', js)
         self.assertIn('data-mcp-server', js)
         self.assertIn('data-mcp-tool', js)
         self.assertIn('data-mcp-toggle', js)
-        self.assertIn('data-mcp-unfreeze', js)                   # the way to move one chat onto the current list
-        self.assertIn('body.strata_mcp_tools = chatToolsFor(chat);', js)   # the chat sends its own list
-        self.assertIn("c.mcpTools = mcpCurrentTools();", js)                   # migrated on first use
-        self.assertIn("c.mcpDefault = c.mcpTools.slice();", js)               # and the baseline the dot compares to
-        self.assertIn("strata: {id: c.id, mcpTools: c.mcpTools,", js)      # and it round-trips through export
-        self.assertNotIn("mcpFrozen", js)                                  # the page-session map is gone
-        self.assertIn("for new conversations; a chat already open keeps its own tools", js)
-        self.assertIn("reads its history once", js)              # the cost of switching a chat is said out loud
+        # one state, two views (todo #mcp-chat-picker): the wrench panel and the Monitor card post the SAME
+        # change through the SAME function, and there is no per-conversation tool list anywhere
+        self.assertIn("async function mcpPost(change, again)", js)
+        self.assertEqual(js.count("mcpPost("), 4)                 # defined once, called from both views
+        self.assertIn("mcpPost({server, tool, enabled: pick.getAttribute", js)   # the panel's chip
+        self.assertIn("const change = chip ? {server, tool: chip.dataset.mcpTool,", js)   # the card's chip
+        self.assertIn("await mcpPost(change);", js)
+        for gone in ("mcpFrozen", "chatToolsFor", "mcpDefault", "mcpSent", "updateMcpDot", "mcp-dot",
+                     "data-mcp-unfreeze", "data-mcp-apply", "strata_mcp_tools = "):
+            self.assertNotIn(gone, js)
+        self.assertIn("reads its history again on its next message", js)   # the cost, said where the switches are
         self.assertNotIn("Saved for the next start", js)         # no longer true: the hub is updated live
         self.assertIn(".mcp-tool.off { opacity: .55; text-decoration: line-through; }",
                       (ROOT / "serve" / "web" / "app.css").read_text(encoding="utf-8"))

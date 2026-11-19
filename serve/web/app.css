@@ -356,12 +356,8 @@ main { flex: 1; min-height: 0; display: flex; }
 .mcp-tool { cursor: pointer; }
 .mcp-tool.off { opacity: .55; text-decoration: line-through; }
 .mcp-server__head .st-toggle { flex: none; }
-/* the composer's MCP button and its state dot (todo #mcp-chat-picker).  Blue on purpose: the palette already
-   means green = the engine is producing, blue = it is not, amber = queued, and a chat holding a tool list that
-   differs from the current one is a state, not a fault (LESSONS.md, "one colour per state"). */
+/* the composer's MCP button: the same control as the Monitor card's, closer to hand (todo #mcp-chat-picker) */
 #mcp-btn { position: relative; }
-.mcp-dot { position: absolute; top: 5px; right: 5px; width: 8px; height: 8px; border-radius: 50%;
-           background: var(--st-info); }
 .mcp-note { margin: 0; }
 
 /* ---------------------------------------------------------------- about */

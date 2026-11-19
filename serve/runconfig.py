@@ -163,6 +163,9 @@ def set_mcp(cfg: dict, changes: list, known: dict | None = None) -> tuple[dict, 
     for ch in changes:
         if not isinstance(ch, dict):
             raise ValueError("each MCP change must be an object")
+        # a change that names nothing to change is a bug in the caller, not a no-op: catch it before the file write
+        if not any(k in ch for k in ("disabled", "tool", "tools")):
+            raise ValueError('an MCP change must carry "disabled", "tool" or "tools"')
         name = str(ch.get("server") or "")
         entry = block.get(name)
         if not isinstance(entry, dict):
@@ -206,8 +209,8 @@ def set_mcp(cfg: dict, changes: list, known: dict | None = None) -> tuple[dict, 
                 else:
                     entry.pop("disabled_tools", None)
                 changed.append(f"{name} ({len(all_names & want)} of {len(all_names)} tools on)")
-    if not changed:
-        raise ValueError("nothing to change")
+    # a change that turns out to be a no-op is not an error: the two views of these switches redraw from the
+    # answer, and a UI that says "already set to that" behaves better than one that gets a 400 for a click
     return new, changed
 
 
