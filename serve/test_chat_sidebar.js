@@ -3129,5 +3129,64 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
             "button only exists when the chat on screen is holding a different list - otherwise the line says what " +
             "that chat is doing");
 
+  // 93. the per-chat tool picker (todo #mcp-chat-picker): the composer button, the dot that says "this chat is
+  //     not on the current list", and a panel where a tick applies to THIS chat at once - with the cost said in
+  //     tokens, because changing the tools block re-reads the conversation.
+  let mcp94 = toolsWith(true);
+  const s94 = run({fetch: async (url, opts) => {
+    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => mcp94};
+    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
+    return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
+  }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first"),
+       {role: "assistant", text: "done", time: Date.now(), usage: {prompt_tokens: 328811}}]}});
+  await wait();
+  await s94.s.loadMcp();
+  assert.strictEqual(s94.s.el("mcp-btn").hidden, false, "the button is there when the server has MCP tools");
+  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "no list on the record yet, so no dot");
+  s94.s.el("input").value = "go";
+  await s94.s.send();                                       // the chat takes the current list
+  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "matching the current list is not a state worth a dot");
+  mcp94 = toolsWith(false);                                // a tool is switched off globally
+  await s94.s.loadMcp();
+  assert.strictEqual(s94.s.el("mcp-dot").hidden, false, "now the chat is holding a list that is not the current one");
+  assert.ok(s94.s.el("mcp-btn").title.includes("uses 2 tools") && s94.s.el("mcp-btn").title.includes("1 are switched on"),
+            s94.s.el("mcp-btn").title);
+  s94.s.el("mcp-btn").onclick();                            // open the picker
+  const findIn = (el, attr, out = []) => { (el.children || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findIn(c, attr, out); }); return out; };
+  let panel = s94.s.chatMenu;
+  assert.ok(panel && panel.className.includes("mcp-picker"), "the panel opened");
+  assert.strictEqual(findIn(panel, "data-mcp-pick").length, 2, "both tools of the server are listed");
+  assert.strictEqual(findIn(panel, "data-mcp-pick").filter((b) => b.attrs["aria-checked"] === "true").length, 2,
+                     "checked as this chat has them");
+  const off = findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two");
+  panel._l.click({target: off});                            // untick it: applies at once, no Apply button here
+  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one"], "the chat's list changed on the click");
+  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "and it now matches the current list, so the dot goes");
+  panel = s94.s.chatMenu;
+  assert.ok(findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two")
+              .attrs["aria-checked"] === "false", "the panel rebuilt with the new state");
+  assert.ok(/328,811 tokens/.test(findIn(panel, "data-mcp-pick").length ? panel.children.map((c) => c.textContent).join(" ") : ""),
+            "the cost is said in tokens, from the chat's own last turn");
+  // the panel rebuilds itself after every click, so "open it again" has to close it first or it just closes
+  const reopen = () => { if (s94.s.chatMenu) s94.s.el("mcp-btn").onclick(); s94.s.el("mcp-btn").onclick(); return s94.s.chatMenu; };
+  s94.s.chat.mcpTools = ["a__one", "ghost__gone"];          // a tool the server no longer offers
+  await s94.s.loadMcp();
+  panel = reopen();
+  const goneBtn = findIn(panel, "data-mcp-forget");
+  assert.strictEqual(goneBtn.length, 1, "the unavailable tool is shown as such, and can be dropped");
+  panel._l.click({target: goneBtn[0]});
+  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one"], "clicking it drops it from the chat's list");
+  mcp94 = toolsWith(true); await s94.s.loadMcp();           // the tool is back on: match it
+  panel = reopen();
+  const matchBtn = findIn(panel, "data-mcp-match");
+  assert.strictEqual(matchBtn.length, 1, "the panel offers to match the current tools");
+  panel._l.click({target: matchBtn[0]});
+  assert.deepStrictEqual(s94.s.chat.mcpTools, ["a__one", "a__two"], "and that sets the chat onto the current list");
+  assert.strictEqual(s94.s.chatMenu, null, "the panel closed after it");
+
+  done.push("mcp-picker: the composer button, a dot only when the chat is off the current list, and a panel that " +
+            "applies per chat on the click, names the cost in tokens, and can drop a tool that no longer exists");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

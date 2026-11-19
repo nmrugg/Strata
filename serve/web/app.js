@@ -572,6 +572,7 @@ function renderMcp() {
       (s.off ? `<p class="mcp-note muted small">off in the config; its tools are not listed until it starts again</p>` : "") +
       `</div>`;
   }).join("") + mcpSwitchNote();
+  updateMcpDot();        // the button and its dot are drawn from the same facts as this card
 }
 // Does the chat on screen have anything to switch to?  It has a saved list - it has sent at least one message in
 // THIS page load - and that list is not what the server offers now.  Anything else and the button would do
@@ -581,6 +582,95 @@ function renderMcp() {
 // Which of the three states the chat on screen is in.  Its list is on the record now, so this is exact rather
 // than inferred: a chat that has never sent has no list yet, a chat whose list matches the current one has
 // nothing to switch, and a chat holding a different list is the one the button is for.
+// The composer's MCP button: hidden when this server has no MCP at all, and carrying a dot when the chat on
+// screen is holding a tool list that is not the current one.  The dot is a state, not a warning, so it is
+// --st-info blue: the palette already means green = the engine is producing, blue = it is not, amber = queued
+// (LESSONS.md, "one colour per state"), and nothing about a tool list is an error.
+function updateMcpDot() {
+  const btn = $("mcp-btn");
+  btn.hidden = !mcpServers().length;
+  const held = chat && Array.isArray(chat.mcpTools) ? chat.mcpTools : null;
+  $("mcp-dot").hidden = !(held && !mcpSame(held, mcpCurrentTools()));
+  btn.title = held && !mcpSame(held, mcpCurrentTools())
+    ? `This chat uses ${held.length} tools; ${mcpCurrentTools().length} are switched on now`
+    : "The tools this chat can use";
+}
+// The tool list for the chat on screen (todo #mcp-chat-picker).  Every server the hub has, each tool a switch,
+// checked the way THIS chat has them - and a tick applies at once, because the change belongs to this
+// conversation and there is nothing to confirm about it.  What is confirmed is the cost, said in tokens: the
+// tools block is the first system turn, so changing the list makes the next message read the conversation again.
+function chatPromptTokens() {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const u = messages[i].usage;
+    if (u && u.prompt_tokens) return u.prompt_tokens;
+  }
+  return (lastLive && lastLive.prompt_tokens) || 0;
+}
+function setChatTools(list) { chat.mcpTools = list; saveChat(chat); renderMcp(); }
+function openMcpPicker(anchor) {
+  if (activePopover && activePopover.classList.contains("mcp-picker")) { closePopover(); return null; }
+  closePopover();
+  const now = mcpCurrentTools(), held = new Set(chatToolsFor(chat));
+  const panel = node("div", "chat-menu mcp-picker");
+  panel.appendChild(node("div", "mcp-picker__head", `Tools for "${chatTitle(chat)}"`));
+  for (const s of mcpServers()) {
+    if (s.off || !s.chips.length) continue;
+    const row = node("div", "mcp-picker__server");
+    row.appendChild(node("span", "mcp-picker__server-name", s.name));
+    for (const t of s.chips) {
+      const on = held.has(t.name);
+      const b = node("button", `mcp-picker__tool${on ? " on" : ""}`, t.tool);
+      b.setAttribute("data-mcp-pick", t.name); b.setAttribute("role", "switch");
+      b.setAttribute("aria-checked", String(on));
+      b.title = `${t.name}${t.description ? " — " + t.description : ""}`;
+      row.appendChild(b);
+    }
+    panel.appendChild(row);
+  }
+  const gone = [...held].filter((n) => !now.includes(n));
+  if (gone.length) {                                  // the server went away or renamed a tool since this chat used it
+    const row = node("div", "mcp-picker__server");
+    row.appendChild(node("span", "mcp-picker__server-name muted", "No longer available"));
+    for (const n of gone) {
+      const b = node("button", "mcp-picker__tool on", n);
+      b.setAttribute("data-mcp-forget", n); b.title = "This chat is still asking for it. Click to drop it.";
+      row.appendChild(b);
+    }
+    panel.appendChild(row);
+  }
+  const cost = chatPromptTokens();
+  panel.appendChild(node("div", "mcp-picker__cost muted small",
+    cost ? `Changing this list makes the next message read the conversation again (${fmt(cost)} tokens).`
+         : "This chat has no history to re-read yet."));
+  const match = node("button", "st-btn st-btn--secondary", "Match the current tools");
+  match.setAttribute("data-mcp-match", "1");
+  panel.appendChild(match);
+  document.body.appendChild(panel);
+  activePopover = panel;
+  if (anchor.getBoundingClientRect) {
+    const r = anchor.getBoundingClientRect(), w = panel.offsetWidth || 320, h = panel.offsetHeight || 240;
+    panel.style.left = `${Math.max(4, Math.min(r.left, (innerWidth || 0) - w - 4))}px`;
+    panel.style.top = (r.bottom + h > (innerHeight || 0) && r.top - h > 0) ? `${r.top - h - 4}px` : `${r.bottom + 4}px`;
+  }
+  panel.addEventListener("click", (e) => {
+    const pick = e.target.closest("[data-mcp-pick]"), forget = e.target.closest("[data-mcp-forget]");
+    if (pick) {
+      const name = pick.getAttribute("data-mcp-pick"), set = new Set(chatToolsFor(chat));
+      if (set.has(name)) set.delete(name); else set.add(name);
+      setChatTools(now.filter((n) => set.has(n)).concat([...set].filter((n) => !now.includes(n))));
+      closePopover(); openMcpPicker(anchor);          // rebuild it: the counts and the dot are part of what it shows
+    } else if (forget) {
+      const name = forget.getAttribute("data-mcp-forget");
+      setChatTools(chatToolsFor(chat).filter((n) => n !== name));
+      closePopover(); openMcpPicker(anchor);
+    } else if (e.target.closest("[data-mcp-match]")) {
+      setChatTools(mcpCurrentTools());
+      closePopover();
+    }
+  });
+  return panel;
+}
+$("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));
 function mcpSwitchState() {
   const held = chat && Array.isArray(chat.mcpTools) ? chat.mcpTools : null, now = mcpCurrentTools();
   if (!held) return {need: false, why: `will use the current tools (${now.length}) on its next message`};
@@ -1639,7 +1729,7 @@ $("sidebar-list").addEventListener("click", (e) => {
 // opener (the row overflow, or a message Edit button) is not an outside click.
 document.addEventListener("click", (e) => {
   if (activePopover && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]") &&
-      !e.target.closest("[data-msg-edit]")) closePopover();
+      !e.target.closest("[data-msg-edit]") && !e.target.closest("#mcp-btn")) closePopover();
 });
 document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (settingsModal) closeSettingsModal(); else if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
 
@@ -1709,6 +1799,11 @@ function openEditBox(el, m, mode) {
     renderAttachments(edits, attachBox);
   }
   const bar = node("div", "msg-edit__bar");
+  if (mcpServers().length) {                        // the same picker, anchored here: an edit that resends is the
+    const mcpBtn = node("button", "st-btn st-btn--secondary", "Tools");   // wrong-tools moment, so the control
+    mcpBtn.type = "button"; mcpBtn.onclick = () => openMcpPicker(mcpBtn); // belongs in the box as well
+    bar.appendChild(mcpBtn);
+  }
   const save = node("button", "st-btn st-btn--secondary", "Save"); save.type = "button";
   const cancel = node("button", "st-btn st-btn--secondary", "Cancel"); cancel.type = "button";
   // close() rebuilds the whole row, not just the bubble: an edit can change the text, the thinking, the tool
@@ -2307,6 +2402,7 @@ function renderChat() {
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   renderSidebar();                                // the name in the list follows the first question
   scrollDown(true);
+  updateMcpDot();                                 // the dot is about THIS chat, so a switch redraws it
 }
 // the row for a message in the chat currently on screen.  send() used to capture one element and paint into it
 // for the whole turn, which broke the moment the chat was re-rendered - renderChat() removes every .st-msg, so

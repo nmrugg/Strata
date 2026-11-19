@@ -650,15 +650,34 @@ all: fold-control replaced them, and the four overlapping switches became one co
     server drops it from the rendered list - the picker in item mcp-chat-picker is where it should be shown as
     unavailable.
 
-`mcp-chat-picker`  An MCP button in the composer and the edit box that sets the tools for THAT chat. [ui] MEDIUM
-    DECIDED with the human: a button in the composer's button row (next to attach) and in the edit box, opening a
-    picker that lists every server and tool the way the Monitor card does, with this chat's selection checked.
-    Changing it there applies to that chat at once - no Apply step - and shows what it costs (this chat is N tokens;
-    its next message reads them again; context-percent already computes that number).  A dot on the icon when the
-    chat's list differs from the current defaults, and "match the defaults" inside the picker.  The dot is a state,
-    not a warning: use --st-info, not the danger colour (LESSONS.md, one colour per state).
-    Open question the human has not answered yet: whether the dot also goes on the sidebar chat row, so you can see
-    which conversations are off-default without opening them.
+`mcp-chat-picker`  An MCP button in the composer and the edit box that sets the tools for THAT chat. [ui] MEDIUM DONE 2026-11-19
+    DONE: the composer bar gained #mcp-btn (an i-tool icon next to Attach, hidden when the server has no MCP at
+    all) with a #mcp-dot that shows only when the chat on screen holds a list different from what is switched on
+    now - blue (--st-info), because the palette already means green = the engine is producing, blue = it is not,
+    amber = queued, and a chat being off-default is a state, not a fault (LESSONS.md, "one colour per state").
+    Its title says the counts ("This chat uses 31 tools; 30 are switched on now").
+    The panel (openMcpPicker) is the same fixed popover as the row menu, so Escape and the outside-click rule
+    already dismiss it - the button itself had to be added to that rule, or the opener closed the panel it had
+    just opened.  It lists every live server's tools as switches checked the way THIS chat has them, plus a
+    "No longer available" row for names the chat still carries that the server stopped offering (click to drop
+    one), the cost in tokens taken from the chat's own last turn (chatPromptTokens; the delete-post estimate
+    already existed), and "Match the current tools".
+    A tick applies at once - no Apply here, because the change belongs to this conversation and the cost is
+    already stated.  The edit box gets the same panel through a "Tools" button: the wrong-tools moment is usually
+    the resend.
+    The dot is redrawn by renderChat and renderMcp, so it follows the chat you switch to and any change you make.
+    Tests: serve/test_chat_sidebar.js case 93 drives it by clicks - no dot before a list exists, no dot when the
+    chat matches, the dot after a global switch-off, the panel opening with both tools checked, one unticked
+    applying to the chat and clearing the dot, the panel rebuilding, the token cost line, an unavailable tool
+    listed and dropped, and "match the current tools".  serve/test_chat_sidebar.py test_the_chat_tool_picker_is_wired
+    pins the button/dot markup, the blue, the two redraw calls, and the edit-box entry (a text check for that one
+    wiring line - the panel itself is click-tested through the composer).  84 -> 85 ok lines, fast suite 220 OK.
+    Controls: dot forced hidden fails the state check; a tick that does not call setChatTools fails the apply
+    check; dropping the #mcp-btn exclusion from the outside-click rule fails the wiring check.
+    NOT verified in a browser: the popover's placement (the stub has no layout, so getBoundingClientRect is
+    skipped there), how the tool grid reads at 31 tools, and the dot's size/position on the icon.
+    OPEN, asked and unanswered: whether the off-default dot also goes on the sidebar chat row, so you can see
+    which conversations differ without opening them.
 
 `mcp-settings-page`  MCP servers and tools on the Settings page, with an Apply button. [ui] [py] MEDIUM
     DECIDED with the human: clicking a chip must NEVER apply on its own.  Settings > MCP holds the global default -

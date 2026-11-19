@@ -262,6 +262,28 @@ class ChatSidebar(unittest.TestCase):
         self.assertEqual(self.js.count("const follow = following();"), 2)   # the live paint and the final one
         self.assertNotIn("const follow = nearBottom();", self.js)           # neither may bypass the hold
 
+    def test_the_chat_tool_picker_is_wired(self):
+        # todo #mcp-chat-picker: the composer button, the dot, and the panel that changes ONE chat's tools.
+        # The panel itself is driven by clicks in serve/test_chat_sidebar.js (case 93); what is checked here is
+        # the wiring the harness cannot reach cheaply - the button exists, the dot is drawn from the same facts,
+        # and the edit box offers the same panel (the wrong-tools moment is usually the resend).
+        for el in ("mcp-btn", "mcp-dot"):
+            self.assertIn(f'id="{el}"', self.html)
+            self.assertIn(f'"{el}"', self.js)
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".mcp-dot { position: absolute;", css)
+        self.assertIn("background: var(--st-info); }", css)          # a state, not a fault: blue, not red
+        self.assertIn(".mcp-picker__tool.on { border-color: var(--st-info);", css)
+        dot = self.body("updateMcpDot")
+        self.assertIn("btn.hidden = !mcpServers().length;", dot)     # no MCP at all: no button
+        self.assertIn('$("mcp-dot").hidden = !(held && !mcpSame(held, mcpCurrentTools()));', dot)
+        self.assertIn("updateMcpDot();", self.body("renderChat"))    # the dot is about THIS chat
+        self.assertIn("updateMcpDot();", self.body("renderMcp"))
+        self.assertIn('$("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));', self.js)
+        self.assertIn("mcpBtn.onclick = () => openMcpPicker(mcpBtn);", self.body("openEditBox"))
+        # the panel is a popover like the row menu, so the outside-click rule must not close it on its own opener
+        self.assertIn('!e.target.closest("#mcp-btn")', self.js)
+
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
         self.assertIn("function closeDrawer()", self.js)
