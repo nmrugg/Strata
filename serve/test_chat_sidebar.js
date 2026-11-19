@@ -2873,6 +2873,54 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await stream87("none");
   done.push("keep-open: with no scroll at all the thought folds on the call and the call folds on the next output");
 
+  // 89. the follow backs off when the reader fights it (todo #autoscroll-cooldown).  The follow rule has 120 px
+  //     of slack, so a 100 px scroll up during a turn was undone on the next frame, and the next, and the next -
+  //     the reported "it keeps snapping back".  Driven through send() with a growing answer: the stub's
+  //     scrollHeight is what the test sets, which is exactly the growth a streaming answer causes.
+  const q89 = [];
+  const ctl89 = {step: null};
+  const read89 = () => new Promise((res) => { ctl89.step = () => {
+    if (ctl89.flush) ctl89.flush();
+    res(q89.length ? {done: false, value: new TextEncoder().encode(q89.shift())} : {done: true});
+  }; });
+  const s89 = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: read89})}})}, {});
+  await wait();
+  ctl89.flush = s89.flush;
+  const sc89 = s89.s.el("chat-scroll");
+  sc89.clientHeight = 600; sc89.scrollHeight = 1000; sc89.scrollTop = 400;   // at the bottom: max is 400
+  q89.push(frame({choices: [{delta: {content: "one"}}]}),
+         frame({choices: [{delta: {content: " two"}}]}),
+         frame({choices: [{delta: {content: " three"}}]}),
+         frame({choices: [{delta: {content: " four"}}]}));
+  s89.s.el("input").value = "go";
+  const settled89 = s89.s.send();
+  await wait();
+  ctl89.step(); await wait(); s89.flush();
+  assert.strictEqual(sc89.scrollTop, 1000, "the page holds the chat at its bottom while the answer streams");
+  sc89.scrollHeight = 1400;
+  ctl89.step(); await wait(); s89.flush();
+  assert.strictEqual(sc89.scrollTop, 1400, "and follows it as it grows");
+  sc89.scrollTop = 1300;                              // the reader scrolls up 100 px - inside the 120 px slack
+  sc89._l.scroll({});
+  sc89.scrollHeight = 1800;
+  ctl89.step(); await wait(); s89.flush();
+  assert.strictEqual(sc89.scrollTop, 1300, "the next frame does not drag them back to the bottom");
+  sc89.scrollTop = 1700;                              // they come back down
+  sc89._l.scroll({});
+  sc89.scrollHeight = 2200;
+  ctl89.step(); await wait(); s89.flush();
+  assert.strictEqual(sc89.scrollTop, 2200, "back at the bottom, so the follow resumes");
+  // and the page's own scroll is never the reader's: it reports exactly where stickBottom left the chat
+  sc89.scrollTop = 2100;                              // pretend the reader nudged up 100 px again...
+  sc89._l.scroll({});
+  sc89.scrollTop = 2200; sc89._l.scroll({});          // ...and the page's own follow put it back
+  sc89.scrollHeight = 2600;
+  ctl89.step(); await wait(); s89.flush();
+  assert.strictEqual(sc89.scrollTop, 2600, "a scroll at the position we set is ours, not a fight");
+  ctl89.step(); await wait();
+  await settled89;
+  done.push("autoscroll-cooldown: a scroll up during a turn holds the follow off for a moment, and it resumes " +
+            "when the reader comes back to the bottom");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

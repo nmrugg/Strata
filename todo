@@ -332,11 +332,19 @@ all: fold-control replaced them, and the four overlapping switches became one co
     becomes markup except the URL itself.
 
 
-`autoscroll-cooldown`  Auto-scroll should back off when the reader fights it. [ui]
-    While following the bottom, if the reader scrolls up the page keeps snapping back to the bottom (the follow
-    check re-triggers every frame).  Add a cooldown: after the page auto-scrolls down, if the user scrolls back up
-    within a short window, pause auto-follow for a few seconds (or until they return to the bottom) so it stops
-    jumping.  Reuse the nearBottom() follow signal (item auto-scroll-big-block).
+`autoscroll-cooldown`  Auto-scroll should back off when the reader fights it. [ui] DONE 2026-11-19
+    DONE: the follow rule (nearBottom(), 120 px of slack) is now gated on a hold.  A scroll listener on #chat-scroll
+    compares the chat's position against autoTop - where stickBottom LEFT it, read back after the assignment,
+    because a real browser clamps scrollTop to the bottom - and a position more than 24 px above that is the
+    reader fighting, so follow is held off for 2500 ms.  Coming back to the bottom clears it immediately; a forced
+    scroll (renderChat, a chat switch) clears it too.  paint() and the final paint both use following().
+    A comparison against intent, not a consumed flag: the page's own scroll fires the same event (LESSONS.md).
+    Tests: serve/test_chat_sidebar.js case 89 drives send() with a growing answer - stick, stick, reader up 100 px
+    (inside the 120 px slack), frame does not drag, reader back down, follow resumes.  Control: following() without
+    the hold fails the "does not drag them back" assertion.
+    NOT measured in a browser: the stub never clamps scrollTop, so the read-back (autoTop = s.scrollTop, not
+    scrollHeight) is reasoned from how a real browser behaves - if the follow ever switches itself off for good,
+    that line is the first suspect.
 
 ## 3. Medium - two or three layers, or a decision to make first (days)
 

@@ -247,6 +247,21 @@ class ChatSidebar(unittest.TestCase):
                       "toolOpen(t, m, +d.dataset.tool, !!(busy && busy.msg === m))"):
             self.assertIn(wired, self.js)
 
+    def test_the_autoscroll_backs_off_when_the_reader_fights_it(self):
+        # todo #autoscroll-cooldown: the follow rule has 120 px of slack, so a small scroll up during a turn was
+        # undone every frame.  The behaviour is case 89 in test_chat_sidebar.js; this pins the wiring, and the one
+        # thing the stub cannot show: a real browser clamps scrollTop to the bottom, so autoTop must be READ BACK
+        # after the assignment - recording scrollHeight would make the page's own follow look like the reader
+        # scrolling up, and the follow would switch itself off for good.
+        self.assertIn('$("chat-scroll").addEventListener("scroll", () => {', self.js)
+        self.assertIn("s.scrollTop = s.scrollHeight; autoTop = s.scrollTop;", self.js)
+        self.assertIn("const following = () => nearBottom() && performance.now() >= followHeldUntil;", self.js)
+        self.assertIn("if (s.scrollTop < autoTop - FIGHT_PX) followHeldUntil = performance.now() + FOLLOW_HOLD_MS;", self.js)
+        self.assertIn("const FOLLOW_HOLD_MS = 2500, FIGHT_PX = 24;", self.js)
+        self.assertIn("if (force) { followHeldUntil = 0; stickBottom(); } else if (following()) stickBottom();", self.js)
+        self.assertEqual(self.js.count("const follow = following();"), 2)   # the live paint and the final one
+        self.assertNotIn("const follow = nearBottom();", self.js)           # neither may bypass the hold
+
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
         self.assertIn("function closeDrawer()", self.js)

@@ -2217,8 +2217,25 @@ function rowOf(m) {
 // how far from the bottom of a scroll container still counts as "at the bottom"
 const nearEnd = (s, px) => s.scrollHeight - s.scrollTop - s.clientHeight < px;
 function nearBottom() { return nearEnd($("chat-scroll"), 120); }
-function stickBottom() { const s = $("chat-scroll"); s.scrollTop = s.scrollHeight; }
-function scrollDown(force) { if (force || nearBottom()) stickBottom(); }
+// The page follows the bottom while an answer streams, and that follow has 120 px of slack - so a reader who
+// scrolls up a little is dragged back to the bottom every frame, which is what item autoscroll-cooldown is
+// about.  A scroll that leaves the chat above where the PAGE put it is the reader fighting it: hold the follow
+// off for a few seconds, and resume the moment they come back down (or when the hold expires, if they never
+// do).  The test is a comparison against where we put the chat, not a consumed flag: the page's own scroll
+// fires this same event, and a browser queues it (LESSONS.md).  autoTop is read back after the assignment,
+// because a real browser clamps scrollTop to the bottom - recording scrollHeight would make our own follow
+// look like the reader scrolling up.
+const FOLLOW_HOLD_MS = 2500, FIGHT_PX = 24;
+let followHeldUntil = 0, autoTop = -1;
+function stickBottom() { const s = $("chat-scroll"); s.scrollTop = s.scrollHeight; autoTop = s.scrollTop; }
+const following = () => nearBottom() && performance.now() >= followHeldUntil;
+function scrollDown(force) { if (force) { followHeldUntil = 0; stickBottom(); } else if (following()) stickBottom(); }
+$("chat-scroll").addEventListener("scroll", () => {
+  const s = $("chat-scroll");
+  if (autoTop < 0) return;                                  // the page has not moved the chat in this visit
+  if (s.scrollTop < autoTop - FIGHT_PX) followHeldUntil = performance.now() + FOLLOW_HOLD_MS;
+  else followHeldUntil = 0;                                 // back at the bottom: follow again
+});
 
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
@@ -2468,7 +2485,7 @@ async function send(editOf) {
   // table - can add thousands of pixels in one frame, and measuring the gap after updateAssistant leaves the
   // reader past the 120 px slack, so the follow switched itself off and never came back.  This is what the
   // thinking body already does (nearEnd before assigning textContent).
-  const paint = () => { frame = 0; const el = rowOf(m); if (el) { const follow = nearBottom(); updateAssistant(el, m, true); if (follow) stickBottom(); } };
+  const paint = () => { frame = 0; const el = rowOf(m); if (el) { const follow = following(); updateAssistant(el, m, true); if (follow) stickBottom(); } };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -2562,7 +2579,7 @@ async function send(editOf) {
   setBusy(false);                                   // the spinner clears; elsewhere a dot appears
   if (frame) cancelAnimationFrame(frame);
   const fin = rowOf(m);
-  if (fin) { const follow = nearBottom(); updateAssistant(fin, m, false); if (follow) stickBottom(); }
+  if (fin) { const follow = following(); updateAssistant(fin, m, false); if (follow) stickBottom(); }
   saveChat(turn.chat);                              // write it into ITS chat, not whichever one is open now
 }
 
