@@ -1,7 +1,7 @@
 You are working on Strata at `/programs/Strata` (branch `fork`, remote Niko1221/Strata).
 Read `AGENTS.md`, **`LESSONS.md`**, and `/programs/Strata/todo` first. Open items are everything
 above the Historical and Done sections; count them with
-`sed '/^## 9. Historical/,$d' todo | grep -c '^`'` (40 as of 2026-10-24 - the count moves).
+`sed '/^## 9. Historical/,$d' todo | grep -c '^`'` (59 as of 2026-10-26 - the count moves).
 
 ## Read this before you touch `todo`
 
@@ -202,6 +202,9 @@ Four things a previous session got wrong about the state of the code. Still true
 
 ## How to behave
 
+- **When something is genuinely ambiguous, ASK the human** (the `ask` tool) rather than guessing - a wrong
+  assumption can waste a whole session. Ask before scoping a feature, when a todo item could mean two things, or
+  before an irreversible change. This is expected; note it in the readme/handoff so future agents do the same.
 - Verify in the code before claiming anything, and quote `file:line` you have actually read.
   Re-check line numbers after any edit that moves them: twice in one session numbers written
   from memory were wrong.

@@ -84,6 +84,20 @@ all: fold-control replaced them, and the four overlapping switches became one co
     The human's ask: a toggle for condensed vs full info, with the detail on a hover popup - same shape as
     context-percent's title breakdown.  Store the model per message when the turn ends (a model can change across
     a chat's life), so a reloaded record shows the model that actually answered it.
+    ALSO (human): show the DATE, not just the time, when a message is from another day (both user and AI rows).
+    The AI hover popup should break down total time into prefill (reading), generation, and tool-wait time.
+
+
+`scroll-stuck`  The page sometimes stops scrolling while the AI is working. [ui] BUG
+    Reported twice: during a turn the chat sometimes cannot be scrolled at all.  Reproduce, find the cause (a
+    stuck auto-scroll, a layout/overflow change while streaming, or a listener), and fix.  Related to
+    autoscroll-cooldown and item unread-in-open-chat (both read scroll position).
+
+
+`cache-lifetime-investigate`  Does Strata unload a conversation after a period of inactivity? [py] [exists]
+    The human asks whether a conversation gets dropped from the cache after some idle time.  Answer it from the
+    code (conversation-cache eviction, idle-unload timer, --conversation-cache-min-free-mib) and document it.
+    Feeds item pin-conversation (the configurable disk cache they want).
 
 ## 2. Small - a few hours, one or two files, no design decision
 
@@ -243,6 +257,45 @@ all: fold-control replaced them, and the four overlapping switches became one co
     setting (msgMd - the global mdtheirs toggle and the per-message md button) - there is deliberately NO separate
     per-thinking-block md button (the human asked for one control, not several).  The body carries a .md class so
     markdown drops pre-wrap spacing.
+
+
+`sidebar-day-regression`  A chat should move to "Today" as soon as you send in it, not only after the AI replies. [ui] BUG
+    Today a chat's list position/date (groupName, serve/web/app.js) only updates to "Today" after the AI responds,
+    because the chat's `time` is bumped on save at turn end.  When the user presses Enter, move the chat to the
+    top / update its date immediately so it reads "Today" right away.  (item sidebar-yesterday did the calendar
+    grouping; this is the "update on send, not on reply" half.)
+
+
+`keep-boxes-open-on-interact`  If I have interacted with a thinking/tool box (scrolled or clicked it), keep it open. [ui]
+    Today the "Show thinking" control (fold-control, settings.show) auto-collapses a block when it settles, even if
+    the reader had scrolled into or opened it.  Once a block has been touched (dataset.touched, or a scroll inside
+    its body), stop auto-collapsing it for the turn - remember the reader wants it open.  Extend the existing
+    touched guard (thinking uses dataset.touched; tool blocks compare open state) to also cover scroll interaction.
+
+
+`ai-image-visible`  When the AI loads an image (e.g. an image/get-image tool), show it to the user and keep it in history. [ui] [py]
+    A tool that returns an image should render it inline in the answer (like an embedded attachment) and include it
+    in the conversation history so later turns can reference it.  Decide how the image travels back (a content part
+    vs a reference) and how it round-trips in the replay without bloating the prompt.
+
+
+`chat-title-auto`  Set the chat's title to match the conversation. [ui]
+    The sidebar already derives a title from the first user line (chatTitle), but the stored title should be set/
+    updated to something that matches the conversation (first real question, or a short summary).  Decide whether
+    it's just the first line trimmed or a model-generated summary (costs a call).
+
+
+`auto-link-urls`  Bare http(s) URLs in text should become links, outside code/pre blocks. [ui]
+    inline() (serve/web/app.js) only linkifies markdown `[text](url)`.  Also turn a bare `http://...`/`https://...`
+    into an <a>, but NOT inside a code span, fenced block, or <pre>.  Keep the escape-first rule so nothing typed
+    becomes markup except the URL itself.
+
+
+`autoscroll-cooldown`  Auto-scroll should back off when the reader fights it. [ui]
+    While following the bottom, if the reader scrolls up the page keeps snapping back to the bottom (the follow
+    check re-triggers every frame).  Add a cooldown: after the page auto-scrolls down, if the user scrolls back up
+    within a short window, pause auto-follow for a few seconds (or until they return to the bottom) so it stops
+    jumping.  Reuse the nearBottom() follow signal (item auto-scroll-big-block).
 
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
@@ -674,6 +727,27 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Order I would take: fix the clobbering (revision + tombstones) -> BroadcastChannel for
     the list -> 21/31 -> shared stream.
 
+
+`search-full-text`  Search should cover the whole chat, not just the title - fast titles first, then full text. [ui]
+    renderSidebar's filter matches the title and the open chat's messages only.  Do a two-stage search: match
+    titles immediately, then progressively scan all chats' message text (debounced/incremental so typing stays
+    responsive).  Support a regex when the query is wrapped in /.../ .  Needs the chats loaded (see
+    sidebar-capped-load - a huge store means search can't see unloaded chats).
+
+
+`edit-while-busy`  Let me edit a chat while it is working; Submit stops the current turn and resubmits. [ui]
+    Editing is currently blocked while a turn runs (openChatBox/edit guards on busy).  Allow opening the editor
+    during a turn.  On Submit: if the edited post belongs to the chat that is generating, abort that turn
+    (busy.controller.abort) then delete-after-and-resend (send(editOf)).  Editing a DIFFERENT chat just edits it.
+    Extends item edit-posts (which is blocked while busy today).
+
+
+`queue-other-chats`  Queue messages in OTHER chat sessions while one is generating. [ui]
+    You can only send in the open chat, and only one turn runs at a time.  Let the user type/queue a message in a
+    background chat; it sends when that chat's turn is next.  Builds on item queue-another-chat (per-request state:
+    controller, target message, chat id) and multi-tab-sync's per-chat busy tracking.  The FIFO already queues
+    server-side (docs/BATCHING.md) - this is the front-end half.
+
 ## 4. Large - engine work, or a new subsystem (weeks)
 
 `leaked-markup`  Leaked markup in the answer: literal backslash-n pairs, closing think tags, closing
@@ -769,6 +843,11 @@ all: fold-control replaced them, and the four overlapping switches became one co
     "always cached" a disk promise (~6 s to resume, ~18 GiB of free disk per chat) or a RAM
     promise (impossible at that size here)? That answer drives all three steps, and it
     belongs in docs/ before it belongs in serve/.
+    The human's requirement, restated (2026-10-26): they never want to re-read a conversation.  Make the cache
+    CONFIGURABLE by size - a setting for how many GB of old conversations to keep on disk (they have tens of GB) -
+    and evict the oldest automatically when it exceeds that budget.  This is the "always fast to open, survives
+    restart" promise, sized by the user, not all-or-nothing RAM.  (Answers cache-lifetime-investigate: today the
+    RAM park is LRU with a byte budget and does not survive a restart.)
 
 `two-at-once`  Run two conversations at the SAME TIME, not queued. [eng] [py] [ui]
     Distinct from 10 (which is queuing, already supported). True simultaneity is
