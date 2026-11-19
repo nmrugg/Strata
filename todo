@@ -712,6 +712,11 @@ all: fold-control replaced them, and the four overlapping switches became one co
     chips - so there is a single style for "which tools" and no second one to keep in step.  The picker's own
     .mcp-picker__server / .mcp-server-switch / .mcp-picker__tools rules are deleted; only two spacing overrides
     remain inside .mcp-picker.
+    THEN IT STILL LOOKED WRONG, and the cause was the cascade, not the markup: the row menu styles its items with
+    a bare descendant rule on the popover, and the picker IS a popover (.chat-menu), so that rule reached every
+    chip and every switch inside it and turned them into full-width block rows.  The items now carry
+    .chat-menu__item and the three rules are scoped to it.  The lesson is the one LESSONS.md already carries about
+    reuse: sharing a container class shares its CSS, so a "generic popover" class is not free.
     A bug the tests caught here: renderMcp called chatToolsFor(), which CREATES the list - so merely drawing the
     card made a chat look like it had chosen one.  Reading must not write (heldNow reads chat.mcpTools directly).
     Tests: harness case 93 extended (the card mirrors an unticked chip, no Apply while the chat matches the

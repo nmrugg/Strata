@@ -249,11 +249,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-menu { position: fixed; z-index: 60; min-width: 168px; padding: 4px; background: var(--st-surface);
              border: 1px solid var(--st-line); border-radius: var(--st-r-md);
              box-shadow: 0 8px 24px rgba(0,0,0,.28); }
-.chat-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; cursor: pointer;
+/* the row menu's items, by class: a bare descendant rule on the popover also reached every chip and switch
+   inside the MCP picker (which is a .chat-menu too), turning the chips into full-width block rows */
+.chat-menu__item { display: block; width: 100%; text-align: left; border: 0; background: transparent; cursor: pointer;
                     padding: 8px 10px; border-radius: var(--st-r-sm); color: var(--st-ink-soft);
                     font: 500 var(--st-fs-sm) var(--st-font); }
-.chat-menu button:hover { background: var(--st-surface-2); color: var(--st-ink); }
-.chat-menu button.danger { color: var(--st-danger); }
+.chat-menu__item:hover { background: var(--st-surface-2); color: var(--st-ink); }
+.chat-menu__item.danger { color: var(--st-danger); }
 .chat-item__input { flex: 1; min-width: 0; height: 34px; font-size: var(--st-fs-sm); }
 /* the per-chat tool picker (todo #mcp-chat-picker): the same fixed popover as the row menu, wider, with each
    server's tools as switches.  On = info blue, the same colour the pill and the badges use for "the engine is

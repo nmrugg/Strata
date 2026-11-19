@@ -280,6 +280,11 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("width: min(92vw, 640px);", picker_rule)   # wide: the tools wrap instead of stacking tall
         self.assertIn('node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool)', self.js)
         self.assertIn('node("div", "mcp-server__head")', self.js)   # the Monitor card's markup, not a second style
+        # ... and the row menu's item rule must be class-scoped: the panel is a .chat-menu too, and a bare
+        # descendant rule reached every chip in it and turned them into full-width block rows
+        self.assertNotIn(".chat-menu button", css)
+        self.assertIn(".chat-menu__item { display: block;", css)
+        self.assertIn("chat-menu__item${danger", self.js)
         self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
         self.assertIn('Reset Tools', self.js)
         self.assertIn("if (!mcpSame([...held], now)) {", self.js)    # and only when this chat is off the current set

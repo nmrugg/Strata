@@ -1617,7 +1617,7 @@ function openPopover(anchor, items, onPick) {
   const menu = node("div", "chat-menu");
   menu.setAttribute("role", "menu");
   for (const [act, label, danger] of items) {
-    const b = node("button", danger ? "danger" : "", label);
+    const b = node("button", `chat-menu__item${danger ? " danger" : ""}`, label);
     b.setAttribute("data-chat-act", act); b.setAttribute("role", "menuitem");
     menu.appendChild(b);
   }
