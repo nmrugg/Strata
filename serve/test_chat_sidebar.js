@@ -3132,8 +3132,12 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   //     not on the current list", and a panel where a tick applies to THIS chat at once - with the cost said in
   //     tokens, because changing the tools block re-reads the conversation.
   let mcp94 = toolsWith(true);
+  const posts94 = [];
   const s94 = run({fetch: async (url, opts) => {
-    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => mcp94};
+    if (String(url).split("?")[0] === "mcp") {
+      if (opts && opts.method === "POST") { posts94.push(JSON.parse(opts.body)); return {ok: true, json: async () => ({changed: ["a (1 of 2 tools on)"], configured: {}, live: ["a"], reloads: []})}; }
+      return {ok: true, json: async () => mcp94};
+    }
     if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
     return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
   }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
@@ -3145,7 +3149,8 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "no list on the record yet, so no dot");
   s94.s.el("input").value = "go";
   await s94.s.send();                                       // the chat takes the current list
-  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "matching the current list is not a state worth a dot");
+  assert.strictEqual(s94.s.el("mcp-dot").hidden, true, "matching the current list is not a state worth a dot");  assert.ok(!(s94.s.el("mcp-list")._html || "").includes("data-mcp-apply"),
+            "no Apply on the card while the chat already matches the defaults");
   mcp94 = toolsWith(false);                                // a tool is switched off globally
   await s94.s.loadMcp();
   assert.strictEqual(s94.s.el("mcp-dot").hidden, false, "now the chat is holding a list that is not the current one");
@@ -3156,8 +3161,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   let panel = s94.s.chatMenu;
   assert.ok(panel && panel.className.includes("mcp-picker"), "the panel opened");
   assert.ok(!/reads the conversation again/.test(panel.children.map((c) => c.textContent).join(" ")),
-            "no cost line before the reader has changed anything");
-  assert.strictEqual(findIn(panel, "data-mcp-pick").length, 2, "both tools of the server are listed");
+            "no cost line before the reader has changed anything");  assert.strictEqual(findIn(panel, "data-mcp-pick").length, 2, "both tools of the server are listed");
   assert.strictEqual(findIn(panel, "data-mcp-pick").filter((b) => b.attrs["aria-checked"] === "true").length, 2,
                      "checked as this chat has them");
   // untick the tool that IS still offered, so the chat ends up different from the settings on purpose: that is
@@ -3169,6 +3173,16 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                      "a change made in this panel never raises the dot - the dot is for the config moving elsewhere");
   panel = s94.s.chatMenu;
   assert.strictEqual(findIn(panel, "data-mcp-match").length, 1, "and Reset Tools shows, because the chat is off the current set");
+  // the Monitor's card mirrors THIS chat (the human's ask): the chip the panel just unticked reads off there too,
+  // and the card offers to make that set the defaults - which is the only thing that touches other chats.
+  const wrote94 = () => s94.s.el("mcp-list")._html || "";
+  assert.ok(/data-mcp-tool="one"[^>]*aria-pressed="false"/.test(wrote94()), wrote94().slice(0, 400));
+  assert.ok(wrote94().includes("data-mcp-apply"), "the card offers to make this chat's set the defaults");
+  s94.s.el("mcp-list")._l.click({target: {className: "st-btn",
+                                          closest(sel) { return sel === "[data-mcp-apply]" ? this : null; }}});
+  await wait();
+  assert.deepStrictEqual(posts94, [{mcp: [{server: "a", tools: ["two"]}]}],
+                         "it sends the whole server at once, as the tools that should be ON");
   assert.ok(findIn(panel, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__one")
               .attrs["aria-checked"] === "false", "the panel rebuilt with the new state");
   const text94 = () => panel.children.map((c) => c.textContent).join(" ");
@@ -3178,8 +3192,8 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   panel = reopen();
   const srvChip = findIn(panel, "data-mcp-server")[0];
   assert.strictEqual(srvChip.attrs["aria-checked"], "true", "the server chip reads on while any of its tools are used");
-  assert.ok(srvChip.className.includes("chip") && srvChip.className.includes("mcp-server-chip"),
-            `styled like the Monitor's chips: ${srvChip.className}`);
+  assert.ok(srvChip.className.includes("mcp-server-switch"),
+            `the server reads as a heading, not as another chip: ${srvChip.className}`);
   panel._l.click({target: srvChip});
   assert.deepStrictEqual(s94.s.chat.mcpTools, [], "clicking the name takes the whole server out of this chat");
   panel = reopen();

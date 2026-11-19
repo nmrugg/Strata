@@ -274,10 +274,12 @@ class ChatSidebar(unittest.TestCase):
         css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
         self.assertIn(".mcp-dot { position: absolute;", css)
         self.assertIn("background: var(--st-info); }", css)          # a state, not a fault: blue, not red
-        # the panel scrolls inside the window instead of running off the bottom, and its chips are the Monitor's
-        self.assertIn("flex-direction: column; gap: 8px; overflow-y: auto; }", css)
+        # the panel scrolls inside the window instead of running off the top, and its chips are the Monitor's
+        picker_rule = re.search(r"\.mcp-picker \{([^}]*)\}", css).group(1)
+        self.assertIn("overflow-y: auto;", picker_rule)
+        self.assertIn("width: min(92vw, 640px);", picker_rule)   # wide: the tools wrap instead of stacking tall
         self.assertIn('node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool)', self.js)
-        self.assertIn('node("button", `chip mcp-server-chip${anyOn ? "" : " off"}`, s.name)', self.js)
+        self.assertIn('node("button", `mcp-server-switch${anyOn ? "" : " off"}`, s.name)', self.js)
         self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
         self.assertIn('Reset Tools', self.js)
         self.assertIn("if (!mcpSame([...held], now)) {", self.js)    # and only when this chat is off the current set

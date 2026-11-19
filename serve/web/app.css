@@ -258,16 +258,18 @@ main { flex: 1; min-height: 0; display: flex; }
 /* the per-chat tool picker (todo #mcp-chat-picker): the same fixed popover as the row menu, wider, with each
    server's tools as switches.  On = info blue, the same colour the pill and the badges use for "the engine is
    not producing tokens" - here it means "this chat asks for it". */
-.mcp-picker { min-width: 320px; max-width: min(92vw, 460px); padding: 10px; display: flex;
-              flex-direction: column; gap: 8px; overflow-y: auto; }   /* placePopover caps the height to the room
-                                                                         there is, so a long list scrolls in place */
-.mcp-picker__server { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.mcp-picker__server-name { font: 600 var(--st-fs-xs) var(--st-font-mono); color: var(--st-ink-muted); }
-/* the server's own chip: one click takes the whole server out of this conversation, or puts it back */
-.mcp-server-chip { font-weight: 600; border-color: var(--st-info); color: var(--st-ink);
-                   background: color-mix(in srgb, var(--st-info) 18%, transparent); }
-.mcp-server-chip.off { background: transparent; border-color: var(--st-line); color: var(--st-ink-muted);
-                       text-decoration: none; }
+.mcp-picker { width: min(92vw, 640px); padding: 10px; display: flex; flex-direction: column; gap: 6px;
+              overflow-y: auto; }                          /* placePopover caps the height to the room there is,
+                                                              so a long list scrolls in place instead of running off
+                                                              the top of the window */
+.mcp-picker__server { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+/* the server reads as a heading, not as another chip: bigger, its own line, with the count of what this chat
+   uses.  Clicking it takes the whole server out of the conversation, or puts it back. */
+.mcp-server-switch { border: 0; background: transparent; padding: 0; cursor: pointer; text-align: left;
+                     font: 700 var(--st-fs-sm) var(--st-font-mono); color: var(--st-ink); }
+.mcp-server-switch.off { color: var(--st-ink-muted); text-decoration: line-through; }
+.mcp-server-count { font-variant-numeric: tabular-nums; }
+.mcp-picker__tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .mcp-picker__cost { line-height: 1.4; }
 .sidebar-empty { margin: 0; padding: var(--st-s-2) 8px; }
 .sidebar-foot { margin: 0; }

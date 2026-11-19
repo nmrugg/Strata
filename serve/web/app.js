@@ -554,6 +554,13 @@ function renderMcp() {
                                        + (off ? ` · ${fmt(off)} off` : "") : "";
   $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
                                                : "no server is connected yet (see the Monitor)";
+  // The chips show what the CHAT ON SCREEN uses, so the wrench menu and this card never disagree (the human's
+  // ask).  The global config is not changed by that: the Apply line below is what moves the defaults, and it
+  // only affects conversations that have not chosen their own list yet.
+  // Read, never create: drawing the card must not be what decides that a chat has picked a list.
+  const heldNow = chat && Array.isArray(chat.mcpTools) ? chat.mcpTools : null;
+  const chatSet = new Set(heldNow || mcpCurrentTools());
+  const differs = !!heldNow && !mcpSame(heldNow, mcpCurrentTools());
   $("mcp-list").innerHTML = list.map((s) => {
     const [cls, text] = s.off ? ["st-badge--queued", "Off"] : (MCP_STATE[s.status] || ["", s.status]);
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
@@ -564,17 +571,20 @@ function renderMcp() {
       `<strong>${esc(s.name)}</strong>` +
       `<span class="muted small">${esc(s.transport || "")} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
-      (s.chips.length ? `<div class="mcp-server__tools">` + s.chips.map((t) =>
+      (s.chips.length ? `<div class="mcp-server__tools">` + s.chips.map((c) => {
+        const on = chatSet.has(c.name);
         // the chip says only the tool's own name: the server's name is already the card it sits under, and the
         // prefix repeated on every chip made the row hard to read.  The full name the model sees is in the
         // tooltip, next to the description, because that is the name to look for in a transcript.
-        `<button class="chip mcp-tool${t.enabled ? "" : " off"}" data-mcp-tool="${esc(t.tool)}" ` +
-        `aria-pressed="${String(t.enabled)}" title="${esc(t.name)}${esc(t.description ? " — " + t.description : "")}">` +
-        `${esc(t.tool || t.name)}</button>`).join("") +
-        `</div>` : "") +
+        return `<button class="chip mcp-tool${on ? "" : " off"}" data-mcp-tool="${esc(c.tool)}" ` +
+               `aria-pressed="${String(on)}" title="${esc(c.name)}${esc(c.description ? " — " + c.description : "")}">` +
+               `${esc(c.tool || c.name)}</button>`;
+      }).join("") + `</div>` : "") +
       (s.off ? `<p class="mcp-note muted small">off in the config; its tools are not listed until it starts again</p>` : "") +
       `</div>`;
-  }).join("") + mcpSwitchNote();
+  }).join("") + (differs ? `<p class="mcp-note"><button class="st-btn st-btn--secondary" data-mcp-apply` +
+                          ` title="Writes this chat's tool set into the run config. Other conversations keep the list they chose; this affects conversations that have not picked one yet.">` +
+                          `Use these tools as the defaults</button></p>` : "") + mcpSwitchNote();
   updateMcpDot();        // the button and its dot are drawn from the same facts as this card
 }
 // Does the chat on screen have anything to switch to?  It has a saved list - it has sent at least one message in
@@ -628,20 +638,26 @@ function openMcpPicker(anchor, changed) {
     const anyOn = names.some((n) => held.has(n));
     // the server's name is itself a switch: one click takes the whole server out of this conversation, or puts
     // it back.  It reads like the chips on the Monitor card because it is the same kind of thing.
-    const head = node("button", `chip mcp-server-chip${anyOn ? "" : " off"}`, s.name);
+    const head = node("button", `mcp-server-switch${anyOn ? "" : " off"}`, s.name);
     head.setAttribute("data-mcp-server", s.name); head.setAttribute("role", "switch");
     head.setAttribute("aria-checked", String(anyOn));
     head.title = anyOn ? `Take every ${s.name} tool out of this conversation` : `Use the ${s.name} tools in this conversation`;
-    row.appendChild(head);
+    const count = node("span", "mcp-server-count muted small",
+      `${s.chips.filter((c) => held.has(c.name)).length} / ${s.chips.length}`);
+    row.appendChild(head); row.appendChild(count);
+    panel.appendChild(row);
+    // the tools go on their own wrapped row under the server, exactly like the Monitor card: a wide panel uses
+    // the width it has instead of pushing the list off the top of the window
+    const box = node("div", "mcp-picker__tools");
     for (const c of s.chips) {
       const on = held.has(c.name);
       const b = node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool);
       b.setAttribute("data-mcp-pick", c.name); b.setAttribute("role", "switch");
       b.setAttribute("aria-checked", String(on));
       b.title = `${c.name}${c.description ? " — " + c.description : ""}`;
-      row.appendChild(b);
+      box.appendChild(b);
     }
-    panel.appendChild(row);
+    panel.appendChild(box);
   }
   const gone = [...held].filter((n) => !now.includes(n));
   if (gone.length) {                                  // the server went away or renamed a tool since this chat used it
@@ -723,6 +739,20 @@ $("mcp-list").addEventListener("click", async (e) => {
     if (chat) { chat.mcpTools = mcpCurrentTools(); saveChat(chat); }
     toast("info", "This chat will use the current tools", "Its next message reads the history again.");
     renderMcp();                                  // and the button greys itself out again at once
+    return;
+  }
+  if (e.target.closest("[data-mcp-apply]")) {              // the chat's set becomes the defaults
+    const changes = (mcpInfo.servers || []).map((s) => ({
+      server: s.name,
+      tools: (s.tools || []).filter((x) => (chat.mcpTools || []).includes(x.name)).map((x) => x.tool)}));
+    try {
+      const r = await fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: changes})});
+      const b = await r.json();
+      if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+      toast("success", "Defaults changed", (b.changed || []).join(", ") +
+            " - other conversations keep the list they chose");
+      loadMcp();
+    } catch (err) { toast("error", "Not changed", String(err.message || err), 6000); }
     return;
   }
   const card = e.target.closest(".mcp-server");

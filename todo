@@ -696,6 +696,24 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Control that proves it: dropping the baseline re-sync fails only in the case where the chat ends up different
     from the settings on purpose - the first version of the test unticked a tool until the chat matched the
     settings again, and passed for the wrong reason.
+    LAYOUT, from the same read: the panel is wide (min(92vw, 640px)) and each server is a heading row - the name
+    as a plain bold switch plus "used / total" - with its chips wrapped on their own row under it, the same shape
+    as the Monitor card.  A server and a tool no longer look alike.  placePopover (now shared by the row menu and
+    this panel) picks the side with more room, caps the height to it, and the panel scrolls inside that.
+    THE MONITOR CARD NOW MIRRORS THE CHAT ON SCREEN (the human's ask, and the answer to the question I asked):
+    its chips read the chat's list, so the wrench menu and the card never disagree, and nothing else is touched.
+    What moves the defaults is a separate "Use these tools as the defaults" button on the card, shown only when
+    the chat differs; it sends one {"server": ..., "tools": [names that should be ON]} change per server, and
+    runconfig.set_mcp turns that into disabled_tools = (what the hub lists) - (what should be on).  The hub has to
+    be asked for the names: the config never lists them, and guessing an empty list would have switched every
+    tool of that server off, so an unknown server is a 400 instead.
+    A bug the tests caught here: renderMcp called chatToolsFor(), which CREATES the list - so merely drawing the
+    card made a chat look like it had chosen one.  Reading must not write (heldNow reads chat.mcpTools directly).
+    Tests: harness case 93 extended (the card mirrors an unticked chip, no Apply while the chat matches the
+    defaults, Apply sends the whole server); serve/test_runconfig.py McpApply.test_a_whole_server_at_once and
+    McpHttp.test_a_whole_server_change_needs_the_hub.  222 fast tests, 85 harness cases, both OK.
+    Controls: card reading global again fails the mirror check; Apply always offered fails the "only when
+    different" check; accepting a whole-server change with unknown tool names fails the 400 check.
 
 `mcp-settings-page`  MCP servers and tools on the Settings page, with an Apply button. [ui] [py] MEDIUM
     DECIDED with the human: clicking a chip must NEVER apply on its own.  Settings > MCP holds the global default -

@@ -211,6 +211,22 @@ class McpApply(unittest.TestCase):
         self.assertEqual(runconfig.mcp_state({"mcpServers": {"a": {"url": "http://x"}}}),
                          {"a": {"disabled": False, "disabled_tools": []}})
 
+    def test_a_whole_server_at_once(self):
+        # the wrench menu sets one chat's list; the Monitor's Apply turns THAT into the defaults, in one change
+        # per server - and only the running hub knows a server's tool names, so it has to be told (known=).
+        known = {"files": ["read_file", "write_file", "list"]}
+        new, changed = runconfig.set_mcp(CFG, [{"server": "files", "tools": ["read_file", "list"]}], known)
+        self.assertEqual(new["mcp_servers"]["files"]["disabled_tools"], ["write_file"])
+        self.assertEqual(changed, ["files (2 of 3 tools on)"])
+        back, _ = runconfig.set_mcp(new, [{"server": "files", "tools": ["read_file", "write_file", "list"]}], known)
+        self.assertNotIn("disabled_tools", back["mcp_servers"]["files"])   # everything on: the key goes
+        with self.assertRaises(ValueError):        # a server the hub has not listed: nothing to compute from
+            runconfig.set_mcp(CFG, [{"server": "files", "tools": ["read_file"]}], {})
+        with self.assertRaises(ValueError):
+            runconfig.set_mcp(CFG, [{"server": "files", "tools": "read_file"}], known)
+        with self.assertRaises(ValueError):
+            runconfig.set_mcp(CFG, [{"server": "files", "tools": ["read_file", 7]}], known)
+
     def test_refused(self):
         for changes in ([], None, "x", [{"server": "nope", "disabled": True}], [{"server": "files"}],
                         [{"server": "files", "disabled": "yes"}],
@@ -224,9 +240,9 @@ class McpApply(unittest.TestCase):
 
 
 class McpHttp(Fixture):
-    """POST /mcp - the Monitor's chips.  The same guard as /config, and it writes the file WITHOUT touching the
-    running hub: the tool list is rendered into the system turn and reuse is exact token-prefix matching, so
-    applying it live would make every chat read its history again.  Used from the next start."""
+    """POST /mcp - the Monitor's chips and the wrench menu's Apply.  The same guard as /config.  It writes the
+    run config AND updates the running hub, so a change is live for conversations that have not chosen their own
+    tool list; a conversation that has one keeps it (serve/server.py, _mcp_post and mcp_only)."""
 
     def call(self, method, body=None, headers=None):
         return super().call(method, body, headers, path="/mcp")
@@ -264,6 +280,16 @@ class McpHttp(Fixture):
             status, b = self.call("POST", body, {"Origin": f"http://{self.host}"})
             self.assertEqual(status, 400, (body, b))
         self.assertEqual(self.path.read_bytes(), before)               # nothing written
+
+    def test_a_whole_server_change_needs_the_hub(self):
+        # the Apply button sends {"server": ..., "tools": [...]}.  The tool names come from the running hub, and
+        # this fixture has none - so the change is refused rather than guessing at an empty list, which would
+        # have switched every tool of that server off.
+        before = self.path.read_bytes()
+        status, b = self.post({"mcp": [{"server": "files", "tools": ["read_file"]}]})
+        self.assertEqual(status, 400, b)
+        self.assertIn("not known until it has started", b["error"]["message"])
+        self.assertEqual(self.path.read_bytes(), before)
 
     def test_the_api_key(self):
         self.svc.api_key = "secret"

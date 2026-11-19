@@ -145,11 +145,13 @@ def mcp_state(cfg: dict) -> dict:
     return out
 
 
-def set_mcp(cfg: dict, changes: list) -> tuple[dict, list[str]]:
+def set_mcp(cfg: dict, changes: list, known: dict | None = None) -> tuple[dict, list[str]]:
     """Turn one MCP server off/on, or one of its tools off/on, in a copy of the config; every other key stays as
-    it is.  A change is {"server": name, "disabled": true} or {"server": name, "tool": tool, "enabled": false}.
-    Bad or unknown names raise ValueError and nothing is written - the same all-or-nothing rule as apply().
-    The tool name is the server's own (what it lists), not the namespaced one the model sees."""
+    it is.  A change is {"server": name, "disabled": true} or {"server": name, "tool": tool, "enabled": false},
+    or {"server": name, "tools": [the tool names that should be ON]} - the last one is the Monitor writing a
+    whole server at once, and it needs `known` ({server: [tool names]}) because the config itself never lists a
+    server's tools: the running hub does.  Bad or unknown names raise ValueError and nothing is written - the
+    same all-or-nothing rule as apply().  Tool names are the server's own, not the namespaced one the model sees."""
     if not isinstance(changes, list) or not changes:
         raise ValueError('send {"mcp": [{"server": "<name>", "disabled": true}, ...]}')
     _, key = mcp_block(cfg)
@@ -188,6 +190,22 @@ def set_mcp(cfg: dict, changes: list) -> tuple[dict, list[str]]:
                 else:
                     entry.pop("disabled_tools", None)
                 changed.append(f"{name}__{tool} ({'off' if tool in off else 'on'})")
+        if ch.get("tools") is not None:
+            # the whole server at once: everything the hub says it offers, minus what should be on, is off
+            if not isinstance(ch["tools"], list) or not all(isinstance(x, str) and x.strip() for x in ch["tools"]):
+                raise ValueError(f'MCP server {name!r}: "tools" must be a list of tool names')
+            all_names = {str(x) for x in ((known or {}).get(name) or [])}
+            if not all_names:
+                raise ValueError(f"MCP server {name!r}: its tools are not known until it has started")
+            want = {str(x) for x in ch["tools"]}
+            off = all_names - want
+            was = {str(x) for x in (entry.get("disabled_tools") or [])}
+            if off != was:
+                if off:
+                    entry["disabled_tools"] = sorted(off)
+                else:
+                    entry.pop("disabled_tools", None)
+                changed.append(f"{name} ({len(all_names & want)} of {len(all_names)} tools on)")
     if not changed:
         raise ValueError("nothing to change")
     return new, changed

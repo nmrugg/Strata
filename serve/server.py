@@ -5682,7 +5682,9 @@ def make_handler(svc: Service):
                 req = json.loads(body or b"{}")
                 with svc.config_lock:
                     cfg = runconfig.load(svc.config_path)
-                    new, changed = runconfig.set_mcp(cfg, req.get("mcp") if isinstance(req, dict) else None)
+                    # a whole-server change needs the tool names, and only the running hub has them
+                    known = {s.name: [t["name"] for t in s.tools] for s in svc.mcp.servers.values()} if svc.mcp else None
+                    new, changed = runconfig.set_mcp(cfg, req.get("mcp") if isinstance(req, dict) else None, known)
                     bak = runconfig.save(svc.config_path, new)
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
@@ -5702,6 +5704,13 @@ def make_handler(svc: Service):
                     if ch.get("tool") is not None:
                         if svc.mcp.set_tool_disabled(name, str(ch["tool"]), ch.get("enabled", True) is not True):
                             live.append(f"{name}__{ch['tool']}")
+                    elif ch.get("tools") is not None:
+                        want = {str(x) for x in ch["tools"]}
+                        s = svc.mcp.servers.get(name)
+                        if s is not None:
+                            for t in s.tools:
+                                svc.mcp.set_tool_disabled(name, t["name"], t["name"] not in want)
+                            live.append(f"{name} ({len(want)} tools on)")
                     elif "disabled" in ch:
                         off = ch["disabled"] is True
                         if svc.mcp.set_server_disabled(name, off, block.get(name)):
