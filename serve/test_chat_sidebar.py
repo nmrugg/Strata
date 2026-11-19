@@ -198,6 +198,34 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('<span class="tool-call__preview muted">', self.js)
         self.assertIn('d.querySelector(".tool-call__preview")', self.js)   # still refreshed, just not shown
 
+    def test_the_sidebar_width_is_the_readers_and_is_checked(self):
+        # todo #sidebar-resize: drag the grip on the chat list's right edge and the width is kept in this
+        # browser.  What the harness cannot see (it has no layout) is pinned here as wiring: the grip exists,
+        # the width goes through a custom property with the old 260px as its fallback, and the stored number
+        # is validated before it is used.  What the width must NOT be is a sampling setting - see LESSONS.md
+        # on the drawer's dirty check; the behaviour side is case 84/85 in test_chat_sidebar.js.
+        for el in ("sidebar-resize",):
+            self.assertIn(f'id="{el}"', self.html)
+            self.assertIn(f'"{el}"', self.js)
+        self.assertIn('role="separator" aria-orientation="vertical" tabindex="0"', self.html)
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        rail = re.search(r"\.chat-sidebar \{([^}]*)\}", css).group(1)     # so a failure names the rule, not the file
+        self.assertIn("width: var(--sidebar-w, 260px);", rail)             # the fallback is the old fixed width
+        self.assertIn("position: relative;", rail)                         # the grip is placed against the rail
+        self.assertIn(".sidebar-resize { position: absolute;", css)
+        self.assertIn(".chat-sidebar[data-open=\"false\"] .sidebar-resize { display: none; }", css)
+        self.assertIn("@media (hover: none) { .sidebar-resize { display: none; } }", css)
+        self.assertIn(".chat-sidebar[data-open=\"false\"] { width: 60px; }", css)   # the rail rule still wins
+        self.assertIn('side.style.setProperty("--sidebar-w", sidebarW + "px");', self.js)
+        self.assertNotIn('$("sidebar").style.width', self.js)      # an inline width would beat the rail rule
+        self.assertIn("if (!sidebarOpen) return;", self.js)        # no width to change on a collapsed rail
+        defaults = re.search(r"const DEFAULTS = \{[^}]*\}", self.js).group(0)
+        self.assertNotIn("sidebarw", defaults)                     # not a drawer control, not sent anywhere
+        self.assertIn('store.get("sidebarw", null)', self.js)
+        self.assertIn('store.set("sidebarw", sidebarW)', self.js)
+        sane = self.body("storedSidebarW")
+        self.assertIn("typeof v !== \"number\" || !Number.isFinite(v) || v < SIDEBAR_MIN || v > SIDEBAR_MAX", sane)
+
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
         self.assertIn("function closeDrawer()", self.js)

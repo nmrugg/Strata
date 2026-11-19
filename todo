@@ -105,6 +105,23 @@ all: fold-control replaced them, and the four overlapping switches became one co
 
 ## 2. Small - a few hours, one or two files, no design decision
 
+`sidebar-resize`  Make the chat list's width the reader's: drag the edge, keep it per browser. [ui] DONE 2026-11-19
+    DONE: a grip on the rail's right edge (#sidebar-resize in index.html, .sidebar-resize in app.css) drags the
+    width with pointer events; arrow keys move it when the grip has focus (Shift = 40 px, Home = default); it is kept
+    in localStorage as strata.sidebarw.  The width is applied as the --sidebar-w custom property
+    (app.css: .chat-sidebar { width: var(--sidebar-w, 260px) }), never as style.width - an inline width would beat the
+    collapsed rail's rule (.chat-sidebar[data-open="false"] { width: 60px; }) and the rail would stay open-wide.
+    No grip on the collapsed rail and none on a touch screen ((hover: none)); the handler ignores a drag there too.
+    Limits: 180..560 px, and never more than the window leaves (innerWidth - 320).  A stored width that is not a
+    plausible number is REJECTED, not clamped, so the page keeps its 260 px (the human asked for a sanity checker:
+    40, 99999, "wide", null, NaN, {} all fall back); one that is plausible but only fits a wider screen is clamped to
+    the screen.  Kept OUT of DEFAULTS deliberately: it is not a drawer control and drawerDirty() must not see it
+    (LESSONS.md).  Nothing is written until the reader drags, so a fresh page is the page from the last release.
+    Tests: serve/test_chat_sidebar.js cases 84 and 85 (harness 75 -> 77 ok lines) and one check in
+    serve/test_chat_sidebar.py (fast suite 191 -> 192).  Controls: dropping the setProperty line fails 84, trusting
+    the stored number fails 85, removing the CSS var fails the python check.  Not checked: how the grip feels in a
+    real browser, and touch behaviour (the grip is hidden there by design).
+
 `sidebar-load-more`  Paginate the sidebar: render recent chats, "Show older" loads the rest. [ui]
     renderSidebar (serve/web/app.js) builds one row for EVERY chat, no cap - thousands of chats
     is thousands of DOM nodes in a 260 px rail.  Bound it: render the first N of the sorted list

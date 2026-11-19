@@ -166,7 +166,7 @@ main { flex: 1; min-height: 0; display: flex; }
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
 
 /* the chat list: the conversations this browser keeps (app.js, the IndexedDB store "chats") */
-.chat-sidebar { flex: none; width: 260px; display: flex; flex-direction: column; gap: var(--st-s-3);
+.chat-sidebar { flex: none; position: relative; width: var(--sidebar-w, 260px); display: flex; flex-direction: column; gap: var(--st-s-3);
                 padding: var(--st-s-4); background: var(--st-surface); border-right: 1px solid var(--st-line); }
 .sidebar-head { display: flex; align-items: center; gap: var(--st-s-2); }
 .sidebar-head .card-title { flex: 1; }
@@ -175,6 +175,15 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-sidebar[data-open="false"] .sidebar-head { flex-direction: column; }
 .chat-sidebar[data-open="false"] .sidebar-title, .chat-sidebar[data-open="false"] .sidebar-search,
 .chat-sidebar[data-open="false"] .sidebar-list, .chat-sidebar[data-open="false"] .sidebar-foot { display: none; }
+/* the width is the reader's: this is the grip on the list's right edge (todo #sidebar-resize).  It sits just
+   outside the rail so it never covers the list's own scrollbar, and it tints when hovered or dragged so the
+   edge reads as draggable.  No grip on the collapsed rail (there is no width there to change) and none on a
+   touch screen - the same (hover: none) test the row actions use. */
+.sidebar-resize { position: absolute; top: 0; bottom: 0; right: -5px; width: 10px; cursor: col-resize;
+                  background: transparent; z-index: 3; }
+.sidebar-resize:hover, .sidebar-resize.dragging { background: color-mix(in srgb, var(--st-accent) 40%, transparent); }
+.chat-sidebar[data-open="false"] .sidebar-resize { display: none; }
+@media (hover: none) { .sidebar-resize { display: none; } }
 .sidebar-search { height: 36px; font-size: var(--st-fs-sm); }
 .sidebar-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .sidebar-group { margin: 0; padding: var(--st-s-3) 8px var(--st-s-1); font-size: var(--st-fs-xs);

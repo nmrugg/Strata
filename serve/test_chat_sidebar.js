@@ -15,7 +15,10 @@ const path = require("path");
 function makeEl() {
   const el = {
     dataset: {}, attrs: {}, children: [], value: "", hidden: false, className: "", textContent: "",
-    classList: {add() {}, remove() {}, toggle() {}}, style: {},
+    classList: {add() {}, remove() {}, toggle() {}},
+    // a real CSSStyleDeclaration has setProperty(); the page sets the sidebar width as a custom property, and
+    // a test has to be able to read back what it set
+    style: {setProperty(k, v) { this[k] = v; }, removeProperty(k) { delete this[k]; }},
     scrollHeight: 0, scrollTop: 0, clientHeight: 0,
     addEventListener(t, f) { (this._l = this._l || {})[t] = f; },   // one handler per type: tests call it directly
     appendChild(c) { this.children.push(c); c._parent = this; return c; },
@@ -176,6 +179,7 @@ function run(hooks, stored, seed) {
                     body: makeEl(),                                   // the row menu is appended to <body> (todo #chat-row-menu)
                     hidden: false,                                    // pollDelay reads it; a test flips it
                     _l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },   // recorded so a test can fire the document click/keydown
+                    removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); },   // the sidebar drag takes its move/up listeners off again
                     querySelectorAll: () => []};
   const idb = makeIdb(hooks, seed);
   // window listeners are recorded so a test can ask "is anything holding the page open right now, and what
@@ -200,7 +204,7 @@ function run(hooks, stored, seed) {
     requestAnimationFrame: (f) => { raf.push(f); return raf.length; }, cancelAnimationFrame: () => {},
     navigator: {clipboard: {writeText: async (t) => { copied.push(t); }}},   // what the page put on the clipboard
     URL: {createObjectURL: () => "blob:stub", revokeObjectURL: () => {}},   // the image open-in-tab path builds a blob: URL
-    innerWidth: 1200, innerHeight: 800, window: win, queueMicrotask,
+    innerWidth: hooks.innerWidth || 1200, innerHeight: 800, window: win, queueMicrotask,
   };
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
@@ -212,6 +216,9 @@ function run(hooks, stored, seed) {
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
+    "get sidebarW() { return sidebarW; }, setSidebarW, storedSidebarW, setSidebar, " +
+    "get SIDEBAR_W_DEFAULT() { return SIDEBAR_W_DEFAULT; }, get SIDEBAR_MIN() { return SIDEBAR_MIN; }, " +
+    "get SIDEBAR_MAX() { return SIDEBAR_MAX; }, " +
     "get settings() { return settings; }, setSettings: (s) => { settings = {...DEFAULTS, ...s}; }, get DEFAULTS() { return DEFAULTS; }, " +
     "openDrawer, closeDrawer, loadDrawer, drawerSettings, drawerDirty, get sharedOn() { return sharedOn; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, parseLlamaJsonl, parseImport, unzipEntries, zipTexts, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
@@ -2677,6 +2684,73 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(zent[1].text, "hello", "a stored entry round-trips");
   assert.strictEqual(zc.s.parseLlamaJsonl(zent[0].text).length, 1, "the jsonl entry parses back to one chat");
   done.push("import-export: llama.cpp `extra` attachments import as files/images; the Zip export round-trips through the importer");
+
+  // 84. the chat list's width is the reader's (todo #sidebar-resize): drag the grip on its edge and the rail
+  //     follows, the width is written once on release, and it comes back on reload.  It goes on the sidebar as
+  //     the --sidebar-w custom property, never as style.width - an inline width would beat the collapsed rail's
+  //     own rule in app.css and the rail would stay wide.  None of it touches the drawer: the width is not a
+  //     drawer control, and a key the drawer does not manage must not make drawerDirty() true (LESSONS.md).
+  const rz = run({}, {});
+  await wait();
+  const grip = rz.s.el("sidebar-resize");
+  assert.strictEqual(rz.s.sidebarW, 260, "the default width");
+  assert.ok(!("--sidebar-w" in rz.s.el("sidebar").style), "a page that never resized gets no inline property at all");
+  assert.strictEqual(rz.stored["strata.sidebarw"], undefined, "and no stored key");
+  grip._l.pointerdown({clientX: 260, preventDefault() {}});
+  rz.fireDoc("pointermove", {clientX: 320});
+  assert.strictEqual(rz.s.sidebarW, 320, "the rail follows the pointer");
+  assert.strictEqual(rz.s.el("sidebar").style["--sidebar-w"], "320px", "as a custom property, not style.width");
+  assert.ok(!("width" in rz.s.el("sidebar").style), "style.width is never set on the sidebar");
+  assert.strictEqual(rz.stored["strata.sidebarw"], undefined, "not written mid-drag");
+  rz.fireDoc("pointerup", {});
+  assert.strictEqual(JSON.parse(rz.stored["strata.sidebarw"]), 320, "one write, on release");
+  rz.fireDoc("pointermove", {clientX: 900});
+  assert.strictEqual(rz.s.sidebarW, 320, "the move listener came off with the drag");
+  grip._l.keydown({key: "ArrowRight", shiftKey: true, preventDefault() {}});
+  assert.strictEqual(rz.s.sidebarW, 360, "the arrows move it too, Shift for a bigger step");
+  grip._l.pointerdown({clientX: 0, preventDefault() {}});
+  rz.fireDoc("pointermove", {clientX: -9000});
+  assert.strictEqual(rz.s.sidebarW, rz.s.SIDEBAR_MIN, "never narrower than the rail can hold");
+  rz.fireDoc("pointerup", {});
+  grip._l.pointerdown({clientX: 9000, preventDefault() {}});
+  rz.fireDoc("pointermove", {clientX: 20000});
+  assert.strictEqual(rz.s.sidebarW, Math.min(rz.s.SIDEBAR_MAX, 1200 - 320),
+                     "never wider than the screen leaves (the stub window is 1200)");
+  rz.fireDoc("pointerup", {});
+  rz.s.openDrawer(true);          // the controls take what the page is using; dirty means "moved in the panel"
+  assert.strictEqual(rz.s.drawerDirty(), false, "resizing the list is not an unapplied drawer change");
+  assert.ok(!("sidebarw" in rz.s.DEFAULTS), "the width is not a sampling setting");
+  const back = run({}, JSON.parse(JSON.stringify(rz.stored)));
+  await wait();
+  assert.strictEqual(back.s.sidebarW, Math.min(rz.s.SIDEBAR_MAX, 1200 - 320), "the width survives a reload");
+  assert.strictEqual(back.s.el("sidebar").style["--sidebar-w"], back.s.sidebarW + "px", "and is applied to the rail");
+  done.push("sidebar-resize: the grip drags the width, it is stored once on release, survives a reload, " +
+            "clamps at both ends, and never reaches the drawer");
+
+  // 85. a stored width is checked, not trusted: a hand-edited key, a stale value, or the same profile on a
+  //     much smaller screen all have to fall back to the default rather than give a 40px list.
+  for (const bad of ["40", "99999", '"wide"', "null", "NaN", "{}"]) {
+    const r = run({}, {"strata.history": "true", "strata.sidebarw": bad});
+    await wait();
+    assert.strictEqual(r.s.storedSidebarW(), null, bad + " is not a plausible width");
+    assert.strictEqual(r.s.sidebarW, r.s.SIDEBAR_W_DEFAULT, bad + " leaves the default on screen");
+    assert.ok(!("--sidebar-w" in r.s.el("sidebar").style), bad + " writes no inline width");
+  }
+  const small = run({}, {"strata.sidebarw": "500"});      // stored on a wide screen, opened on a 1200px one
+  await wait();
+  assert.strictEqual(small.s.sidebarW, 500, "in range and it fits, so it is kept as stored");
+  const narrow = run({innerWidth: 700}, {"strata.sidebarw": "560"});   // same profile, smaller window
+  await wait();
+  assert.strictEqual(narrow.s.sidebarW, 700 - 320, "a width that fits the range but not the screen is clamped to the screen, not thrown away");
+  // the collapsed rail has no width to change: the grip is hidden by CSS and the handler ignores it anyway
+  const col = run({}, {});
+  await wait();
+  col.s.setSidebar(false, false);
+  col.s.el("sidebar-resize")._l.pointerdown({clientX: 260, preventDefault() {}});
+  col.fireDoc("pointermove", {clientX: 600});
+  assert.strictEqual(col.s.sidebarW, 260, "a collapsed rail does not move");
+  done.push("sidebar-resize: a stored width that does not look real is rejected (40, 99999, text, null, NaN, " +
+            "an object), and a collapsed rail ignores the grip");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

@@ -1451,6 +1451,63 @@ function setSidebar(open, save) {
   if (save) store.set("sidebar", open);
 }
 $("sidebar-toggle").onclick = () => setSidebar(!sidebarOpen, true);
+// How wide the chat list is belongs to the reader, not to the page (todo #sidebar-resize): drag the edge
+// between the list and the chat, or arrow-key it with the handle focused, and the width is back on the next
+// load.  Three things about where it lives:
+//   - its own localStorage key, NOT the "sampling" settings object: the drawer does not manage a width, and a
+//     key the drawer does not manage must not reach drawerDirty() (LESSONS.md - a non-drawer key in DEFAULTS
+//     made the panel read as permanently dirty).  It also never goes to the server.
+//   - the width is set as the --sidebar-w custom property, never as style.width: an inline width would beat
+//     the collapsed rail's own rule (app.css .chat-sidebar[data-open="false"]) and the rail would stay wide.
+//     With no property set, app.css falls back to 260px, which is exactly the last release's page.
+//   - a stored width is checked, not trusted.  A hand-edited key, a stale value from another build, or the
+//     same profile on a much smaller screen all look like a number; anything that is not a plausible pixel
+//     count is rejected and the default width is used rather than a narrow, unusable rail.
+const SIDEBAR_W_DEFAULT = 260, SIDEBAR_MIN = 180, SIDEBAR_MAX = 560;
+// never wider than the screen leaves: the chat needs room of its own
+const sidebarMaxW = () => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, (innerWidth || 1200) - 320));
+function storedSidebarW() {
+  const v = store.get("sidebarw", null);
+  if (typeof v !== "number" || !Number.isFinite(v) || v < SIDEBAR_MIN || v > SIDEBAR_MAX) return null;
+  return Math.min(v, sidebarMaxW());
+}
+let sidebarW = SIDEBAR_W_DEFAULT;
+function setSidebarW(w, save) {
+  sidebarW = Math.min(sidebarMaxW(), Math.max(SIDEBAR_MIN, w));
+  const side = $("sidebar"), grip = $("sidebar-resize");
+  side.style.setProperty("--sidebar-w", sidebarW + "px");
+  grip.setAttribute("aria-valuenow", String(sidebarW));
+  grip.setAttribute("aria-valuemin", String(SIDEBAR_MIN));
+  grip.setAttribute("aria-valuemax", String(sidebarMaxW()));
+  if (save) store.set("sidebarw", sidebarW);
+}
+$("sidebar-resize").addEventListener("pointerdown", (e) => {
+  if (!sidebarOpen) return;                 // a collapsed rail has no width to change
+  e.preventDefault();
+  const from = e.clientX, was = sidebarW;
+  const move = (ev) => setSidebarW(was + (ev.clientX - from), false);
+  const up = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+    document.removeEventListener("pointercancel", up);
+    $("sidebar-resize").classList.remove("dragging");
+    document.body.style.userSelect = "";
+    setSidebarW(sidebarW, true);            // one write on release, not one per pixel
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+  document.addEventListener("pointercancel", up);
+  $("sidebar-resize").classList.add("dragging");
+  document.body.style.userSelect = "none";
+});
+$("sidebar-resize").addEventListener("keydown", (e) => {
+  const step = e.shiftKey ? 40 : 10;
+  if (e.key === "ArrowLeft") setSidebarW(sidebarW - step, true);
+  else if (e.key === "ArrowRight") setSidebarW(sidebarW + step, true);
+  else if (e.key === "Home") setSidebarW(SIDEBAR_W_DEFAULT, true);
+  else return;
+  e.preventDefault();
+});
 $("sidebar-new").onclick = startChat;
 $("sidebar-search").addEventListener("input", () => { sidebarQuery = $("sidebar-search").value; renderSidebar(); });
 $("sidebar-list").addEventListener("click", (e) => {
@@ -2783,6 +2840,8 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 setBusy(false);
 // a narrow screen starts with the list closed so the chat has room
 setSidebar(store.get("sidebar", true) && !matchMedia("(max-width: 760px)").matches, false);
+const sidebarW0 = storedSidebarW();         // the reader's width, when the stored one looks real;
+if (sidebarW0 !== null) setSidebarW(sidebarW0, false);   // with none stored, app.css keeps its 260px and nothing is written
 setHistory(historyOn, false, false);                   // off by default: the page as it was
 if (!historyOn) loadDraft();                           // on: openHistory reads it once the store has answered
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)

@@ -51,6 +51,11 @@
              autocomplete="off" aria-label="Search chats">
       <div class="sidebar-list" id="sidebar-list"></div>
       <p class="muted small sidebar-foot" id="sidebar-foot"></p>
+      <!-- the grip that sets the list's width (todo #sidebar-resize): app.js drags it, and the width is kept
+           in this browser as strata.sidebarw -->
+      <div class="sidebar-resize" id="sidebar-resize" role="separator" aria-orientation="vertical" tabindex="0"
+           aria-label="Resize the chat list" aria-valuemin="180" aria-valuenow="260" aria-valuemax="560"
+           title="Drag to resize the chat list (arrows with it focused)"></div>
     </aside>
     <div class="chat-main">
       <div class="chat-scroll" id="chat-scroll">
