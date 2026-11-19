@@ -405,6 +405,39 @@ all: fold-control replaced them, and the four overlapping switches became one co
     scrollHeight) is reasoned from how a real browser behaves - if the follow ever switches itself off for good,
     that line is the first suspect.
 
+`test-suite-speed`  The suites spend almost all their time asleep, not working. [py] [ui] DONE 2026-11-19
+    Measured 2026-11-19 on this box: the fast suite was 194 tests in 43.6 s, but the node harness was 7.97 s wall
+    against 0.30 s CPU (3%), and every test in serve/test_static_cache cost a uniform ~520 ms.  Two causes:
+      - serve/test_chat_sidebar.js awaited setTimeout(r, 30) 228 times = 6.8 s of sleep.  It now yields with
+        setImmediate, which still lands after the microtasks the stub IndexedDB and stub fetch answer on: the
+        harness is 7.97 s -> 0.19 s.
+      - serve() ran httpd.serve_forever() with its default poll_interval of 0.5 s, so every shutdown() in every
+        test waited out a poll.  serve() now passes poll_interval 0.02 (serve/server.py, serve()).  Fast suite
+        36.8 s -> 9.4 s; serve.test_server 94.6 s -> 54.7 s (317 tests, both OK).  For the running server the
+        same line means a restart notices in <=20 ms instead of <=500 ms, and 50 idle wakeups a second instead
+        of 2 - negligible against one request, but it is a production default, so it needs the human's restart.
+    Still open: the remaining time is real work (scripted engine delays, watchdog and lifecycle tests), and
+    67 serve(port=0) call sites across 27 test files mean the modules could run in parallel - that is item
+    test-command's shape to decide (sh vs py vs bat), not a speed fix.
+
+`drop-single-chat`  Kill the "Chat history" switch: the list is always the page. [ui] DONE 2026-11-19
+    DONE (the human's call: "no one should ever use it"): the About switch, the `historyOn` flag and every
+    off-branch are gone - the one-chat-in-localStorage mode, the New-chat-clears-it-with-an-Undo path, and the
+    `keepBytes=false` argument that only that path used (a switch nothing can set is a switch that gets misread
+    later).  What SURVIVES is the migration: openHistory still reads an old "strata.chat" key and turns it into
+    the first record, so a browser that only ever had the single chat does not open on an empty list.
+    A browser that refuses IndexedDB (private mode) keeps working with the list in memory and still says so
+    (openHistory's warnStorage).
+    Tests: serve/test_chat_sidebar.py rewrote six checks that pinned the off mode (the page markup, "opt-in and
+    off is the last release" -> "the mode is gone and its key is migrated", "the store is only used when the
+    switch is on" -> "opened at start, memory-only still works", "turning the switch off keeps the chat on screen"
+    -> "New chat never clears the chat you are in", the attachment check, the draft check).  Harness case 1
+    rewritten the same way, case 11 (flip the switch off) deleted; 85 -> 84 ok lines.
+    Controls: putting `hidden` back on #sidebar fails the page check; writing to "strata.chat" again fails the
+    migration check; and the removal caught one real bug on its own - start-up called openHistory(false) without
+    the .then(renderChat) that setHistory used to do, so the list was read and never drawn (harness: "the list
+    shows them - 0 !== 4").
+
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
 `trim-tool-results`  Trim long tool calls before they reach the DOM. [py] [ui] - decide the policy first
@@ -559,25 +592,75 @@ all: fold-control replaced them, and the four overlapping switches became one co
     reload, which is what makes it an IndexedDB problem rather than an array.
 
 `mcp-server-add`  Add and remove MCP servers in the web app. [ui] [py] MEDIUM
-    Reading is done: GET /mcp returns every server, its state and its tools, and the Monitor
-    lists them (app.js:402-432, the mcp-card). What is missing is writing.
-    The plumbing exists: the Settings view already edits the run config (#564, svc.config_path,
-    GET/POST /settings), and the config's "mcp_servers" block is plain JSON in the same shape
-    as Claude Desktop's mcpServers. So this is a form on top of the config write that already
-    happens, not a new subsystem.
+    Reading is done, and WRITING now has a home: POST /mcp (serve/server.py, _mcp_post) and
+    runconfig.set_mcp / mcp_state / mcp_block (serve/runconfig.py) write one flag of one server entry with the
+    same _own_page guard, API key and .bak as /config, leaving every other key of the file exactly as it was.
+    What is still missing is the form: a name, a command or url, args, env, and a delete of the whole entry.
     Care: a server entry is a COMMAND LINE that runs on this PC with your rights (SECURITY.md,
-    docs/MCP_SERVER.md "Safety"). Adding one from a browser page needs the same origin check
-    the MCP tools already use (_own_page), and an API key when the server is reachable from
-    other devices. Starting/stopping a server also restarts the engine's tool list, which
-    changes the system turn and costs every chat one re-read (see 18's note).
+    docs/MCP_SERVER.md "Safety"), so the form must say what will run before it writes it.  set_mcp already
+    refuses a server that is not in the run config - one that came from --mcp-config lives in that other file
+    and has to be edited there.  And the warning that decided item mcp-server-toggle still holds: the tool list
+    is part of the system turn, so any change to it costs every chat one re-read.
 
-`tool-exclude`  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM
-    Nothing today: McpHub offers every tool of an enabled server as <server>__<tool> and
-    routes a call back to whichever server has it (serve/mcp.py). Needs a per-tool exclusion
-    list in the config, filtered in McpHub.template_tools(exclude=...) - that parameter is
-    already there and already used to drop the request's own tools on a name clash, so the
-    hook exists. Also worth showing the filtered count in the mcp-card so it is obvious which
-    tools the model can actually see.
+`tool-exclude`  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM DONE 2026-11-19
+    DONE: a server entry can carry "disabled_tools": [its own tool names], checked at the start (serve/mcp.py,
+    _check_server) and applied in McpHub.routes() - so a disabled tool never reaches template_tools (the model is
+    never told it exists) and a call naming it gets the same "there is no tool named" answer as one that was
+    never there.  status() still lists it, with "enabled": false and the namespaced name the model would have
+    seen, and the Monitor's chips are now buttons: click one to toggle, an off one reads dimmed and struck
+    through (.mcp-tool.off), and the count the card prints is the routed count - what the model can see.
+    The write goes through the same POST /mcp as the server switch, as {"server": name, "tool": tool,
+    "enabled": bool}, and it reaches the running hub too - live for new conversations, while a chat that already
+    has the tool in its prompt keeps it (item mcp-live-toggles).
+    Tests: serve/test_mcp.py ToolOff - not offered, not routed, still listed, the count, the call answer - plus
+    the shape check (a string, a dict, a non-string entry, a blank name all stop the start); harness case 90
+    covers the chip click.  Controls: routes() without the filter fails ToolOff; unwiring the click handler
+    fails case 90.
+    FIXED after the human tried it (2026-11-19): the card was written without data-mcp-server, so in a browser the
+    handler read undefined and the server answered "there is no MCP server '' in mcp_servers" while the harness
+    passed - the case had hand-built the card with the dataset value it wanted.  The attribute is there now, the
+    stub registers a root element's data-* into dataset, and case 90 reads the names out of the HTML the page
+    wrote (el._html) so dropping either attribute fails it.  LESSONS.md carries the entry.
+
+`mcp-chat-tools`  Make the MCP tool list a property of the conversation, and keep it. [ui] [py] MEDIUM
+    DECIDED with the human 2026-11-19, replacing the page-session shield in item mcp-live-toggles: a chat REMEMBERS
+    the tools it last used, and reloading the page does not change that (the old "a reload re-reads" behaviour is
+    withdrawn).  Store the list on the chat record (c.mcpTools - a chat-level field, not a message field), send it
+    as strata_mcp_tools (the server half already exists), and delete mcpFrozen / mcpAtLoad / the status-line prose.
+    A chat with no stored list just takes the current list - its first send stores it, and if that differs from the
+    list its cached prompt was built with, its next message reads its history once.  That is the whole migration.
+    Also: carry it through export/import (the `strata` block) or a re-imported chat silently re-reads; and a stored
+    name that no longer exists (server gone, tool renamed) is shown as unavailable in the picker and dropped when
+    sending, which re-reads.  With single-chat mode gone (item drop-single-chat) there is exactly one place to keep it.
+
+`mcp-chat-picker`  An MCP button in the composer and the edit box that sets the tools for THAT chat. [ui] MEDIUM
+    DECIDED with the human: a button in the composer's button row (next to attach) and in the edit box, opening a
+    picker that lists every server and tool the way the Monitor card does, with this chat's selection checked.
+    Changing it there applies to that chat at once - no Apply step - and shows what it costs (this chat is N tokens;
+    its next message reads them again; context-percent already computes that number).  A dot on the icon when the
+    chat's list differs from the current defaults, and "match the defaults" inside the picker.  The dot is a state,
+    not a warning: use --st-info, not the danger colour (LESSONS.md, one colour per state).
+    Open question the human has not answered yet: whether the dot also goes on the sidebar chat row, so you can see
+    which conversations are off-default without opening them.
+
+`mcp-settings-page`  MCP servers and tools on the Settings page, with an Apply button. [ui] [py] MEDIUM
+    DECIDED with the human: clicking a chip must NEVER apply on its own.  Settings > MCP holds the global default -
+    draft the chips and the server switches, then Apply writes the run config and updates the running hub (the hub
+    calls already exist: McpHub.set_tool_disabled / set_server_disabled, POST /mcp).  The Monitor's MCP card becomes
+    read-only status - server state, errors, how many tools the model can actually see - with a link to Settings;
+    one fact, one place, and the Monitor is not where you go to change something.
+
+`settings-page`  A real Settings page: the app's settings are in four places now. [ui] MEDIUM
+    DECIDED with the human: a fourth header tab (Chat | Monitor | About | Settings).  Today: the Sampling drawer is
+    opened from one chat's composer even though it writes GLOBAL defaults (strata.sampling, and "Use for other apps
+    too" posts the server's shared defaults); About holds the history switch (now gone), dark theme, the API key and
+    the run-config card (cfg-card); the Monitor holds the MCP controls; the sidebar gear holds import/export/delete.
+    Move them in slices, one per commit, keeping the old entry point until the new one is verified - a control must
+    never disappear before its replacement exists.  Suggested order: MCP (item mcp-settings-page) -> the Sampling
+    drawer's 15 controls -> the cfg-card and the switches in About -> the API key and theme.
+    Worth an item of its own later: a PER-CHAT sampling override, which is a different feature from the drawer and
+    would want the same frozen-at-creation care as the system prompt (item system-prompt) and the chat tool list
+    (item mcp-chat-tools) - all three are prompt-shaping, all three cost a re-read when changed mid-conversation.
 
 `conversation-log`  The server writes the conversation to disk (flag on, configurable dir, optional gzip).
     [py] MEDIUM - and it is the instrument the glitch in section 6 actually needs

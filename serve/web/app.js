@@ -824,18 +824,26 @@ function chatTitle(c) {
 // out; this drops it on the way in, for records an older page already wrote.  Only the tool's open field is
 // touched: a very old record that still carries a picture's data URL is left exactly as it is.
 const dropToolOpen = (list) => list.map((m) => (m && m.tools ? {...m, tools: m.tools.map((t) => ({...t, open: undefined}))} : m));
-// keepBytes (todo #edit-posts / store-full-attachments): the IndexedDB record keeps the image data URL and the
-// file text, so a reloaded post can still show and open its attachments.  The single-chat localStorage path
-// (history off) passes keepBytes=false - localStorage is capped around 5 MB, so a data URL there could blow it.
-const cleanMessages = (list, keepBytes = true) => list.map((m) => ({...m,
-    images: (m.images || []).map((i) => keepBytes ? {name: i.name, url: i.url} : {name: i.name}),
-    files: (m.files || []).map((f) => keepBytes ? {name: f.name, text: f.text} : {name: f.name}),
+// The IndexedDB record keeps the image data URL and the file text, so a reloaded post can still show and open
+// its attachments (todo #store-full-attachments).  There used to be a second path that stripped them for the
+// localStorage single chat, which is capped around 5 MB; that mode is gone (todo #drop-single-chat), so there is
+// one rule and it keeps the bytes.
+const cleanMessages = (list) => list.map((m) => ({...m,
+    images: (m.images || []).map((i) => ({name: i.name, url: i.url})),
+    files: (m.files || []).map((f) => ({name: f.name, text: f.text})),
     tools: (m.tools || []).map((t) => ({...t, open: undefined}))}));
 const cleanChat = (c) => ({...c, messages: cleanMessages(c.messages)});
 
-let historyOn = store.get("history", false);
+// the conversations this browser keeps.  There used to be a switch here, with "off" being the old page: one
+// chat in localStorage, "New chat" clearing it.  The switch is gone (todo #drop-single-chat) - the list is the
+// page now, and a browser that still holds the old "strata.chat" key gets it as the first record (openHistory).
+// A browser that refuses IndexedDB (private mode) keeps working with the list in memory and says so.
+// The conversations this browser keeps.  There used to be a switch here, with "off" being the old page: one
+// chat in localStorage, "New chat" clearing it.  The switch is gone (todo #drop-single-chat) - the list IS the
+// page now, and a browser that still holds the old "strata.chat" key gets it as the first record (openHistory).
+// A browser that refuses IndexedDB (private mode) keeps working with the list in memory and says so.
 let chats = [], chat = null, chatId = "", db = null;
-let messages = store.get("chat", []);         // off: the single chat; on: the open chat's messages
+let messages = [];                        // the open chat's messages
 let sidebarQuery = "", sidebarOpen = true, storageWarned = false;
 
 // the composer's text is kept per conversation: switching chats swaps it, and a reload finds it back.
@@ -1293,7 +1301,6 @@ async function openHistory(fromScreen) {
 }
 
 function saveChat(c = chat) {
-  if (!historyOn) { store.set("chat", cleanMessages(messages)); return; }   // off: one chat, as before
   c.time = Date.now();
   putChat(c);                                       // the chat that owns the turn, which may not be the open one
 }
@@ -1647,18 +1654,9 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (settingsModal) closeSettingsModal(); else if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
 
-// the switch under About > Settings. Off is the old page: one chat, "New chat" clears it.
-function setHistory(on, save, fromScreen) {
-  historyOn = on;
-  $("history-toggle").setAttribute("aria-checked", String(on));
-  $("sidebar").hidden = !on;
-  $("new-btn").title = on ? "New chat (the one you are in stays in the list)" : "New chat";
-  if (save) store.set("history", on);
-  // off writes the single chat here as well, so a reload shows the chat you were in, not the one from before the switch
-  if (!on) { messages = chat ? chat.messages : messages; store.set("chat", cleanMessages(messages, false)); renderChat(); return; }
-  openHistory(fromScreen).then(renderChat);          // the store is opened before the list can be read
-}
-$("history-toggle").onclick = () => setHistory($("history-toggle").getAttribute("aria-checked") !== "true", true, true);
+// There used to be a "Chat history" switch under About, with off meaning the old page: one chat in
+// localStorage.  It is gone (todo #drop-single-chat); the store is always opened at start-up, and the old
+// "strata.chat" key is migrated into it as a record (openHistory).
 
 // markdown for one message: its own choice (the "md" button in its meta row) wins; otherwise the default for its
 // author - mine off (the page draws exactly what you typed, as it always did), the model's on (also as before).
@@ -2318,7 +2316,7 @@ function renderChat() {
   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
   $("chat-empty").hidden = messages.length > 0;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
-  if (historyOn) renderSidebar();                   // the name in the list follows the first question
+  renderSidebar();                                // the name in the list follows the first question
   scrollDown(true);
 }
 // the row for a message in the chat currently on screen.  send() used to capture one element and paint into it
@@ -2540,7 +2538,7 @@ function setBusy(on) {
     window.addEventListener("beforeunload", warnOnLeave);
     pollNow();            // todo #poll-on-enter: pressing Enter must not wait for the next idle poll (up to POLL_IDLE_MS = 15 s away, so the pill reads Idle while the engine is already working).  schedulePoll clears the pending timer first, so this cannot fork a second chain (the metrics-lite lesson).
   } else window.removeEventListener("beforeunload", warnOnLeave);
-  if (historyOn) renderSidebar();      // the list shows which conversation is answering (chatItem reads busy)
+  renderSidebar();                   // the list shows which conversation is answering (chatItem reads busy)
 }
 
 // editOf (todo #edit-posts): resend from an edited user post.  It is changed in place, everything after it is
@@ -2700,7 +2698,7 @@ async function send(editOf) {
   busy = null;
   // a reply that landed in a conversation you are not looking at is worth a mark (todo #chat-state-marker); set it before
   // setBusy(false), which is what redraws the list
-  if (historyOn && turn.chat && turn.chatId !== chatId) turn.chat.unread = true;
+  if (turn.chat && turn.chatId !== chatId) turn.chat.unread = true;
   setBusy(false);                                   // the spinner clears; elsewhere a dot appears
   if (frame) cancelAnimationFrame(frame);
   const fin = rowOf(m);
@@ -2716,20 +2714,7 @@ $("input").addEventListener("keydown", (e) => {
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", () => { autosize(); saveDraft(); });
 
-$("new-btn").onclick = () => {
-  if (!historyOn) {                                   // off: the old behaviour, clear with an Undo
-    if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }   // one chat: this clears it
-    if (!messages.length) return;
-    const backup = messages;
-    messages = [];
-    saveChat();
-    renderChat();
-    toast("info", "New chat", "The last one was cleared.", 6000,
-          {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
-    return;
-  }
-  startChat();
-};
+$("new-btn").onclick = () => startChat();     // the chat you are in stays in the list (there is no other mode)
 // The saved chat follows the screen: the same parts, in the same order, from bubbleParts().  The old export
 // wrote three piles instead - all thinking, then every call, then the text - so a saved multi-round turn lost
 // which thought led to which call.  One source for the order means the two cannot drift again.
@@ -3016,8 +3001,9 @@ setBusy(false);
 setSidebar(store.get("sidebar", true) && !matchMedia("(max-width: 760px)").matches, false);
 const sidebarW0 = storedSidebarW();         // the reader's width, when the stored one looks real;
 if (sidebarW0 !== null) setSidebarW(sidebarW0, false);   // with none stored, app.css keeps its 260px and nothing is written
-setHistory(historyOn, false, false);                   // off by default: the page as it was
-if (!historyOn) loadDraft();                           // on: openHistory reads it once the store has answered
+$("sidebar").hidden = false;                           // the list is always the page now (todo #drop-single-chat)
+$("new-btn").title = "New chat (the one you are in stays in the list)";
+openHistory(false).then(renderChat);                      // read the store, then draw the chat it picked
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });

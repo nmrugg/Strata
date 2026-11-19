@@ -214,8 +214,8 @@ function run(hooks, stored, seed) {
   };
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
-    "\nreturn {get historyOn() { return historyOn; }, get chats() { return chats; }, get chat() { return chat; }, " +
-    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, setHistory, startChat, openChat, " +
+    "\nreturn {get chats() { return chats; }, get chat() { return chat; }, " +
+    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, " +
     "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
@@ -255,16 +255,19 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
 (async () => {
   const done = [];
 
-  // 1. the switch off: the store is never opened, and the single chat is the page from the last release
-  const off0 = run({}, {});
+  // 1. the store is opened on load, and a fresh0 browser holds one empty chat (todo #drop-single-chat: this case
+  //     used to be "the switch is off" - one chat in localStorage, and New chat cleared it with an Undo)
+  const fresh0 = run({}, {});
   await wait();
-  assert.strictEqual(off0.s.historyOn, false, "off is the default");
-  assert.strictEqual(off0.s.db, null, "off never opens the store");
-  off0.s.messages.push(msg("the first conversation"));
-  off0.s.saveChat();
-  assert.strictEqual(JSON.parse(off0.stored["strata.chat"])[0].text, "the first conversation");
-  assert.deepStrictEqual(Object.keys(off0.stored), ["strata.chat"], "off writes only the single chat");
-  done.push("off: the store is not opened, only strata.chat is written");
+  assert.notStrictEqual(fresh0.s.db, null, "the store is opened, whatever was stored before");
+  assert.strictEqual(fresh0.s.chats.length, 1, "nothing stored: the page made one empty chat to work in");
+  assert.strictEqual(fresh0.s.messages.length, 0, "and it is empty");
+  fresh0.s.messages.push(msg("the first conversation"));
+  fresh0.s.saveChat();
+  await wait();                                             // the stub store answers on a later tick
+  assert.strictEqual(Object.keys(fresh0.records).length, 1, "the conversation is a record, not a localStorage blob");
+  assert.ok(!("strata.chat" in fresh0.stored), "nothing writes the old single-chat key any more");
+  done.push("start-up: the store is opened, a fresh0 browser gets one empty chat, and the first save is a record");
 
   // 2. a page load with four records: the list is what the read returned
   const seed = {};
@@ -276,14 +279,13 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(four.s.chatTitle(four.s.chat), "chat 1", "the open one is the one stored as open");
   done.push("read: 4 records in the store, 4 rows in the list");
 
-  // 3. his steps on #1787: off, a conversation, switch on, New chat, reload - the new chat stays empty
+  // 3. his steps on #1787, with no switch to flip: a conversation, New chat, reload - the new chat stays empty
   const b = run({}, {});
   await wait();
   b.s.messages.push(msg("the first conversation"));
   b.s.saveChat();
-  b.s.setHistory(true, true, true);           // flipped in this session: the chat on the screen becomes the record
   await wait();
-  assert.strictEqual(b.s.chats.length, 1, "the chat on the screen became the first record");
+  assert.strictEqual(b.s.chats.length, 1, "the chat on the screen is the first record");
   b.s.startChat();
   await wait();
   assert.strictEqual(b.s.chat.messages.length, 0, "the new chat is empty");
@@ -370,16 +372,6 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await wait();
   assert.strictEqual(warns(full.s).length, 1, "it warns once, not on every write");
   done.push("quota: the warning fires on the abort event");
-
-  // 11. flipping the switch off stores the chat you were in, so a reload shows it
-  const off = run({}, {"strata.history": "true", "strata.chat": JSON.stringify([msg("the OLD single chat")])});
-  await wait();
-  off.s.chats[0].messages.push(msg("work done in the sidebar"));
-  off.s.saveChat();
-  off.s.setHistory(false, true, true);
-  assert.deepStrictEqual(JSON.parse(off.stored["strata.chat"]).map((m) => m.text),
-                         ["the OLD single chat", "work done in the sidebar"], "a reload shows the chat you were in");
-  done.push("off: the single chat is written when the switch is flipped");
 
   // 12. pictures are stored as names only
   const pic = run({}, {"strata.history": "true"});

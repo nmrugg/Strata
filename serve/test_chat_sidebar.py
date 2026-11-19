@@ -32,11 +32,11 @@ class ChatSidebar(unittest.TestCase):
         return found.group(0)
 
     def test_the_page_has_the_sidebar_and_its_switch(self):
-        for el in ("sidebar", "sidebar-toggle", "sidebar-search", "sidebar-list", "sidebar-foot",
-                   "history-toggle"):
+        for el in ("sidebar", "sidebar-toggle", "sidebar-search", "sidebar-list", "sidebar-foot"):
             self.assertIn(f'id="{el}"', self.html)
             self.assertIn(f'"{el}"', self.js)
-        self.assertIn('id="sidebar" data-open="true" aria-label="Chats" hidden', self.html)   # hidden until the switch is on
+        # the sidebar is no longer hidden until a switch is turned on (todo #drop-single-chat): the list IS the page
+        self.assertIn('id="sidebar" data-open="true" aria-label="Chats">', self.html)
         self.assertIn('[hidden] { display: none !important; }', (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
 
     def test_a_tool_call_shows_what_the_model_is_typing(self):
@@ -68,7 +68,7 @@ class ChatSidebar(unittest.TestCase):
         item = self.body("chatItem")
         self.assertIn("busy.chatId === c.id && c.id !== chatId", item)  # never on the chat you are looking at
         self.assertIn('running ? "run" : c.unread ? "new" : ""', item)   # a draft is on the name, not the gutter
-        self.assertIn("if (historyOn) renderSidebar();", self.body("setBusy"))   # the list follows turn start/end
+        self.assertIn("renderSidebar();", self.body("setBusy"))          # the list follows turn start/end
         self.assertIn("turn.chat.unread = true;", self.body("send"))
         self.assertIn("c.unread = false;", self.body("showChat"))
 
@@ -131,7 +131,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("store.set(key, \"\");", self.body("send"))      # the key is taken before the message lands
         self.assertNotIn("if (db) writeChat(chat);", self.body("openHistory"))
         self.assertIn("const blank = chats.find((c) => !c.messages.length);", self.body("startChat"))
-        self.assertIn("if (!historyOn) loadDraft();", self.js)
+        self.assertIn("loadDraft();", self.body("openHistory"))          # the list loads it once the store answers
 
     def test_the_thinking_block_follows_only_if_you_were_at_its_bottom(self):
         # the thinking body is its own scroll container (.st-collapse__body.thinking, max-height 420px in
@@ -405,10 +405,16 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("(m.rts = m.rts || [])[roundCuts(m).length] = m.text.length;", self.body("send"))
         self.assertIn("p.secs = w.secs; p.cut = w.cut;", self.js)            # the part refreshes the ones that grow
 
-    def test_it_is_opt_in_and_off_is_the_page_from_the_last_release(self):
-        self.assertIn('store.get("history", false)', self.js)             # off by default
-        self.assertIn("if (!historyOn) { store.set(\"chat\", cleanMessages(messages)); return; }", self.js)
-        self.assertIn("const backup = messages;", self.js)                # off: "New chat" clears, with an Undo
+    def test_the_single_chat_mode_is_gone_and_its_key_is_migrated(self):
+        # todo #drop-single-chat: "off" used to mean one chat in localStorage, cleared by New chat.  The switch,
+        # the flag and that whole branch are gone; what must SURVIVE is the migration, or every browser that has
+        # only "strata.chat" would open on an empty list and look like it lost the conversation.
+        self.assertNotIn("historyOn", self.js)
+        self.assertNotIn("function setHistory", self.js)
+        self.assertNotIn('store.get("history"', self.js)
+        self.assertNotIn('store.set("chat"', self.js)                     # nothing writes the single-chat key now
+        self.assertNotIn("id=\"history-toggle\"", self.html)
+        self.assertIn('dropToolOpen(store.get("chat", []))', self.body("openHistory"))   # ... and it is read once
         # the storage helper is as it was: the list did not add a method to it
         helper = re.search(r"const store = \{.*?\n\};", self.js, re.S).group(0)
         self.assertEqual(sorted(re.findall(r"^\s{2}(\w+)\(", helper, re.M)), ["get", "set"])
@@ -429,15 +435,15 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn("store.result", read)
         self.assertNotIn(".oncomplete", read)
 
-    def test_the_opened_database_is_only_used_when_the_switch_is_on(self):
+    def test_the_store_is_opened_at_start_and_memory_only_still_works(self):
         open_db = self.body("openDb")
         self.assertIn("catch (e) { resolve(null); return; }", open_db)    # private mode: memory only
         self.assertIn("r.onblocked = () => resolve(null)", open_db)       # another tab holds an older version
         # a database already at version 1 does not run onupgradeneeded, so the store may not be there
         self.assertIn('objectStoreNames.contains("chats") ? r.result : null', open_db)
-        self.assertIn("openHistory", self.body("setHistory"))
-        off_branch = self.body("setHistory").split("if (!on)")[1].split("return;")[0]
-        self.assertNotIn("openHistory", off_branch)                                   # off: the store is never opened
+        self.assertIn("openHistory(false).then(renderChat);", self.js)   # start-up, not behind a switch - and the
+                                                                        # list is drawn when the read comes back
+        self.assertIn("if (!db) warnStorage(", self.body("openHistory"))  # private mode: in memory, and it says so
 
     def test_a_write_the_browser_refuses_still_shows_the_change(self):
         for name in ("putChat", "dropChat"):
@@ -462,20 +468,22 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("chats = db ? await allChats() : []", history)
         self.assertIn("const old = fromScreen ? messages : dropToolOpen(store.get(\"chat\", []))", history)
 
-    def test_turning_the_switch_off_keeps_the_chat_on_the_screen(self):
-        # the single chat is written when the switch is flipped, otherwise a reload shows the chat from before it
-        off_branch = self.body("setHistory").split("if (!on)")[1].split("return;")[0]
-        self.assertIn('store.set("chat", cleanMessages(messages, false))', off_branch)
-        self.assertIn("renderChat()", off_branch)
+    def test_new_chat_never_clears_the_chat_you_are_in(self):
+        # the old page had a "New chat" that emptied the one chat and offered an Undo.  With the list always on,
+        # New chat starts another conversation and the one you were in stays where it is.
+        self.assertIn('$("new-btn").onclick = () => startChat();', self.js)
+        self.assertNotIn("The last one was cleared.", self.js)             # the off-mode Undo toast is gone
 
-    def test_attachment_bytes_are_kept_in_the_record_but_not_localstorage(self):
+    def test_attachment_bytes_are_kept_in_the_record(self):
         # the IndexedDB record keeps image data URLs and file text so a reloaded post can still show and open its
-        # attachments (todo #edit-posts / store-full-attachments); the localStorage single-chat path strips them,
-        # because localStorage is capped around 5 MB and a data URL there could blow it.
+        # attachments (todo #edit-posts / store-full-attachments).  There used to be a second path that stripped
+        # them for the localStorage single chat; that mode is gone (todo #drop-single-chat), so the parameter
+        # that chose between them is gone with it - a switch nothing can set is a switch that gets misread later.
         clean = re.search(r"const cleanMessages = .*?;\n", self.js, re.S).group(0)
-        self.assertIn("keepBytes ? {name: i.name, url: i.url} : {name: i.name}", clean)
-        self.assertIn("keepBytes ? {name: f.name, text: f.text} : {name: f.name}", clean)
-        self.assertIn("cleanMessages(messages, false)", self.body("setHistory"))   # the single-chat save strips
+        self.assertIn("images: (m.images || []).map((i) => ({name: i.name, url: i.url})),", clean)
+        self.assertIn("files: (m.files || []).map((f) => ({name: f.name, text: f.text})),", clean)
+        self.assertNotIn("keepBytes", self.js)
+        self.assertNotIn("cleanMessages(messages, false)", self.js)
 
     def test_the_search_and_the_day_groups(self):
         render = self.body("renderSidebar")
