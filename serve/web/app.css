@@ -262,14 +262,10 @@ main { flex: 1; min-height: 0; display: flex; }
               overflow-y: auto; }                          /* placePopover caps the height to the room there is,
                                                               so a long list scrolls in place instead of running off
                                                               the top of the window */
-.mcp-picker__server { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
-/* the server reads as a heading, not as another chip: bigger, its own line, with the count of what this chat
-   uses.  Clicking it takes the whole server out of the conversation, or puts it back. */
-.mcp-server-switch { border: 0; background: transparent; padding: 0; cursor: pointer; text-align: left;
-                     font: 700 var(--st-fs-sm) var(--st-font-mono); color: var(--st-ink); }
-.mcp-server-switch.off { color: var(--st-ink-muted); text-decoration: line-through; }
-.mcp-server-count { font-variant-numeric: tabular-nums; }
-.mcp-picker__tools { display: flex; flex-wrap: wrap; gap: 6px; }
+/* the panel is the Monitor's cards, stacked: .mcp-server / .mcp-server__head / .mcp-server__tools are the same
+   markup there, so there is one look for "which tools" and no second style to keep in step */
+.mcp-picker .mcp-server { padding-top: 8px; }
+.mcp-picker .mcp-server:first-child { padding-top: 0; border-top: 0; }
 .mcp-picker__cost { line-height: 1.4; }
 .sidebar-empty { margin: 0; padding: var(--st-s-2) 8px; }
 .sidebar-foot { margin: 0; }

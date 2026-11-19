@@ -633,22 +633,27 @@ function openMcpPicker(anchor, changed) {
   panel.setAttribute("data-changed", changed ? "1" : "");
   for (const s of mcpServers()) {
     if (s.off || !s.chips.length) continue;
-    const row = node("div", "mcp-picker__server");
+    const row = node("div", "mcp-server");
+    row.setAttribute("data-mcp-server-card", s.name);
     const names = s.chips.map((c) => c.name);
     const anyOn = names.some((n) => held.has(n));
     // the server's name is itself a switch: one click takes the whole server out of this conversation, or puts
     // it back.  It reads like the chips on the Monitor card because it is the same kind of thing.
-    const head = node("button", `mcp-server-switch${anyOn ? "" : " off"}`, s.name);
-    head.setAttribute("data-mcp-server", s.name); head.setAttribute("role", "switch");
-    head.setAttribute("aria-checked", String(anyOn));
-    head.title = anyOn ? `Take every ${s.name} tool out of this conversation` : `Use the ${s.name} tools in this conversation`;
-    const count = node("span", "mcp-server-count muted small",
-      `${s.chips.filter((c) => held.has(c.name)).length} / ${s.chips.length}`);
-    row.appendChild(head); row.appendChild(count);
+    // the same markup as the Monitor's card, so the two are the same thing to look at: a switch, the name, a
+    // count, and the tools as chips wrapped underneath.  One style, not two.
+    const head = node("div", "mcp-server__head");
+    const sw = node("button", "st-toggle");
+    sw.setAttribute("data-mcp-server", s.name); sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", String(anyOn));
+    sw.setAttribute("aria-label", `Use the ${s.name} tools in this conversation`);
+    sw.title = anyOn ? `Take every ${s.name} tool out of this conversation` : `Use the ${s.name} tools in this conversation`;
+    head.appendChild(sw);
+    head.appendChild(node("strong", "", s.name));
+    head.appendChild(node("span", "muted small",
+      `${s.chips.filter((c) => held.has(c.name)).length} of ${s.chips.length} tools`));
+    row.appendChild(head);
     panel.appendChild(row);
-    // the tools go on their own wrapped row under the server, exactly like the Monitor card: a wide panel uses
-    // the width it has instead of pushing the list off the top of the window
-    const box = node("div", "mcp-picker__tools");
+    const box = node("div", "mcp-server__tools");
     for (const c of s.chips) {
       const on = held.has(c.name);
       const b = node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool);

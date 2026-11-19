@@ -279,7 +279,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("overflow-y: auto;", picker_rule)
         self.assertIn("width: min(92vw, 640px);", picker_rule)   # wide: the tools wrap instead of stacking tall
         self.assertIn('node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool)', self.js)
-        self.assertIn('node("button", `mcp-server-switch${anyOn ? "" : " off"}`, s.name)', self.js)
+        self.assertIn('node("div", "mcp-server__head")', self.js)   # the Monitor card's markup, not a second style
         self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
         self.assertIn('Reset Tools', self.js)
         self.assertIn("if (!mcpSame([...held], now)) {", self.js)    # and only when this chat is off the current set

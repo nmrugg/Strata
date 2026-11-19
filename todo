@@ -707,6 +707,11 @@ all: fold-control replaced them, and the four overlapping switches became one co
     runconfig.set_mcp turns that into disabled_tools = (what the hub lists) - (what should be on).  The hub has to
     be asked for the names: the config never lists them, and guessing an empty list would have switched every
     tool of that server off, so an unknown server is a 400 instead.
+    ONE LOOK, NOT TWO (the human asked twice): the panel is built from the Monitor card's own markup -
+    .mcp-server / .mcp-server__head (the st-toggle switch, the name, "N of M tools") / .mcp-server__tools with the
+    chips - so there is a single style for "which tools" and no second one to keep in step.  The picker's own
+    .mcp-picker__server / .mcp-server-switch / .mcp-picker__tools rules are deleted; only two spacing overrides
+    remain inside .mcp-picker.
     A bug the tests caught here: renderMcp called chatToolsFor(), which CREATES the list - so merely drawing the
     card made a chat look like it had chosen one.  Reading must not write (heldNow reads chat.mcpTools directly).
     Tests: harness case 93 extended (the card mirrors an unticked chip, no Apply while the chat matches the

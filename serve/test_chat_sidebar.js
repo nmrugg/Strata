@@ -3192,8 +3192,10 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   panel = reopen();
   const srvChip = findIn(panel, "data-mcp-server")[0];
   assert.strictEqual(srvChip.attrs["aria-checked"], "true", "the server chip reads on while any of its tools are used");
-  assert.ok(srvChip.className.includes("mcp-server-switch"),
-            `the server reads as a heading, not as another chip: ${srvChip.className}`);
+  assert.strictEqual(srvChip.className, "st-toggle", "the server switch is the Monitor card's switch");
+  const card94 = findIn(panel, "data-mcp-server-card");
+  assert.strictEqual(card94.length, 1, "the panel is built from the Monitor's card markup");
+  assert.ok(card94[0].className === "mcp-server", card94[0].className);
   panel._l.click({target: srvChip});
   assert.deepStrictEqual(s94.s.chat.mcpTools, [], "clicking the name takes the whole server out of this chat");
   panel = reopen();
