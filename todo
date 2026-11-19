@@ -114,6 +114,9 @@ all: fold-control replaced them, and the four overlapping switches became one co
     passed even when the tool errored.
     NOT verified in a browser: the re-read arithmetic (it is the engine's, and the numbers are the measured ones
     above), and what a chat does when a server it used is turned off mid-conversation.
+    SUPERSEDED in part by item mcp-chat-tools (same day): the page-session shield (mcpFrozen), the load-time
+    baseline (mcpAtLoad) and the status prose are deleted, and the list is on the chat record instead.  The server
+    half - strata_mcp_tools, include_disabled, the live hub switches - is what that item builds on.
     POLISH from the human's read of the card (2026-11-19): the chip now shows only the tool's own name - the
     server's name is already the card it sits under, and `easyCMP__` on every chip was noise - with the full
     model-facing name in the tooltip beside the description.  The "use the current tools" button names the chat
@@ -622,16 +625,30 @@ all: fold-control replaced them, and the four overlapping switches became one co
     stub registers a root element's data-* into dataset, and case 90 reads the names out of the HTML the page
     wrote (el._html) so dropping either attribute fails it.  LESSONS.md carries the entry.
 
-`mcp-chat-tools`  Make the MCP tool list a property of the conversation, and keep it. [ui] [py] MEDIUM
-    DECIDED with the human 2026-11-19, replacing the page-session shield in item mcp-live-toggles: a chat REMEMBERS
-    the tools it last used, and reloading the page does not change that (the old "a reload re-reads" behaviour is
-    withdrawn).  Store the list on the chat record (c.mcpTools - a chat-level field, not a message field), send it
-    as strata_mcp_tools (the server half already exists), and delete mcpFrozen / mcpAtLoad / the status-line prose.
-    A chat with no stored list just takes the current list - its first send stores it, and if that differs from the
-    list its cached prompt was built with, its next message reads its history once.  That is the whole migration.
-    Also: carry it through export/import (the `strata` block) or a re-imported chat silently re-reads; and a stored
-    name that no longer exists (server gone, tool renamed) is shown as unavailable in the picker and dropped when
-    sending, which re-reads.  With single-chat mode gone (item drop-single-chat) there is exactly one place to keep it.
+`mcp-chat-tools`  Make the MCP tool list a property of the conversation, and keep it. [ui] [py] MEDIUM DONE 2026-11-19
+    DONE: the list now lives on the chat record as `c.mcpTools` and is sent as strata_mcp_tools, so it survives a
+    reload - the "a reload drops the shield and the chat re-reads" behaviour from item mcp-live-toggles is
+    WITHDRAWN (the human changed their mind: "I'm changing the old behavior").  A chat with no stored list takes the
+    current one (chatToolsFor), which is the whole migration; if that differs from the list its cached prompt was
+    built with, its next message reads its history once, at most once per chat.
+    Deleted with it: the page-session map (mcpFrozen), the load-time baseline (mcpAtLoad) and the paragraph of
+    status prose that inferred "you changed the set since this page loaded" - with the list on the record the state
+    is exact, so the inference and its text both go.  Export/import round-trips it in the `strata` block, or a
+    re-imported chat would silently re-read.
+    The Monitor card keeps three states: no list yet ("will use the current tools (N) on its next message", no
+    button), list matches ("already uses the current tools (N)", no button), list differs ("is holding the N tools
+    it started with; the server now offers M") + the button, which now sets the chat's list to the current one and
+    saves it, instead of deleting a page-session entry.
+    Tests: serve/test_chat_sidebar.js case 91 rewritten - the reload re-seeds the SAME records and asserts the
+    record still carries ["a__one","a__two"] and sends it although the current list is one tool; plus the export ->
+    parseChatsJsonl round-trip.  Case 92's "changed since this page loaded" block replaced with the exact
+    no-list-yet state.  serve/test_runconfig.py pins chatToolsFor, the migration line, the export field, and that
+    mcpFrozen is gone.  84 ok lines; fast suite 219, serve.test_server 317, both OK.
+    Controls: not storing the list fails the reload check; dropping mcpTools from the export block fails the
+    round-trip; removing the migration fails the first-send check.
+    Still open: a stored name that no longer exists (server removed, tool renamed) is currently sent as-is and the
+    server drops it from the rendered list - the picker in item mcp-chat-picker is where it should be shown as
+    unavailable.
 
 `mcp-chat-picker`  An MCP button in the composer and the edit box that sets the tools for THAT chat. [ui] MEDIUM
     DECIDED with the human: a button in the composer's button row (next to attach) and in the edit box, opening a

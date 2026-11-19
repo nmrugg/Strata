@@ -2993,12 +2993,13 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const MCP_ON = toolsWith(true), MCP_OFF = toolsWith(false);
   let mcpNow = MCP_ON;
   const sent = [];
-  const mk91 = () => run({fetch: async (url, opts) => {
-    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => mcpNow};
+  const fetchFor = (get) => ({fetch: async (url, opts) => {
+    if (String(url).split("?")[0] === "mcp") return {ok: true, json: async () => get()};
     if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
     sent.push(JSON.parse(opts.body));                       // the chat request: this is what the server would read
     return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
-  }}, {});
+  }});
+  const mk91 = () => run(fetchFor(() => mcpNow), {});
   const s91 = mk91();
   await wait();
   await s91.s.loadMcp();
@@ -3006,6 +3007,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await s91.s.send();
   assert.strictEqual(sent[0].strata_mcp, true, "the chat asks for MCP tools");
   assert.deepStrictEqual(sent[0].strata_mcp_tools, ["a__one", "a__two"], "and names the list this chat started with");
+  const chatA91 = s91.s.chat.id;                               // the chat that started with both tools
   mcpNow = MCP_OFF;                                           // the chip was clicked: "two" is off now
   await s91.s.loadMcp();                                      // the page re-reads the card
   s91.s.el("input").value = "again";
@@ -3017,12 +3019,21 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   s91.s.el("input").value = "fresh";
   await s91.s.send();
   assert.deepStrictEqual(sent[2].strata_mcp_tools, ["a__one"], "a chat started after the switch sees the switch");
-  const s92 = mk91();                                          // a reload: the map is gone, by design
+  // the headline of todo #mcp-chat-tools: the list is ON THE RECORD, so a reload does not change what the chat
+  // sends.  The old behaviour (a reload drops the shield and the chat re-reads) is withdrawn.
+  const seed91 = {}; Object.values(s91.records).forEach((c) => { seed91[c.id] = JSON.parse(JSON.stringify(c)); });
+  const s92 = run(fetchFor(() => mcpNow), {"strata.chatId": JSON.stringify(chatA91)}, seed91);
   await wait();
   await s92.s.loadMcp();
+  assert.deepStrictEqual(s92.s.chat.mcpTools, ["a__one", "a__two"], "the record kept the list this chat uses");
   s92.s.el("input").value = "after reload";
   await s92.s.send();
-  assert.deepStrictEqual(sent[3].strata_mcp_tools, ["a__one"], "after a reload the chat moves onto the current list");
+  assert.deepStrictEqual(sent[sent.length - 1].strata_mcp_tools, ["a__one", "a__two"],
+                         "and after a reload it still sends it, though the current list is only a__one");
+  // export and import carry it, or a re-imported chat silently re-reads
+  const line = s92.s.chatToJsonl(s92.s.chat);
+  const back91 = s92.s.parseChatsJsonl(line)[0];
+  assert.deepStrictEqual(back91.mcpTools, ["a__one", "a__two"], "the strata block round-trips the chat's tool list");
   // and the button does the same without a reload: it drops this chat's snapshot
   mcpNow = MCP_ON;
   const s93 = mk91();
@@ -3066,18 +3077,14 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(!wrote92().includes("data-mcp-unfreeze"),
             "a chat that has not sent in this page load is not shielded, so no button at all");
   assert.ok(wrote92().includes('will use the current tools (2) on its next message'), wrote92().slice(-260));
-  // the state the human actually hit: reload, then change a switch before sending in this chat.  There is no
-  // shield to drop, so no button - but the card must say what that costs, because this chat's history was built
-  // with the other list and its next message will read it again.
+  // a chat that has never sent has no list on its record, so there is nothing to switch and the card says what
+  // it will do instead.  No inference about "changed since this page loaded": the list is on the record now, so
+  // the state is exact.
   mcp92 = MCP_OFF;
   await sc92.s.loadMcp();
-  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "still nothing to switch away from, so still no button");
-  assert.ok(wrote92().includes("you changed the set since this page loaded, and this chat was built with the old one"),
-            wrote92().slice(-320));
-  mcp92 = MCP_ON; await sc92.s.loadMcp();                    // back to the load-time set: the warning goes
-  assert.ok(!wrote92().includes("reads its history once</p>") && !wrote92().includes("you changed the set since"),
-            wrote92().slice(-320));
-  assert.ok(wrote92().includes("will use the current tools (2) on its next message"), wrote92().slice(-320));
+  assert.ok(!wrote92().includes("data-mcp-unfreeze"), "no list on the record yet, so no button");
+  assert.ok(wrote92().includes("will use the current tools (1) on its next message"), wrote92().slice(-320));
+  mcp92 = MCP_ON; await sc92.s.loadMcp();
 
   sc92.s.el("input").value = "go";
   await sc92.s.send();                                       // the chat snapshots the current list

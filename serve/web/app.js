@@ -503,8 +503,6 @@ async function loadMcp() {
     const r = await fetch("mcp", {headers: headers()});
     if (!r.ok) return;
     mcpInfo = await r.json();
-    // the first answer of this page load is the baseline: anything different later was changed during this visit
-    if (mcpAtLoad === null) mcpAtLoad = mcpCurrentTools();
   } catch (e) { return; /* an older server: no MCP */ }
   renderMcp();
   clearTimeout(mcpRetry);                          // right after the start, servers may still be starting (npx downloads)
@@ -512,22 +510,21 @@ async function loadMcp() {
 }
 const MCP_STATE = {ready: ["st-badge--generating", "Connected"], starting: ["st-badge--reading", "Starting"],
                    failed: ["st-badge--error", "Failed"], stopped: ["st-badge--queued", "Stopped"], idle: ["", "Waiting"]};
-// Which tools a conversation was built with are part of its prompt (the tools block is the first system turn), so
-// the page remembers the list each chat started with and sends it on every request for that chat.  The map lives
-// in memory only, for this page load: a reload forgets it, and that chat then uses the current list and reads its
-// history once - the human asked for exactly that, because reloading is rare here and a re-read is not (todo
-// #mcp-live-toggles).  Nothing about it is written into the chat record.
-const mcpFrozen = new Map();
+// The tools a conversation was built with are part of its prompt (the tools block is the first system turn), so
+// every chat carries its own list - on the record, so it survives a reload (todo #mcp-chat-tools).  A chat with no
+// stored list takes the current one, which is the whole migration; if that differs from the list its cached prompt
+// was built with, its next message reads its history once.
 const mcpCurrentTools = () => (mcpInfo.servers || []).flatMap((s) => (s.tools || [])
   .filter((t) => t.enabled !== false).map((t) => t.name));
-function mcpChatTools(id) {
-  if (!mcpFrozen.has(id)) mcpFrozen.set(id, mcpCurrentTools());   // snapshotted the first time this chat sends
-  return mcpFrozen.get(id);
+const mcpSame = (a, b) => !!a && !!b && a.length === b.length && a.every((n, i) => n === b[i]);
+function chatToolsFor(c) {
+  if (!Array.isArray(c.mcpTools)) c.mcpTools = mcpCurrentTools();   // sendChat/saveChat persists it with the chat
+  return c.mcpTools;
 }
 // The card is also the control (todo #mcp-server-toggle, #tool-exclude): the switch on a server card turns that
 // server off/on, and a chip turns one tool of it off/on.  Both write the run config AND update the running hub,
 // so they take effect without a restart - for new conversations.  A chat that is already open keeps the tools it
-// started with (mcpChatTools above), because the tools block is the first system turn and a different one there
+// started with (chatToolsFor above), because the tools block is the first system turn and a different one there
 // costs that chat a full re-read.  A server the config has off is not in the hub at all, so its card comes from
 // "configured", not from the live list.
 function mcpServers() {
@@ -581,23 +578,12 @@ function renderMcp() {
 // nothing, so it is not shown at all: a greyed-out control that can never be used reads as a broken one.  The
 // status line says which of the three states the chat is in instead, and it is re-evaluated whenever a different
 // chat comes on screen (showChat calls renderMcp), which is what makes it right for several chats, not one.
-// What the tools were when this page loaded.  It is the only way the page can tell that you have changed the
-// set during this visit - and therefore that a chat it has never sent to (so it holds no saved list) may have to
-// read its history once, because the list that chat was built with is not this one any more.
-let mcpAtLoad = null;
-const mcpSame = (a, b) => !!a && !!b && a.length === b.length && a.every((n, i) => n === b[i]);
+// Which of the three states the chat on screen is in.  Its list is on the record now, so this is exact rather
+// than inferred: a chat that has never sent has no list yet, a chat whose list matches the current one has
+// nothing to switch, and a chat holding a different list is the one the button is for.
 function mcpSwitchState() {
-  const held = mcpFrozen.get(chatId), now = mcpCurrentTools();
-  if (!held) {
-    // A chat this page has never sent to is not holding anything: its next message uses the current list, and
-    // there is no switch to offer.  What it SHOULD say is whether that costs a re-read, and the only evidence
-    // available is that you changed the set during this visit and the chat already has a history.
-    if (mcpAtLoad && !mcpSame(mcpAtLoad, now) && messages.length)
-      return {need: false, why: `will use the current tools (${now.length}) on its next message - you changed the `
-                              + `set since this page loaded, and this chat was built with the old one, so that `
-                              + `message reads its history once`};
-    return {need: false, why: `will use the current tools (${now.length}) on its next message`};
-  }
+  const held = chat && Array.isArray(chat.mcpTools) ? chat.mcpTools : null, now = mcpCurrentTools();
+  if (!held) return {need: false, why: `will use the current tools (${now.length}) on its next message`};
   if (mcpSame(held, now)) return {need: false, why: `already uses the current tools (${now.length})`};
   return {need: true, why: `is holding the ${held.length} tools it started with; the server now offers ${now.length}`};
 }
@@ -616,8 +602,8 @@ function mcpSwitchNote() {
 $("mcp-list").addEventListener("click", async (e) => {
   const unfreeze = e.target.closest("[data-mcp-unfreeze]");
   if (unfreeze) {                                 // the open chat moves onto the current list: one re-read
-    if (unfreeze.disabled) return;                // greyed means "this chat has nothing to switch to"
-    mcpFrozen.delete(chatId);
+    if (unfreeze.disabled) return;                // absent/greyed means "this chat has nothing to switch to"
+    if (chat) { chat.mcpTools = mcpCurrentTools(); saveChat(chat); }
     toast("info", "This chat will use the current tools", "Its next message reads the history again.");
     renderMcp();                                  // and the button greys itself out again at once
     return;
@@ -961,7 +947,7 @@ function chatToJsonl(c) {
     return {role: "assistant", content: m.text || ""};
   });
   return JSON.stringify({title: chatTitle(c), time: c.time, messages,
-    strata: {id: c.id, messages: c.messages.map((m) => ({id: m.id, role: m.role, time: m.time,
+    strata: {id: c.id, mcpTools: c.mcpTools, messages: c.messages.map((m) => ({id: m.id, role: m.role, time: m.time,
       reasoning: m.reasoning, tools: m.tools, images: m.images, files: m.files, usage: m.usage}))}});
 }
 const stripAtt = (c) => ({...c, messages: (c.messages || []).map((m) => ({...m, images: [], files: []}))});
@@ -998,7 +984,10 @@ function parseChatsJsonl(text) {
       } else base.text = typeof m.content === "string" ? m.content : "";
       return base;
     });
-    out.push({id: (obj.strata && obj.strata.id) || newChat().id, title: obj.title || "", time: obj.time || Date.now(), messages});
+    const chat2 = {id: (obj.strata && obj.strata.id) || newChat().id, title: obj.title || "",
+                   time: obj.time || Date.now(), messages};
+    if (obj.strata && Array.isArray(obj.strata.mcpTools)) chat2.mcpTools = obj.strata.mcpTools.map(String);
+    out.push(chat2);
   }
   return out;
 }
@@ -2586,13 +2575,12 @@ async function send(editOf) {
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
-  if (settings.mcp !== false && (mcpInfo.tools > 0 || mcpChatTools(chatId).length)) {   // this server may run MCP tools
+  if (settings.mcp !== false && (mcpInfo.tools > 0 || (chat.mcpTools || []).length)) {   // this server may run MCP tools
     body.strata_mcp = true;
-    // The tools a conversation was built with are part of its prompt (the tools block is the first system turn),
-    // so a toggle made afterwards must not quietly change it: the page sends the list THIS chat started with, and
-    // the server renders exactly that.  Kept for this page load only - a reload adopts the current list, and that
-    // chat reads its history once (todo #mcp-live-toggles, as the human asked).
-    body.strata_mcp_tools = mcpChatTools(chatId);
+    // The list THIS chat carries, not the current default: the tools block is the first system turn, so sending
+    // whatever happens to be enabled now would change the start of its prompt and make it read its history again.
+    // It rides on the chat record, so a reload does not lose it (todo #mcp-chat-tools).
+    body.strata_mcp_tools = chatToolsFor(chat);
     renderMcp();                                   // the Monitor's status line is about THIS chat, and it just
                                                    // changed from "will use the current tools" to "is holding the
                                                    // list it started with" - say so now, not at the next poll
