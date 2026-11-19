@@ -1779,16 +1779,27 @@ function msgEl(m, i) {
 const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
                     error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
 // A tool block's open state lives on the tool while the turn runs (the answer is rebuilt every frame, so it
-// has to survive a repaint).  One control, "Show thinking", decides what happens when nobody has clicked one:
-// "folded" never opens it, "live" opens only a call that is still happening - being written, or running - so it
-// collapses on its own once it settles, "always" opens it and leaves it.  A click wins over the control for the
-// rest of the turn, and no further: the click is dropped when the turn ends (send) and is never written to the
-// chat record (cleanMessages), because it is how the page is showing the work, not part of the conversation.
-// It used to be written, and that is why one tap pinned a call open through every reload after it.
+// has to survive a repaint).  One control, "Show thinking", decides what happens when nobody has touched one:
+// "folded" never opens it, "live" opens a call that is happening and folds it once the model has moved on to
+// the next piece of output - not the instant the result lands - "always" opens it and leaves it.  A click, or a
+// scroll into the block, wins over the control for the rest of the turn, and no further: it is dropped when the
+// turn ends (send) and is never written to the chat record (cleanMessages), because it is how the page is
+// showing the work, not part of the conversation.  It used to be written, and that is why one tap pinned a call
+// open through every reload after it.
 const toolLive = (t) => t.state === "writing" || t.state === "running";
-const toolOpen = (t) => t.open !== undefined ? !!t.open
+// Has the model moved on from this call yet?  The same two offsets the replay depends on - at = how much
+// answer text existed when the call began, rat = the same for the reasoning - are READ here, never written.
+// A new thinking round or new answer text grows past them, and a call after this one means the model has
+// moved on (todo #tool-fold-on-next-output).
+const toolFollowed = (m, t, k) => !!m && ((m.text || "").length > (t.at || 0) ||
+  (m.reasoning || "").length > (t.rat || 0) ||
+  (k == null ? (m.tools || []).indexOf(t) : k) + 1 < (m.tools || []).length);
+// "live" opens a call while it is happening and folds it once the model moves on - not the instant the result
+// lands, which took the answer away before the reader had seen it.  When the turn is over nothing more can
+// follow, so a finished chat renders exactly as it did before this change.
+const toolOpen = (t, m, k, streaming) => t.open !== undefined ? !!t.open
   : settings.show === "always" ? true
-  : settings.show === "live" ? toolLive(t)
+  : settings.show === "live" ? (toolLive(t) || (!!streaming && !toolFollowed(m, t, k)))
   : false;
 // what an open tool block holds: the arguments, and the result as the model read it.  Built only while the block
 // is open - a result can be 20,000 characters - so opening one with a click fills it in here (see the toggle
@@ -1813,9 +1824,9 @@ function toolBodyHtml(t) {
   }
   return body;
 }
-function toolHtml(t, k) {
+function toolHtml(t, k, m, streaming) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
-  const open = toolOpen(t);
+  const open = toolOpen(t, m, k, streaming);
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
     `<span class="muted small tool-call__server">${esc(t.server || "")}</span>` +
@@ -1849,10 +1860,10 @@ function syncToolBody(box, t) {
 }
 // a tool block already in the page: update only the text that changed.  Its two sprite icons, its summary and
 // its pre elements stay the same elements, which is the whole point - they were being remade 60 times a second.
-function toolSync(d, t) {
+function toolSync(d, t, m, k, streaming) {
   const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
   if (d.dataset.state !== t.state) d.dataset.state = t.state;
-  const open = toolOpen(t);
+  const open = toolOpen(t, m, k, streaming);
   if (d.open !== open) d.open = open;      // fires a toggle event; the listener tells ours from a click by
                                            // comparing the element against toolOpen(), not by consuming a flag
   const name = d.querySelector(".tool-call__name");
@@ -1965,8 +1976,8 @@ const THINK_SHELL = `<details class="st-collapse think" data-think hidden><summa
 const thinkPreview = (t) => t.replace(/\s+/g, " ").trim().slice(0, 200);
 // One control, "Show thinking", decides how a thinking block is shown, and the same three answers cover the
 // tool calls beside it: "folded" never opens one, "live" opens the work while it is happening and closes it
-// when it is done, "always" opens it and leaves it.  A block the reader opened or closed by hand wins over the
-// control for the rest of the turn (det.dataset.touched), and that choice lives on the element only -
+// when it is done, "always" opens it and leaves it.  A block the reader opened, closed, or scrolled into by hand
+// wins over the control for the rest of the turn (det.dataset.touched), and that choice lives on the element only -
 // renderChat rebuilds the elements, so after a reload the control decides again.  The open state is worked out
 // before the body is filled: filling first leaves an auto-opened block open and blank, because the toggle
 // listener skips the fill for an open we asked for ourselves (it sees det._auto).
@@ -2015,7 +2026,7 @@ function renderBubble(el, m, streaming) {
   }
   bubble._plain = plain;
   const want = bubbleParts(m), have = bubble._parts || [];
-  syncLevel(bubble, m, want, have);
+  syncLevel(bubble, m, want, have, streaming);
   bubble._parts = have;
   bubble._blocks = have.filter((p) => p.kind === "think");        // the toggle listener fills a block from here
   for (let i = 0; i < have.length; i++) updatePart(bubble, m, have[i], want[i], streaming);
@@ -2030,13 +2041,13 @@ function syncLevel(host, m, want, have, streaming) {
   while (i < want.length && i < have.length && samePart(want[i], have[i])) i++;
   for (let j = have.length - 1; j >= i; j--) dropPart(have[j]);
   have.length = i;
-  for (; i < want.length; i++) have.push(makePart(host, want[i], m));
+  for (; i < want.length; i++) have.push(makePart(host, want[i], m, streaming));
 }
 const samePart = (w, h) => w.kind === h.kind &&
   (w.kind === "tool" ? w.k === h.k : w.kind === "text" ? w.from === h.from : w.i === h.i);
-function makePart(host, w, m) {
+function makePart(host, w, m, streaming) {
   const p = {...w, els: [], _to: w.to};
-  if (w.kind === "tool") { host.insertAdjacentHTML("beforeend", toolHtml(m.tools[w.k], w.k)); p.el = host.lastElementChild; }
+  if (w.kind === "tool") { host.insertAdjacentHTML("beforeend", toolHtml(m.tools[w.k], w.k, m, streaming)); p.el = host.lastElementChild; }
   else if (w.kind === "think") {
     host.insertAdjacentHTML("beforeend", THINK_SHELL); p.el = host.lastElementChild;
     p.el.dataset.think = w.i;                          // which run this block is: the toggle listener needs it
@@ -2048,7 +2059,7 @@ function makePart(host, w, m) {
   return p;
 }
 function updatePart(host, m, p, w, streaming) {
-  if (p.kind === "tool") { toolSync(p.el, m.tools[p.k]); return; }
+  if (p.kind === "tool") { toolSync(p.el, m.tools[p.k], m, p.k, streaming); return; }
   if (p.kind === "think") {
     // the live run's slice grows: from/to/runs must come from this paint, not from when the part was made, or
     // the block keeps showing only what it held at creation (the "first word only" bug)
@@ -2277,7 +2288,7 @@ $("chat").addEventListener("toggle", (e) => {
     // change - is read as a click.  That sets t.open, toolOpen short-circuits on it, and the block never folds
     // again until send() clears it at the end of the turn.  Compare instead: if the element now holds what the
     // rule already wants, nobody clicked.
-    if (d.open === toolOpen(t)) return;
+    if (d.open === toolOpen(t, m, +d.dataset.tool, !!(busy && busy.msg === m))) return;
     t.open = d.open;                                  // no longer undefined: this block's own choice decides now
     if (d.open) syncToolBody(d.querySelector(".st-collapse__body"), t);   // built only while open: a result can be 20,000 characters
     return;
@@ -2291,6 +2302,27 @@ $("chat").addEventListener("toggle", (e) => {
     const p = (el.querySelector(".st-bubble")._blocks || []).find((x) => x.i === +d.dataset.think);
     if (p && m) renderThinkBody(body, (m.reasoning || "").slice(p.from, p.to), msgMd(m) && !(busy && busy.msg === m));
     delete body.dataset.pending;
+  }
+}, true);
+// A block the reader has scrolled into is a block they are reading, and the fold control must not take it away
+// under them (todo #keep-boxes-open-on-interact).  A click already said so - dataset.touched for a thought,
+// t.open for a call - but a scroll did not, so scrolling into a long thought and then having it collapse at the
+// end of the run was the reported bug.  scroll does not bubble, so this is on #chat in the capture phase, like
+// the toggle listener above.  Whose scroll is it?  The page follows its own output by moving a body to its end
+// (syncThink, syncToolBody), and that leaves the body near its end - which is where the reader already was when
+// the follow began - so a body that ends up near its end is not read as the reader moving it.  A comparison
+// against intent, not a consumed flag: a browser queues scroll events the way it queues toggle events.
+$("chat").addEventListener("scroll", (e) => {
+  const box = e.target;
+  if (!box || !box.classList || !box.closest) return;
+  const det = box.closest(".st-collapse");
+  if (!det || det === box || nearEnd(box, 48)) return;      // 48px: the same slack the follow rule uses
+  if (det.classList.contains("think")) {
+    det.dataset.touched = "1";                              // syncThink leaves this block alone for the turn
+  } else if (det.classList.contains("tool-call")) {
+    const el = det.closest(".st-msg"), m = messages[+el.dataset.i];
+    const t = m && m.tools && m.tools[+det.dataset.tool];
+    if (t) t.open = true;                                   // the reader's choice: held for the turn, never saved
   }
 }, true);
 

@@ -287,11 +287,31 @@ all: fold-control replaced them, and the four overlapping switches became one co
     grouping; this is the "update on send, not on reply" half.)
 
 
-`keep-boxes-open-on-interact`  If I have interacted with a thinking/tool box (scrolled or clicked it), keep it open. [ui]
-    Today the "Show thinking" control (fold-control, settings.show) auto-collapses a block when it settles, even if
-    the reader had scrolled into or opened it.  Once a block has been touched (dataset.touched, or a scroll inside
-    its body), stop auto-collapsing it for the turn - remember the reader wants it open.  Extend the existing
-    touched guard (thinking uses dataset.touched; tool blocks compare open state) to also cover scroll interaction.
+`keep-boxes-open-on-interact`  If I have interacted with a thinking/tool box (scrolled or clicked it), keep it open. [ui] DONE 2026-11-19
+    DONE: a scroll inside a block now counts the way a click did.  A capture-phase scroll listener on #chat (scroll
+    does not bubble) marks a thinking block dataset.touched and a tool block t.open = true, so the fold control
+    leaves it alone for the rest of the turn - same lifetime as a click: dropped by send() at the turn's end, never
+    written to the chat record.  Whose scroll is it?  The page follows its own output by moving a body to its end,
+    which leaves the body near its end, so a body that ends up near its end (nearEnd(box, 48) - the same slack the
+    follow rule uses) is NOT read as the reader's.  A comparison against intent, not a consumed flag (LESSONS.md:
+    a browser queues scroll events the way it queues toggle events).
+    Tests: serve/test_chat_sidebar.js case 87 runs one stream three ways - no scroll, the page's own follow, and
+    the reader scrolling away from the end - and asserts the fold happens in the first two and not the third.
+    Controls: marking nothing fails the reader run; dropping the near-end guard fails the follow run.
+    Unverified in a browser: nothing marks a block from a real wheel/touch scroll yet, since the stub fires no
+    scroll event when script sets scrollTop - the near-end comparison is reasoned, not measured.
+
+`tool-fold-on-next-output`  A finished tool call should stay open until the next output starts, not fold the instant its result lands. [ui] DONE 2026-11-19
+    DONE: with "Show thinking" on live, a settled call keeps its block open until the model moves on - a later call,
+    a new thinking round growing past the call's rat, or answer text growing past its at (the same two offsets the
+    replay depends on, READ here and never written).  When the turn is over nothing more can follow, so a finished
+    chat renders exactly as it always did - every call folded.
+    app.js: toolFollowed(m, t, k) and the live branch of toolOpen(t, m, k, streaming).  That needed streaming to
+    reach the tool parts: syncLevel declared the parameter and was never passed it, and toolHtml/toolSync took only
+    the tool - both now thread it (makePart/updatePart/renderBubble).
+    Tests: serve/test_chat_sidebar.js case 86 drives one stream with three calls and asserts each fold lands on the
+    right signal and that m.reasoning/m.text (separator and all) are byte-identical; the replay tripwire (case 33)
+    still passes.  Control: folding on toolLive(t) alone fails the first assertion.
 
 
 `ai-image-visible`  When the AI loads an image (e.g. an image/get-image tool), show it to the user and keep it in history. [ui] [py]

@@ -226,6 +226,27 @@ class ChatSidebar(unittest.TestCase):
         sane = self.body("storedSidebarW")
         self.assertIn("typeof v !== \"number\" || !Number.isFinite(v) || v < SIDEBAR_MIN || v > SIDEBAR_MAX", sane)
 
+    def test_a_block_the_reader_touched_is_not_folded_and_a_call_folds_on_the_next_output(self):
+        # todo #keep-boxes-open-on-interact and #tool-fold-on-next-output.  The behaviour is driven through
+        # send() in test_chat_sidebar.js (cases 86-88); this pins the wiring those cases depend on, including
+        # that streaming reaches the tool parts at all - syncLevel declared the parameter and was never given
+        # it, so a call's fold could not know whether its turn was still running.
+        self.assertIn('$("chat").addEventListener("scroll", (e) => {', self.js)
+        self.assertIn("}, true);", self.js)                          # capture: scroll does not bubble
+        self.assertIn("if (!det || det === box || nearEnd(box, 48)) return;", self.js)   # the follow's own scroll
+        self.assertIn('det.dataset.touched = "1";', self.js)         # syncThink leaves this block alone
+        self.assertIn("if (t) t.open = true;", self.js)
+        self.assertIn('const toolFollowed = (m, t, k) => !!m && ((m.text || "").length > (t.at || 0) ||', self.js)
+        self.assertIn('(m.reasoning || "").length > (t.rat || 0) ||', self.js)
+        self.assertIn('(k == null ? (m.tools || []).indexOf(t) : k) + 1 < (m.tools || []).length);', self.js)
+        self.assertIn('settings.show === "live" ? (toolLive(t) || (!!streaming && !toolFollowed(m, t, k)))', self.js)
+        for wired in ("syncLevel(bubble, m, want, have, streaming);",
+                      "have.push(makePart(host, want[i], m, streaming));",
+                      "toolHtml(m.tools[w.k], w.k, m, streaming)",
+                      "toolSync(p.el, m.tools[p.k], m, p.k, streaming)",
+                      "toolOpen(t, m, +d.dataset.tool, !!(busy && busy.msg === m))"):
+            self.assertIn(wired, self.js)
+
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence
         self.assertIn("function closeDrawer()", self.js)
@@ -278,7 +299,7 @@ class ChatSidebar(unittest.TestCase):
         # the flicker the human reported).  A part whose text did not grow must not be touched at all.
         self.assertNotIn("answerHtml", self.js)                      # the whole-answer string builder is gone
         self.assertIn("function renderBubble(el, m, streaming)", self.js)
-        self.assertIn("function toolSync(d, t)", self.js)            # a tool block's text, not its elements
+        self.assertIn("function toolSync(d, t, m, k, streaming)", self.js)   # a tool block's text, not its elements
         self.assertIn("function markdownBlocks(text)", self.js)      # blocks, so only the last one can change
         self.assertIn("if (w.to === p._to) return;", self.js)        # unchanged text: no work, no DOM
         self.assertIn("old.insertAdjacentHTML(\"afterend\", last);", self.js)   # one element replaced, not the subtree
@@ -309,7 +330,8 @@ class ChatSidebar(unittest.TestCase):
             self.assertNotIn(f'"{gone}"', self.js)
         # the one decision, read once by both kinds of block
         self.assertIn("settings.show === \"always\" ? true", self.js)
-        self.assertIn("settings.show === \"live\" ? toolLive(t)", self.js)
+        self.assertIn('settings.show === "live" ? (toolLive(t) ||', self.js)   # live: while it happens, and until
+                                                                       # the model moves on (see toolFollowed)
         self.assertIn('const toolLive = (t) => t.state === "writing" || t.state === "running";', self.js)
         think = self.body("syncThink")
         self.assertIn('settings.show === "always" ? true', think)            # the thinking half
@@ -352,7 +374,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("if (d.open !== open) d.open = open;", self.body("toolSync"))
         toggle = re.search(r'\$\("chat"\)\.addEventListener\("toggle", \(e\) => \{(.*?)\n\}, true\);', self.js, re.S).group(1)
         tool_branch = toggle.split('if (!d.classList.contains("think"))')[0]
-        self.assertIn("if (d.open === toolOpen(t)) return;", tool_branch)
+        self.assertIn("if (d.open === toolOpen(t, m, +d.dataset.tool, !!(busy && busy.msg === m))) return;", tool_branch)
         self.assertNotIn("_auto", tool_branch)         # the thinking branch keeps its flag; this one must not
         # m.md is still kept: the human chose that per message and asked for it to survive a reload
         self.assertIn("m.md = !msgMd(m);", self.js)

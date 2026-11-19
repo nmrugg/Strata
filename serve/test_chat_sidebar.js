@@ -2752,5 +2752,127 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   done.push("sidebar-resize: a stored width that does not look real is rejected (40, 99999, text, null, NaN, " +
             "an object), and a collapsed rail ignores the grip");
 
+  // 86. a settled tool call keeps its block open until the model moves on (todo #tool-fold-on-next-output).
+  //     It used to fold the instant its result landed - the answer to the call was taken away before the reader
+  //     had seen it.  Driven through send() with a fake stream, so what is tested is the wiring: the fold comes
+  //     when a later call starts, when a new thinking round grows past the call's rat, or when answer text grows
+  //     past its at - and at the end of the turn, when nothing more can follow, exactly as the finished chats
+  //     have always rendered.
+  const q86 = [];
+  const ctl86 = {step: null};
+  const read86 = () => new Promise((res) => { ctl86.step = () => {
+    if (ctl86.flush) ctl86.flush();
+    res(q86.length ? {done: false, value: new TextEncoder().encode(q86.shift())} : {done: true});
+  }; });
+  const s86 = run({fetch: async () => ({ok: true, body: {getReader: () => ({read: read86})}})}, {});
+  await wait();
+  ctl86.flush = s86.flush;
+  s86.s.setSettings({show: "live"});
+  const bub86 = () => s86.s.el("chat").children.find((c) => c.className.includes("st-msg--assistant"))
+                                        .querySelector(".st-bubble");
+  const toolPart = (b, k) => (b._parts || []).filter((p) => p.kind === "tool")[k].el;
+  q86.push(frame({choices: [{delta: {reasoning_content: "a thought"}}]}),
+         frame({strata_mcp: {event: "start", id: "c1", name: "x"}}),
+         frame({strata_mcp: {event: "call", id: "c1", name: "x", server: "s", tool: "x", arguments: {}, round: 0}}),
+         frame({strata_mcp: {event: "result", id: "c1", text: "the file", ok: true, ms: 5}}));
+  s86.s.el("input").value = "go";
+  const settled86 = s86.s.send();
+  await wait();
+  for (let i = 0; i < 4; i++) { ctl86.step(); await wait(); s86.flush(); }      // through the first result
+  const m86 = s86.s.messages[1];
+  assert.strictEqual(m86.tools[0].state, "done", "the call has settled");
+  assert.strictEqual(toolPart(bub86(), 0).open, true, "and its block is still open: nothing has come after it");
+  q86.push(frame({strata_mcp: {event: "start", id: "c2", name: "y"}}));
+  ctl86.step(); await wait(); s86.flush();
+  assert.strictEqual(toolPart(bub86(), 0).open, false, "a later call folds the one before it");
+  q86.push(frame({strata_mcp: {event: "call", id: "c2", name: "y", server: "s", tool: "y", arguments: {}, round: 1}}),
+         frame({strata_mcp: {event: "result", id: "c2", text: "r2", ok: true, ms: 5}}));
+  for (let i = 0; i < 2; i++) { ctl86.step(); await wait(); s86.flush(); }
+  assert.strictEqual(toolPart(bub86(), 1).open, true, "the second call stays open once it settles");
+  q86.push(frame({choices: [{delta: {reasoning_content: "second thought"}}]}));
+  ctl86.step(); await wait(); s86.flush();
+  assert.strictEqual(toolPart(bub86(), 1).open, false, "a new thinking round folds it (reasoning past its rat)");
+  q86.push(frame({choices: [{delta: {content: "the answer"}}]}),
+         frame({strata_mcp: {event: "start", id: "c3", name: "z"}}),
+         frame({strata_mcp: {event: "call", id: "c3", name: "z", server: "s", tool: "z", arguments: {}, round: 2}}),
+         frame({strata_mcp: {event: "result", id: "c3", text: "r3", ok: true, ms: 5}}));
+  for (let i = 0; i < 4; i++) { ctl86.step(); await wait(); s86.flush(); }
+  assert.strictEqual(toolPart(bub86(), 2).open, true, "a call after some answer text is still open once it settles");
+  q86.push(frame({choices: [{delta: {content: " and more"}}]}));
+  ctl86.step(); await wait(); s86.flush();
+  assert.strictEqual(toolPart(bub86(), 2).open, false, "answer text past its at folds it");
+  assert.strictEqual(m86.reasoning, "a thought\n\nsecond thought", "the reasoning the replay carries is untouched");
+  assert.strictEqual(m86.text, "the answer\n\n and more", "and so is the answer text, round separator and all");
+  ctl86.step(); await wait();
+  await settled86;
+  assert.strictEqual(toolPart(bub86(), 0).open, false, "the finished turn renders as a finished turn always did");
+  assert.strictEqual(toolPart(bub86(), 2).open, false, "every call folded, nothing left open by the new rule");
+  done.push("tool-fold: a settled call stays open until the next output starts - a later call, a new thought, " +
+            "or new answer text - and a finished turn still renders folded");
+
+  // 87. scrolling inside a block is an interaction, like a click: the fold control leaves it alone for the rest
+  //     of the turn (todo #keep-boxes-open-on-interact).  A click already did this; a scroll did not, so a thought
+  //     you had scrolled into collapsed under you when the run ended, and so did a result you were reading.
+  //     Driven through send() with the same stream three times: no scroll at all, the page's own follow (which
+  //     moves a body to its end and must NOT count as the reader), and the reader scrolling away from the end.
+  const stream87 = async (how) => {
+    const q = [];
+    const ctl = {step: null};
+    const read = () => new Promise((res) => { ctl.step = () => {
+      if (ctl.flush) ctl.flush();
+      res(q.length ? {done: false, value: new TextEncoder().encode(q.shift())} : {done: true});
+    }; });
+    const s = run({fetch: async () => ({ok: true, body: {getReader: () => ({read})}})}, {});
+    await wait();
+    ctl.flush = s.flush;
+    s.s.setSettings({show: "live"});
+    const bub = () => s.s.el("chat").children.find((c) => c.className.includes("st-msg--assistant"))
+                                          .querySelector(".st-bubble");
+    const think = () => (bub()._blocks || [])[0].el;
+    const toolD = () => (bub()._parts || []).find((p) => p.kind === "tool").el;
+    const away = how === "reader";                     // where the body ends up after the scroll
+    q.push(frame({choices: [{delta: {reasoning_content: "a long thought"}}]}),
+           frame({strata_mcp: {event: "start", id: "c1", name: "x"}}),
+           frame({strata_mcp: {event: "call", id: "c1", name: "x", server: "s", tool: "x", arguments: {}, round: 0}}),
+           frame({strata_mcp: {event: "result", id: "c1", text: "the file", ok: true, ms: 5}}));
+    s.s.el("input").value = "go";
+    const settled = s.s.send();
+    await wait();
+    ctl.step(); await wait(); s.flush();                       // the thought lands, and is open
+    assert.strictEqual(think().open, true, "the live thought is open either way");
+    if (how !== "none") {
+      const body = think().querySelector(".thinking");         // the same element the page fills
+      body.scrollHeight = 1000; body.clientHeight = 300;
+      body.scrollTop = away ? 100 : 900;      // 900 is at the end, which is where the page's own follow leaves it
+      s.s.el("chat")._l.scroll({target: body});
+    }
+    ctl.step(); await wait(); s.flush();                       // the call starts: the run is cut, so it would fold
+    assert.strictEqual(think().open, away, `${how}: a thought folds unless the reader has scrolled into it`);
+    for (let i = 0; i < 2; i++) { ctl.step(); await wait(); s.flush(); }        // the call runs and answers
+    toolD().dataset.tool = "0";               // the stub parses no data-* out of inserted HTML (LESSONS.md):
+                                             // without this the listener finds no tool and tests nothing
+    assert.strictEqual(toolD().open, true, "the settled call is open: nothing has followed it yet");
+    if (how !== "none") {
+      const pre = toolD().querySelector(".st-collapse__body").querySelector(".tool-call__pre-args");
+      pre.scrollHeight = 2000; pre.clientHeight = 300; pre.scrollTop = away ? 400 : 1900;
+      s.s.el("chat")._l.scroll({target: pre});
+    }
+    q.push(frame({choices: [{delta: {reasoning_content: "next thought"}}]}));
+    ctl.step(); await wait(); s.flush();                       // new output: the call would fold
+    assert.strictEqual(toolD().open, away, `${how}: a call folds on the next output unless the reader is inside it`);
+    ctl.step(); await wait();
+    await settled;
+    return s;
+  };
+  await stream87("reader");
+  done.push("keep-open: scrolling into a thought or a result marks it as read, and the fold control leaves it " +
+            "alone for the rest of the turn");
+  await stream87("follow");
+  done.push("keep-open: the page's own follow - a body left at its end - is not read as the reader's scroll, " +
+            "and both blocks still fold");
+  await stream87("none");
+  done.push("keep-open: with no scroll at all the thought folds on the call and the call folds on the next output");
+
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
