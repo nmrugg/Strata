@@ -582,9 +582,11 @@ function renderMcp() {
       }).join("") + `</div>` : "") +
       (s.off ? `<p class="mcp-note muted small">off in the config; its tools are not listed until it starts again</p>` : "") +
       `</div>`;
-  }).join("") + (differs ? `<p class="mcp-note"><button class="st-btn st-btn--secondary" data-mcp-apply` +
-                          ` title="Writes this chat's tool set into the run config. Other conversations keep the list they chose; this affects conversations that have not picked one yet.">` +
-                          `Use these tools as the defaults</button></p>` : "") + mcpSwitchNote();
+  }).join("") + `<p class="mcp-note"><button class="st-btn st-btn--secondary" data-mcp-apply` +
+                 (differs ? "" : " disabled") +
+                 ` title="${differs ? "Writes this chat's tool set into the run config. Other conversations keep the list they chose; this affects conversations that have not picked one yet."
+                                    : "This chat is already using the tools the settings offer"}">` +
+                 `Use these tools as the defaults</button></p>` + mcpSwitchNote();
   updateMcpDot();        // the button and its dot are drawn from the same facts as this card
 }
 // Does the chat on screen have anything to switch to?  It has a saved list - it has sent at least one message in
@@ -675,17 +677,21 @@ function openMcpPicker(anchor, changed) {
     }
     panel.appendChild(row);
   }
-  // the cost of a change, and only once there IS one - before you touch anything it is a warning about nothing
+  // One footer row, always the same height.  Showing the cost line and the Reset button only when they apply
+  // read well in a screenshot and badly in use: the panel jumped on every click.  They are there, and greyed
+  // when there is nothing to say or nothing to do.
   const cost = chatPromptTokens();
-  if (changed) panel.appendChild(node("div", "mcp-picker__cost muted small",
-    cost ? `This reads the conversation again on the next message (${fmt(cost)} tokens).`
-         : "This chat has no history to re-read yet."));
-  if (!mcpSame([...held], now)) {                        // only offered when this chat is not on the current set
-    const reset = node("button", "st-btn st-btn--secondary", "Reset Tools");
-    reset.setAttribute("data-mcp-match", "1");
-    reset.title = `Use the ${now.length} tools the settings offer now, instead of the ${held.size} this chat has`;
-    panel.appendChild(reset);
-  }
+  const foot = node("div", "mcp-picker__foot");
+  foot.appendChild(node("span", "mcp-picker__cost muted small", changed
+    ? (cost ? `This reads the conversation again on the next message (${fmt(cost)} tokens).`
+            : "This chat has no history to re-read yet.") : ""));
+  const reset = node("button", "st-btn st-btn--secondary", "Reset Tools");
+  reset.setAttribute("data-mcp-match", "1");
+  reset.disabled = mcpSame([...held], now);
+  reset.title = reset.disabled ? "This chat is already using the tools the settings offer"
+    : `Use the ${now.length} tools the settings offer now, instead of the ${held.size} this chat has`;
+  foot.appendChild(reset);
+  panel.appendChild(foot);
   document.body.appendChild(panel);
   activePopover = panel;
   placePopover(panel, anchor);
@@ -712,8 +718,9 @@ function openMcpPicker(anchor, changed) {
       setChatTools(chatToolsFor(chat).filter((n) => n !== name));
       closePopover(); openMcpPicker(anchor, true);
     } else if (e.target.closest("[data-mcp-match]")) {
+      if (e.target.closest("[data-mcp-match]").disabled) return;
       setChatTools(mcpCurrentTools());
-      closePopover();
+      closePopover(); openMcpPicker(anchor, true);      // stay open: the panel is where you are working
     }
   });
   return panel;

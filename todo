@@ -717,6 +717,16 @@ all: fold-control replaced them, and the four overlapping switches became one co
     chip and every switch inside it and turned them into full-width block rows.  The items now carry
     .chat-menu__item and the three rules are scoped to it.  The lesson is the one LESSONS.md already carries about
     reuse: sharing a container class shares its CSS, so a "generic popover" class is not free.
+    NO REFLOW, AND RESET KEEPS THE PANEL OPEN (the human: the Reset button "causes everything to jump").  Showing
+    the cost line and Reset only when they apply reads fine in a screenshot and badly in use - the panel resized
+    on every click.  They now live in one footer row that is always there at the same height: the cost text is
+    empty until something changes, and Reset is greyed (disabled, with a title saying why) when the chat already
+    matches the defaults.  The Monitor card's Apply gets the same treatment, so the card does not reflow either.
+    Reset rebuilds the panel in place instead of closing it - the panel is where the work is happening.
+    Control: making Reset close the panel again fails the "it stays open" check.  Two test bugs of my own showed
+    up while wiring this: after a rebuild the old panel handle is a REMOVED element (every click needs
+    `panel = s94.s.chatMenu` again), and the cost text moved inside the footer, so a top-level text join stopped
+    seeing it - the helper now walks the subtree.
     A bug the tests caught here: renderMcp called chatToolsFor(), which CREATES the list - so merely drawing the
     card made a chat look like it had chosen one.  Reading must not write (heldNow reads chat.mcpTools directly).
     Tests: harness case 93 extended (the card mirrors an unticked chip, no Apply while the chat matches the

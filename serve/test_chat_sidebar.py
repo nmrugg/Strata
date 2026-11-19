@@ -287,8 +287,10 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("chat-menu__item${danger", self.js)
         self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
         self.assertIn('Reset Tools', self.js)
-        self.assertIn("if (!mcpSame([...held], now)) {", self.js)    # and only when this chat is off the current set
-        self.assertIn('if (changed) panel.appendChild(node("div", "mcp-picker__cost', self.js)   # cost after a change
+        self.assertIn("reset.disabled = mcpSame([...held], now);", self.js)   # greyed, not hidden: no reflow
+        self.assertIn('node("span", "mcp-picker__cost muted small", changed', self.js)  # text only after a change
+        self.assertIn('node("div", "mcp-picker__foot")', self.js)              # one row of fixed height
+        self.assertNotIn("closePopover();\n    }", self.js)                    # Reset no longer closes the panel
         self.assertIn("placePopover(menu, anchor);", self.body("openPopover"))
         self.assertIn("placePopover(panel, anchor);", self.body("openMcpPicker"))
         self.assertIn("el.style.maxHeight = `${Math.max(120, space)}px`;", self.body("placePopover"))
