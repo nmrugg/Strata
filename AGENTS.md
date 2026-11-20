@@ -21,6 +21,10 @@ offers the same steps as tools.
   `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.
+- **Never write UI text that states what the user already knows.** A switch that applies when you click it does
+  not need "applied as you click", and a button does not need to describe itself. Say only what is not obvious
+  and only when it is true: the cost of what you just did, in a number ("this re-reads 328,811 tokens"), and
+  nothing at all when nothing has happened.
 - Read **[LESSONS.md](LESSONS.md)** before working on this box: it records things that cost time to discover
   (what to never restart, why the server's own log is missing by default, which config keys reach only the
   engine child, and which parser rules real recorded data has already rejected).

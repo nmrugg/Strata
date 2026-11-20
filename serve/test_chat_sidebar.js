@@ -3005,7 +3005,8 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
     return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
   }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
-     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first")]}});
+     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first"),
+       {role: "assistant", text: "done", time: Date.now(), usage: {prompt_tokens: 328811}}]}});
   await wait();
   await sU.s.loadMcp();
   const findU = (el, attr, out = []) => { ((el && el.children) || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findU(c, attr, out); }); return out; };
@@ -3020,6 +3021,8 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   };
   openPanel();
   assert.strictEqual(undoBtn().disabled, true, "nothing changed since the panel opened, so Undo is greyed");
+  assert.ok(/<span class="mcp-note-text muted small"><\/span>/.test(wroteU()),
+            "the note is empty until you do something - no narration: " + wroteU().slice(-200));
   pick("a__two");
   await wait();
   assert.deepStrictEqual(postsU, [[{server: "a", tool: "two", enabled: false}]], "a switch writes at once");  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
@@ -3028,13 +3031,14 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(undoBtn().disabled, false, "Undo woke up: one server changed since this panel opened");
   assert.ok(/data-mcp-undo[ >]/.test(wroteU()) && !/data-mcp-undo disabled/.test(wroteU()),
             "the card offers Undo too - one state, both views");
-  assert.ok(wroteU().includes("reads its history again"), "and says what it cost: " + wroteU().slice(-260));
+  assert.ok(/This re-reads 328,811 tokens in this conversation\./.test(wroteU()),
+            "the only text is the cost of the change just made: " + wroteU().slice(-260));
   pick("a__one");
   await wait();
   assert.strictEqual(postsU.length, 2, "the second switch wrote as well");
 
-  assert.ok(/Undo the 1 server you changed here/.test(wroteU()),
-            "the count is servers, and it says so: " + wroteU().slice(-260));
+  assert.ok(/This re-reads 328,811 tokens in this conversation\./.test(wroteU()),
+            "the second click says the cost once more, and nothing else: " + wroteU().slice(-260));
   sU.s.chatMenu._l.click({target: undoBtn()});
   await wait();
   assert.deepStrictEqual(postsU[2], [{server: "a", tools: ["one", "two"]}],
@@ -3042,6 +3046,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(onU.has("one") && onU.has("two"), "and both tools are on again");
 
   assert.strictEqual(undoBtn().disabled, true, "the window closes after it is used, in the panel that stayed open");
+  assert.ok(!/re-reads/.test(wroteU()), "Undo clears the cost too: it takes back the change that owed it");
 
   done.push("mcp-auto-apply: switches write at once, both views show it, and Undo sends the whole baseline back " +
             "in one request");

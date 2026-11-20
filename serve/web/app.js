@@ -564,6 +564,7 @@ async function mcpUndo() {
   if (!back.length) return;
   await mcpPostAll(back, "Reverted");
   mcpBaseline = null;
+  mcpCost = null;                            // back to what this conversation was built with: nothing owed
 }
 // one write path for both views: the config and the running hub change together, no restart
 async function mcpPostAll(changes, label) {
@@ -571,24 +572,32 @@ async function mcpPostAll(changes, label) {
     const r = await fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: changes})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    if ((b.changed || []).length) {
+      // set the cost BEFORE the redraw, or the card paints an empty note and the number never appears
+      mcpCost = label === "Reverted" ? null : (chatPromptTokens() || null);
+      toast("success", label || "Applied", (b.changed || []).join(", "));
+    }
     await loadMcp();
-    if ((b.changed || []).length) toast("success", label || "Applied", (b.changed || []).join(", "));
   } catch (err) {
     toast("error", "Not changed", String(err.message || err), 6000);
   }
 }
 const mcpPost = (change) => mcpPostAll([change]);
-// the row both views show: what a switch costs, and the way back
+// The cost of what you just did, in the number that matters - and nothing at all until you do something.
+// (AGENTS.md: no UI text that states what the user already knows.)
+const chatPromptTokens = () => {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const u = messages[i].usage;
+    if (u && u.prompt_tokens) return u.prompt_tokens;
+  }
+  return (lastLive && lastLive.prompt_tokens) || 0;
+};
+let mcpCost = null;                          // tokens this conversation will read again, after a switch
 function mcpUndoRow() {
   const n = mcpChangedServers().length;
-  const why = "A switch writes the run config and the running servers at once.  The tool list is the start of "
-            + "every conversation's prompt, so each conversation whose list changed reads its history again on "
-            + "its next message.  Undo puts back everything as it was when you opened this.";
-  return `<p class="mcp-note" title="${esc(why)}">` +
+  return `<p class="mcp-note" title="Undo everything changed since you opened this.">` +
     `<button class="st-btn st-btn--secondary" data-mcp-undo${n ? "" : " disabled"}>Undo</button>` +
-    `<span class="mcp-note-text muted small">Applied as you click.` +
-    (n ? ` Undo the ${n} server${n === 1 ? "" : "s"} you changed here.` : "") +
-    ` A conversation whose tool list changed reads its history again.</span></p>`;
+    `<span class="mcp-note-text muted small">${mcpCost ? `This re-reads ${fmt(mcpCost)} tokens in this conversation.` : ""}</span></p>`;
 }
 function renderMcp() {
   const list = mcpServers();
@@ -661,7 +670,7 @@ function openMcpPicker(anchor) {
   undo.title = "Put back everything as it was when you opened this.";
   foot.appendChild(undo);
   foot.appendChild(node("span", "mcp-picker__cost muted small",
-    "Applied as you click. A conversation whose tool list changed reads its history again."));
+    mcpCost ? `This re-reads ${fmt(mcpCost)} tokens in this conversation.` : ""));
   panel.appendChild(foot);
   panel.addEventListener("click", (e) => {
     if (e.target.closest("[data-mcp-undo]")) { mcpUndo().then(redrawMcpViews); return; }
@@ -1426,6 +1435,7 @@ function showChat(c) {
   c.unread = false;           // opening it is how a reply stops being unread
   writeChat(chat);            // renderChat renders the list, so the write here does not render it again
   loadDraft();                // and the box takes on the text that belongs to the chat you are entering
+  mcpCost = null;             // a token count belongs to the conversation it was measured on
   renderChat();
   renderMcp();                // the MCP card's "use the current tools" button is about THIS chat: its label and
                               // whether it is greyed out follow whichever conversation is on screen (no fetch)

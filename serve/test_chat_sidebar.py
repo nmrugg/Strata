@@ -293,7 +293,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('!e.target.closest("#mcp-btn")', self.js)
         # and nothing per-conversation survives: one setting, not two
         for gone in ("mcpFrozen", "chatToolsFor", "mcpDefault", "mcpSent", "updateMcpDot", "mcp-dot",
-                     "mcpSwitchState", "data-mcp-unfreeze", "chatPromptTokens", "mcpDraft", "data-mcp-apply"):
+                     "mcpSwitchState", "data-mcp-unfreeze", "mcpDraft", "data-mcp-apply"):
             self.assertNotIn(gone, self.js)
         # auto-apply with a way back: one snapshot per opened view, and Undo is greyed until something moved
         self.assertIn("let mcpBaseline = null;", self.js)

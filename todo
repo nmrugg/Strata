@@ -762,6 +762,18 @@ all: fold-control replaced them, and the four overlapping switches became one co
     the panel and masking the page's behaviour, and before that a renderMcp() in redrawMcpViews was dead weight
     because loadMcp already renders the card.
 
+    NO NARRATION (the human, sharply: "NEVER say super obvious things like `Applied as you click. A conversation
+    whose tool list changed reads its history again.` That's just dumb").  The rule is now in AGENTS.md under
+    "Working on the code": never write UI text that states what the user already knows; say only what is not
+    obvious, only when it is true, and in a measured number.  The note under the switches is therefore EMPTY
+    until a switch is clicked, and then it is one fact: "This re-reads 328,811 tokens in this conversation." -
+    the open conversation's last prompt size (chatPromptTokens, from its usage chunk).  Undo clears it, because
+    undoing takes back the change that owed it, and a chat switch clears it, because the number belongs to the
+    conversation it was measured on.
+    A real bug found doing this: mcpCost was set AFTER `await loadMcp()`, so the card painted an empty note and
+    the number never showed at all.  Control: moving the assignment back after the redraw fails "the only text
+    is the cost of the change just made".  A second control had to be tightened first - asserting the note did
+    not mention re-reading passed even with the narration restored; it now asserts the span is literally empty.
     THE 400s THE HUMAN HIT, and the cause: the card had been made to show the CHAT's list while it wrote the
     CONFIG's - so a click could land on the state the config already had, and set_mcp answered a no-op with
     ValueError("nothing to change") -> 400, which is why the Monitor's chips stopped toggling.  Fixed twice over:
