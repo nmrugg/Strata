@@ -5,6 +5,8 @@ the fake MCP server in serve/mcp_fake_server.py (no GPU, no pack, no MCP SDK).
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -643,6 +645,53 @@ class ToolLoop(unittest.TestCase):
         self.hub.wait(10)
         self.assertIn("fake__echo", [t["name"] for t in self.hub.template_tools()])
         self.assertFalse(self.hub.set_server_disabled("nope", True))  # a name that is not there changes nothing
+
+class UnknownCall(ToolLoop):
+    """A call naming a tool that neither the request declared nor the hub offers.  Reproduced from a live death
+    on this box: the turn returned 200 with finish_reason tool_calls, no MCP activity at all and an empty answer,
+    while every parser counter stayed at zero - because a call WAS delivered, so the turn is not "empty", and it
+    is not abandoned, refused, unread or drift.  The loop will not run a name it does not offer, and the page has
+    no handler for a tool_calls delta (it only ever writes them, when rebuilding history), so the chat stops with
+    nothing on screen.  item unread-call-recovery."""
+
+    def test_a_call_for_an_undeclared_name_is_counted_and_logged(self):
+        self.start(call_script("fake__nothere", text="hi"), "</think>\n\nNothing to say.")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        said = out.getvalue()
+        self.assertIn("neither the request declared nor this server offers", said, said[:400])
+        self.assertIn("fake__nothere", said, "and it names what the model asked for")
+        self.assertEqual(self.svc.totals.get("unknown_tool_calls"), 1)
+
+    def test_the_turn_still_ends_without_running_it(self):
+        # the CURRENT behaviour, pinned on purpose: this is the bug.  The day the loop answers the call instead of
+        # ending the turn, this case goes red and must be rewritten rather than deleted.
+        self.start(call_script("fake__nothere", text="hi"), "</think>\n\nNothing to say.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        chunks = self.chunks(text)
+        self.assertEqual([c["strata_mcp"] for c in chunks if "strata_mcp" in c], [], "no call, no result")
+        fin = [c["choices"][0]["finish_reason"] for c in chunks if c["choices"][0].get("finish_reason")]
+        self.assertEqual(fin[-1], "tool_calls", "yet the client is told a call happened")
+        answer = "".join((c["choices"][0].get("delta") or {}).get("content") or "" for c in chunks)
+        self.assertEqual(answer, "Let me check.", "the only text is what the model wrote BEFORE the call")
+        self.assertEqual(len(self.engine.prompts), 1,
+                         "and it never got a second turn to answer its own call - that is the dead chat")
+
+    def test_a_tool_the_client_declared_is_not_unknown(self):
+        # the other half of the rule: a tool the request brought itself is the client's to answer, and that is
+        # normal - counting those would make the number meaningless
+        self.start(call_script("mine", q="x"), "</think>\n\nDone.")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, _ = self.post({"strata_mcp": True, "tools": [
+                {"type": "function", "function": {"name": "mine", "parameters": {"properties": {}}}}]})
+        self.assertEqual(code, 200)
+        self.assertIsNone(self.svc.totals.get("unknown_tool_calls"), "absent means zero")
+        self.assertNotIn("neither the request declared", out.getvalue())
+
 
 class RuntimeChange(unittest.TestCase):
     """todo #mcp-server-add: a server can be added, changed or removed while Strata runs.  The hub has to

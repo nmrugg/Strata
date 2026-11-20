@@ -4533,6 +4533,10 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     messages = list(messages)
+    # the names this request brought itself, which the client answers, as distinct from names NOBODY declared -
+    # see the unknown-call notice below (item unread-call-recovery)
+    own_names = {t.get("name") for t in (tools or []) if isinstance(t, dict)}
+    unknown_calls, unknown_names = 0, set()
     handle = object()          # this generator: the key its running calls are tracked under, for /metrics
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
@@ -4555,6 +4559,9 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                     continue                             # the argument pieces stay off the ordinary stream
                 if ev.kind == "tool_call":
                     own_calls += 1
+                    if ev.call.name not in mcp_names and ev.call.name not in own_names:
+                        unknown_calls += 1          # a name neither side can answer - see the notice below
+                        unknown_names.add(ev.call.name)
                 elif ev.kind == "content":
                     text.append(ev.text)
                 elif ev.kind == "reasoning":
@@ -4640,6 +4647,15 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         except ClientGone:                                      # #1999: the client left while a picture was prepared
             done = {**done, "finish": "cancel"}
             break
+    if unknown_calls:
+        # the death this names.  Nothing else counts it: the parser DID read a call, so the turn is not empty and
+        # it is not abandoned, refused, unread or drift.  The loop will not run a name it does not offer, and the
+        # page has no handler for a tool_calls delta - so the answer is empty, no block appears, and the chat
+        # looks dead.  Counting it is step one; whether the loop should answer it instead is the owner's call.
+        svc.totals["unknown_tool_calls"] = svc.totals.get("unknown_tool_calls", 0) + unknown_calls
+        print(f"[strata] {unknown_calls} call(s) named a tool that neither the request declared nor this server "
+              f"offers: {', '.join(sorted(unknown_names))}. The tool loop does not run it and the page has no "
+              "handler for it, so the turn ends with no answer and no tool block", flush=True)
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
 
 

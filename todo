@@ -678,6 +678,30 @@ all: fold-control replaced them, and the four overlapping switches became one co
     serve/test_reasoning_rescue.py class DriftMarkup (8), five controls, each mapped to the test that fails when
     the mechanism is removed - two of my first controls were insensitive (wrong edit, wrong test) and were
     rebuilt.  Needs a restart.
+    FIFTH SHAPE, found from a live recording 2026-11-20 (the human: "I just had it die in another chat").  Every
+    existing counter read zero for that turn - unread, drift, empty_args, abandoned, empty_turn, refused, rescued.
+    The api_monitor record says it plainly: HTTP 200, reasoning 3,772 characters, output ZERO.  Output zero with
+    no EMPTY TURN printed means `delivered` was set by something other than content, and the only thing that sets
+    it besides content is a delivered tool_call.  Reproduced against the real loop with the fake hub: a call
+    naming `fake__nothere` - neither in the request's tools nor in the hub's - comes back as
+    `finish_reason: "tool_calls"` with NO MCP activity events at all, the loop breaks on `own_calls`, and the
+    model never gets a second turn (engine prompts == 1).  The page never reads `delta.tool_calls` - it only ever
+    writes them when rebuilding history (serve/web/app.js) - so nothing appears on screen.  That is the whole
+    chain: parser fires, loop refuses, page ignores, chat dies silently.
+      - DONE: run_with_mcp counts it (`unknown_tool_calls` in totals, one printed line naming the tool the model
+        asked for) and distinguishes it from a tool the REQUEST declared, which is normal and must not count.
+        Tests: serve/test_mcp.py class UnknownCall (3) - the notice and the total; the current broken behaviour
+        pinned on purpose (no mcp events, finish_reason tool_calls, the only text is what came before the call,
+        one engine turn) so it goes red the day the loop is fixed and must be rewritten, not deleted; and a
+        client-declared tool is not counted.  Three controls bite (stop counting, drop the notice, loosen the
+        gate).  Needs a restart.
+      - THE FIX, not yet done and it is the owner's call: when a call names neither the request's tools nor the
+        hub's, answer it with a tool error ("there is no tool named X") and let the round continue, instead of
+        ending the turn - upstream 18af37321 does exactly this in the other tree ("the turn goes on, two times at
+        most").  That is a behaviour change on the default path, so it needs an explicit yes.
+      - Also still true: the name the model actually asked for in that dead chat is unrecoverable - api_monitor
+        keeps what the CLIENT received, and the call never reached it.  Only the new counter can name it.
+
     STILL OPEN - the ports, in this order:
       - 9c349c45a  empty stubs skipped, a cut opener dropped, a call with no readable parameter is NOT run
                    (#6032 R5).  NOT ported, and its order changed: it sits on infrastructure this tree does not
