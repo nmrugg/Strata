@@ -2967,33 +2967,37 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   card._parent = null;
   await s90.s.el("mcp-list")._l.click({target: chip});
   const html90 = s90.s.el("mcp-list")._html || "";
-  assert.deepStrictEqual(posts90, [], "a chip click writes nothing on its own - it is a draft (case 91 covers Apply)");
-  assert.ok(new RegExp(`data-mcp-tool="${chipAttr[1]}"[^>]*aria-pressed="true"`).test(html90),
-            "and the chip reads ON in the card, from the draft: " + html90.slice(0, 300));
+  assert.deepStrictEqual(posts90[0], {mcp: [{server: cardAttr[1], tool: chipAttr[1], enabled: true}]},
+                         "a chip click writes at once (Undo is the way back, case 91)");
   const sw90 = {className: "st-toggle", attrs: {"aria-checked": "true"}, getAttribute(k) { return this.attrs[k]; },
               closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-toggle]" ? this : null; }};
   await s90.s.el("mcp-list")._l.click({target: sw90});
-  assert.ok(/data-mcp-toggle[^>]*aria-checked="false"/.test(s90.s.el("mcp-list")._html || ""),
-            "the card's switch reads off in the draft, still unwritten");
-  assert.deepStrictEqual(posts90, [], "and still nothing was sent");
+  assert.deepStrictEqual(posts90[1], {mcp: [{server: cardAttr[1], disabled: true}]},
+                         "the card's switch posts the same shape as the panel's (case 91 covers the redraw and Undo)");
 
-  done.push("mcp-chips: a server the config has off keeps a card, and a chip or switch only moves the shared draft");
+  done.push("mcp-chips: a server the config has off keeps a card, and its chips and switch post the same change the panel sends");
 
-  // 91. one draft, two views, and nothing written until Apply (todo #mcp-chat-picker).  A switch changes the
-  //     draft; the card and the panel both show it; only Apply writes the config and the running hub, and the
-  //     button says what that costs - each conversation whose tool list changed reads its history again.
-  const toolsWith = (twoOn, offServer) => ({servers: offServer ? [] : [{name: "a", transport: "stdio", status: "ready",
-      error: null, info: {}, tools: [{name: "a__one", tool: "one", enabled: true, description: ""},
-                                     {name: "a__two", tool: "two", enabled: twoOn, description: ""}]}],
-      tools: offServer ? 0 : (twoOn ? 2 : 1),
-      configured: {a: {disabled: !!offServer, disabled_tools: twoOn || offServer ? [] : ["two"]}}});
-  let mcpU = toolsWith(true);
+  // 91. auto-apply with a way back (todo #mcp-chat-picker): a switch writes at once, and Undo puts everything
+  //     back as it was when this view was opened.  Both views show the same thing and redraw together.
+  const toolsWith = (twoOn) => ({servers: [{name: "a", transport: "stdio", status: "ready", error: null, info: {},
+      tools: [{name: "a__one", tool: "one", enabled: true, description: ""},
+              {name: "a__two", tool: "two", enabled: twoOn, description: ""}]}],
+      tools: twoOn ? 2 : 1, configured: {a: {disabled: false, disabled_tools: twoOn ? [] : ["two"]}}});
+  let onU = new Set(["one", "two"]);
+  const asU = () => toolsWith(onU.has("two"));
+  let mcpU = asU();
   const postsU = [];
   const sU = run({fetch: async (url, opts) => {
     if (String(url).split("?")[0] === "mcp") {
       if (opts && opts.method === "POST") {
-        postsU.push(JSON.parse(opts.body).mcp);
-        mcpU = toolsWith(false);                     // the endpoint writes the config and the hub
+        const list = JSON.parse(opts.body).mcp;
+        postsU.push(list);
+        // the endpoint writes whatever it is given: one tool, or a whole server at once
+        for (const ch of list) {
+          if (ch.tools) onU = new Set(ch.tools);
+          else if (ch.tool !== undefined) { if (ch.enabled) onU.add(ch.tool); else onU.delete(ch.tool); }
+        }
+        mcpU = asU();
         return {ok: true, json: async () => ({changed: ["a (1 of 2 tools on)"], configured: mcpU.configured, live: ["a"], reloads: []})};
       }
       return {ok: true, json: async () => mcpU};
@@ -3004,32 +3008,43 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
      {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first")]}});
   await wait();
   await sU.s.loadMcp();
-  const findU = (el, attr, out = []) => { (el.children || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findU(c, attr, out); }); return out; };
+  const findU = (el, attr, out = []) => { ((el && el.children) || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findU(c, attr, out); }); return out; };
   const wroteU = () => sU.s.el("mcp-list")._html || "";
-  sU.s.el("mcp-btn").onclick();
-  let pan = sU.s.chatMenu;
-  assert.ok(/data-mcp-apply disabled/.test(pan.outerHTML || "") || findU(pan, "data-mcp-apply")[0].disabled === true,
-            "Apply starts greyed: there is nothing pending");
-  const chipU = findU(pan, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two");
-  pan._l.click({target: chipU});
-  pan = sU.s.chatMenu;                        // the click rebuilds the panel; the old handle is a removed element
-  assert.deepStrictEqual(postsU, [], "a click writes nothing - the switch is a draft, not a change");
-  assert.strictEqual(findU(pan, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two")
-                     .attrs["aria-checked"], "false", "the panel rebuilt to show the draft");
-  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
-            `and the card shows the same draft: ${wroteU().slice(0, 320)}`);
-  assert.ok(wroteU().includes("data-mcp-apply") && !/data-mcp-apply disabled/.test(wroteU()),
-            "the card's Apply woke up, because the draft differs from the config");
-  assert.ok(wroteU().includes("read its history again"), "and it says what applying costs: " + wroteU().slice(-320));
-  assert.ok(wroteU().includes("data-mcp-discard"), "with an Undo next to it");
-  sU.s.el("mcp-list")._l.click({target: {className: "st-btn", closest(sel) { return sel === "[data-mcp-apply]" ? this : null; }}});
+  const undoBtn = () => findU(sU.s.chatMenu, "data-mcp-undo")[0];
+  // the page redraws the panel after every write, so the test has to open it the way a reader would: if it is
+  // already open, the button closes it
+  const openPanel = () => { if (sU.s.chatMenu) sU.s.el("mcp-btn").onclick(); sU.s.el("mcp-btn").onclick(); };
+  const pick = (name) => {
+    const b = findU(sU.s.chatMenu, "data-mcp-pick").find((x) => x.attrs["data-mcp-pick"] === name);
+    sU.s.chatMenu._l.click({target: b});
+  };
+  openPanel();
+  assert.strictEqual(undoBtn().disabled, true, "nothing changed since the panel opened, so Undo is greyed");
+  pick("a__two");
   await wait();
-  assert.deepStrictEqual(postsU, [[{server: "a", tools: ["one"]}]],
-                         "Apply sends the whole draft in one request: the tools that should be ON");
-  assert.ok(!wroteU().includes("data-mcp-apply"), "and once applied, there is nothing to apply");
+  assert.deepStrictEqual(postsU, [[{server: "a", tool: "two", enabled: false}]], "a switch writes at once");  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
+            "and the Monitor card moved with it, unprompted: " + wroteU().slice(0, 320));
+  openPanel();
+  assert.strictEqual(undoBtn().disabled, false, "Undo woke up: one server changed since this panel opened");
+  assert.ok(/data-mcp-undo[ >]/.test(wroteU()) && !/data-mcp-undo disabled/.test(wroteU()),
+            "the card offers Undo too - one state, both views");
+  assert.ok(wroteU().includes("reads its history again"), "and says what it cost: " + wroteU().slice(-260));
+  pick("a__one");
+  await wait();
+  assert.strictEqual(postsU.length, 2, "the second switch wrote as well");
 
-  done.push("mcp-draft: switches edit one shared draft that both views show; nothing is written until Apply, " +
-            "which says it will make conversations re-read their history");
+  assert.ok(/Undo the 1 server you changed here/.test(wroteU()),
+            "the count is servers, and it says so: " + wroteU().slice(-260));
+  sU.s.chatMenu._l.click({target: undoBtn()});
+  await wait();
+  assert.deepStrictEqual(postsU[2], [{server: "a", tools: ["one", "two"]}],
+                         "Undo sends the whole baseline back in one request, not two inverse clicks");
+  assert.ok(onU.has("one") && onU.has("two"), "and both tools are on again");
+
+  assert.strictEqual(undoBtn().disabled, true, "the window closes after it is used, in the panel that stayed open");
+
+  done.push("mcp-auto-apply: switches write at once, both views show it, and Undo sends the whole baseline back " +
+            "in one request");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

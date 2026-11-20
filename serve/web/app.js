@@ -80,7 +80,7 @@ function showTab(name) {
   for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
-  if (tab === "monitor") loadMcp();
+  if (tab === "monitor") { mcpSnapshot(); loadMcp(); }   // Undo covers the card from the moment you open it
   if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
   pollNow();                       // the tab we just moved to wants its own kind of answer now (?lite vs full)
@@ -532,82 +532,66 @@ function mcpServers() {
             chips: tools.length ? tools : offTools.map((t) => ({tool: t, name: `${n}__${t}`, enabled: false, description: ""}))};
   });
 }
-// One DRAFT, shared by both views (todo #mcp-chat-picker).  Clicking a switch changes the draft, not the
-// config: the tool list is the first system turn of every conversation, so applying a change makes each
-// conversation whose list changed read its history again.  That is worth a button and a sentence, not a click.
-// null = show what the server says.  It survives the periodic refresh, so a poll cannot eat your edits.
-let mcpDraft = null;                       // {server: {off: bool, on: Set(own tool names)}}
+// Switches apply at once (the human's call), so the escape hatch is an Undo that puts everything back the way
+// it was when this view was opened.  mcpBaseline is that snapshot: taken when the wrench panel or the Monitor
+// card is opened, kept until it is used, and it survives the periodic refresh so a poll cannot quietly close
+// the window you are undoing.
+// What a switch costs is said where the switches are: the tool list is the first system turn of every
+// conversation, so a conversation whose list changed reads its history again on its next message.
+let mcpBaseline = null;                       // server name -> {off, on: Set(own tool names)}
 const mcpLiveOn = (s) => new Set(s.chips.filter((c) => c.enabled).map((c) => c.tool));
-function mcpEnsure(name) {
-  if (!mcpDraft) mcpDraft = {};
-  if (!mcpDraft[name]) {
-    const s = mcpServers().find((x) => x.name === name) || {chips: [], off: false};
-    mcpDraft[name] = {off: s.off, on: new Set(mcpLiveOn(s))};
-  }
-  return mcpDraft[name];
+const sameSet = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
+function mcpSnapshot() {
+  if (mcpBaseline) return;                    // an outstanding Undo window stays open across views and polls
+  mcpBaseline = new Map(mcpServers().map((s) => [s.name, {off: s.off, on: mcpLiveOn(s)}]));
 }
-// what the switches should show right now: the draft where there is one, the server's answer where there is not
-function mcpEffective() {
-  return mcpServers().map((s) => {
-    const d = mcpDraft && mcpDraft[s.name];
-    const off = d ? d.off : s.off, on = d ? d.on : mcpLiveOn(s);
-    return {...s, off, on, chips: s.chips.map((c) => ({...c, enabled: !off && on.has(c.tool)}))};
+function mcpChangedServers() {
+  if (!mcpBaseline) return [];
+  return mcpServers().filter((s) => {
+    const b = mcpBaseline.get(s.name);
+    return !b || b.off !== s.off || !sameSet(b.on, mcpLiveOn(s));
   });
 }
-function mcpPending() {
-  if (!mcpDraft) return [];
-  return mcpServers().filter((s) => {
-    const d = mcpDraft[s.name];
-    if (!d) return false;
-    const live = mcpLiveOn(s);
-    return d.off !== s.off || d.on.size !== live.size || [...live].some((x) => !d.on.has(x));
-  }).map((s) => s.name);
-}
-// the line both views show: what is pending, and what applying it costs
-function mcpApplyRow() {
-  const n = mcpPending().length;
-  const why = "Applying changes the tools every conversation is built with.  Each conversation whose tool list "
-            + "changes reads its history again on its next message - minutes on a long one.  Conversations you "
-            + "have not sent in yet just get the new list.";
-  return `<p class="mcp-note" title="${esc(why)}">` +
-    (n ? `<button class="st-btn st-btn--secondary" data-mcp-apply>Apply ${n} change${n === 1 ? "" : "s"}</button>` +
-         `<button class="st-btn st-btn--secondary" data-mcp-discard>Undo</button>` +
-         `<span class="mcp-picker__cost muted small">Not applied yet. Applying makes each conversation whose tool ` +
-         `list changed read its history again.</span>`
-       : `<span class="muted small">No changes to apply.</span>`) + `</p>`;
-}
-// Apply: one POST for the whole draft.  A server going off is a disabled flag; a server that is on gets its
-// tool list written in one change (the hub supplies the names, so it cannot be done for a stopped server).
-async function mcpApply() {
-  const pend = mcpPending(), changes = [];
-  for (const name of pend) {
-    const d = mcpDraft[name], s = mcpServers().find((x) => x.name === name);
-    if (!s) continue;
-    if (d.off !== s.off) changes.push({server: name, disabled: d.off});
-    if (!d.off && s.status !== "off") changes.push({server: name, tools: [...d.on]});
+// Undo: send the baseline back, in one request, for every server that moved since the view was opened
+async function mcpUndo() {
+  const back = [];
+  for (const s of mcpChangedServers()) {
+    const b = mcpBaseline.get(s.name);
+    if (!b) continue;
+    if (b.off !== s.off) back.push({server: s.name, disabled: b.off});
+    if (!b.off && s.status !== "off") back.push({server: s.name, tools: [...b.on]});
   }
-  if (!changes.length) return;
+  if (!back.length) return;
+  await mcpPostAll(back, "Reverted");
+  mcpBaseline = null;
+}
+// one write path for both views: the config and the running hub change together, no restart
+async function mcpPostAll(changes, label) {
   try {
     const r = await fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: changes})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
-    mcpDraft = null;                                   // the answer is now the truth; both views redraw from it
-    toast("success", "Applied", (b.changed || []).join(", ") + " - conversations whose tools changed will read "
-          + "their history again on their next message");
     await loadMcp();
+    if ((b.changed || []).length) toast("success", label || "Applied", (b.changed || []).join(", "));
   } catch (err) {
-    toast("error", "Not applied", String(err.message || err), 6000);
+    toast("error", "Not changed", String(err.message || err), 6000);
   }
 }
-// one place handles a switch click for both views: it edits the draft, it never writes
-function mcpToggle(serverName, tool, off) {
-  const d = mcpEnsure(serverName);
-  if (off) d.off = true;
-  else if (tool === null) d.off = false;
-  else if (d.on.has(tool)) d.on.delete(tool); else d.on.add(tool);
+const mcpPost = (change) => mcpPostAll([change]);
+// the row both views show: what a switch costs, and the way back
+function mcpUndoRow() {
+  const n = mcpChangedServers().length;
+  const why = "A switch writes the run config and the running servers at once.  The tool list is the start of "
+            + "every conversation's prompt, so each conversation whose list changed reads its history again on "
+            + "its next message.  Undo puts back everything as it was when you opened this.";
+  return `<p class="mcp-note" title="${esc(why)}">` +
+    `<button class="st-btn st-btn--secondary" data-mcp-undo${n ? "" : " disabled"}>Undo</button>` +
+    `<span class="mcp-note-text muted small">Applied as you click.` +
+    (n ? ` Undo the ${n} server${n === 1 ? "" : "s"} you changed here.` : "") +
+    ` A conversation whose tool list changed reads its history again.</span></p>`;
 }
 function renderMcp() {
-  const list = mcpEffective();
+  const list = mcpServers();
   $("mcp-card").hidden = !list.length;
   $("mcp-row").hidden = !list.length;
   $("mcp-btn").hidden = !list.length;              // the wrench is the same control, reachable from the composer
@@ -633,23 +617,15 @@ function renderMcp() {
         `${esc(c.tool || c.name)}</button>`).join("") + `</div>` : "") +
       (s.off ? `<p class="mcp-note muted small">off in the config; its tools are not listed until it starts again</p>` : "") +
       `</div>`;
-  }).join("") + mcpApplyRow() + mcpNote();
-}
-// What a switch costs, said once where the switches are.
-function mcpNote() {
-  const why = "These switches write the run config and change the running servers at once - no restart.  The tool "
-            + "list is part of the start of every conversation's prompt, so a conversation whose list changed "
-            + "reads its history again on its next message.  The wrench button in the message box is the same "
-            + "control, closer to hand.";
-  return `<p class="mcp-note muted small" title="${esc(why)}">A switch applies to every conversation; one whose tool `
-       + `list changed reads its history again on the next message.</p>`;
+  }).join("") + mcpUndoRow();
 }
 // The wrench panel: the same servers, the same switches, the same writes.  Nothing here is per conversation.
 function openMcpPicker(anchor) {
   if (activePopover && activePopover.classList.contains("mcp-picker")) { closePopover(); return null; }
   closePopover();
+  mcpSnapshot();                                   // the window Undo can take back starts here
   const panel = node("div", "chat-menu mcp-picker");
-  for (const s of mcpEffective()) {
+  for (const s of mcpServers()) {
     const row = node("div", "mcp-server");
     row.setAttribute("data-mcp-server-card", s.name);
     const head = node("div", "mcp-server__head");
@@ -677,47 +653,48 @@ function openMcpPicker(anchor) {
   activePopover = panel;
   placePopover(panel, anchor);
   const rebuild = () => { const a = anchor; closePopover(); openMcpPicker(a); };
+  const n = mcpChangedServers().length;
   const foot = node("div", "mcp-picker__foot");
-  const apply = node("button", "st-btn st-btn--secondary", `Apply ${mcpPending().length} change${mcpPending().length === 1 ? "" : "s"}`);
-  apply.setAttribute("data-mcp-apply", "1");
-  apply.disabled = !mcpPending().length;
-  apply.title = "Applying changes the tools every conversation is built with. Each conversation whose tool list changes reads its history again on its next message.";
   const undo = node("button", "st-btn st-btn--secondary", "Undo");
-  undo.setAttribute("data-mcp-discard", "1");
-  undo.disabled = !mcpPending().length;
-  const warn = node("span", "mcp-picker__cost muted small", apply.disabled ? "Nothing to apply."
-    : "Not applied yet. Applying makes each conversation whose tool list changed read its history again.");
-  foot.append(apply, undo, warn);
+  undo.setAttribute("data-mcp-undo", "1");
+  undo.disabled = !n;
+  undo.title = "Put back everything as it was when you opened this.";
+  foot.appendChild(undo);
+  foot.appendChild(node("span", "mcp-picker__cost muted small",
+    "Applied as you click. A conversation whose tool list changed reads its history again."));
   panel.appendChild(foot);
   panel.addEventListener("click", (e) => {
-    if (e.target.closest("[data-mcp-apply]")) { mcpApply(); rebuild(); return; }
-    if (e.target.closest("[data-mcp-discard]")) { mcpDraft = null; rebuild(); return; }
+    if (e.target.closest("[data-mcp-undo]")) { mcpUndo().then(redrawMcpViews); return; }
     const sw = e.target.closest("[data-mcp-server]"), pick = e.target.closest("[data-mcp-pick]");
-    if (sw) mcpToggle(sw.getAttribute("data-mcp-server"), null, sw.getAttribute("aria-checked") === "true");
+    let change = null;
+    if (sw) change = {server: sw.getAttribute("data-mcp-server"), disabled: sw.getAttribute("aria-checked") === "true"};
     else if (pick) {
       const name = pick.getAttribute("data-mcp-pick");
-      mcpToggle(name.split("__")[0], name.slice(name.indexOf("__") + 2), false);
-    } else return;
-    renderMcp(); rebuild();                      // both views move together, and neither has written anything
+      change = {server: name.split("__")[0], tool: name.slice(name.indexOf("__") + 2),
+                enabled: pick.getAttribute("aria-checked") !== "true"};
+    }
+    if (change) mcpPost(change).then(redrawMcpViews);
   });
   return panel;
 }
 $("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));
 $("mcp-list").addEventListener("click", (e) => {
-  if (e.target.closest("[data-mcp-apply]")) { mcpApply(); return; }
-  if (e.target.closest("[data-mcp-discard]")) { mcpDraft = null; renderMcp(); return; }
+  if (e.target.closest("[data-mcp-undo]")) { mcpUndo().then(redrawMcpViews); return; }
   const card = e.target.closest(".mcp-server");
   if (!card) return;
   const server = card.dataset.mcpServer;
   const chip = e.target.closest("[data-mcp-tool]"), sw = e.target.closest("[data-mcp-toggle]");
   if (!chip && !sw) return;
-  if (chip) mcpToggle(server, chip.dataset.mcpTool, false);
-  else mcpToggle(server, null, sw.getAttribute("aria-checked") === "true");
-  renderMcp();                       // the draft is shared: the card and the open panel both redraw
+  mcpPost(chip ? {server, tool: chip.dataset.mcpTool, enabled: chip.getAttribute("aria-pressed") !== "true"}
+               : {server, disabled: sw.getAttribute("aria-checked") !== "false"}).then(redrawMcpViews);
+});
+// After a write, an open panel has to be rebuilt to show the new state.  The card does not: mcpPostAll awaits
+// loadMcp, and loadMcp renders it.
+function redrawMcpViews() {
   if (activePopover && activePopover.classList.contains("mcp-picker")) {
     const a = $("mcp-btn"); closePopover(); openMcpPicker(a);
   }
-});
+}
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
 // A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The

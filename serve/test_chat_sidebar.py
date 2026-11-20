@@ -293,13 +293,14 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('!e.target.closest("#mcp-btn")', self.js)
         # and nothing per-conversation survives: one setting, not two
         for gone in ("mcpFrozen", "chatToolsFor", "mcpDefault", "mcpSent", "updateMcpDot", "mcp-dot",
-                     "mcpSwitchState", "data-mcp-unfreeze", "chatPromptTokens"):
+                     "mcpSwitchState", "data-mcp-unfreeze", "chatPromptTokens", "mcpDraft", "data-mcp-apply"):
             self.assertNotIn(gone, self.js)
-        # one draft, one Apply: a click never writes; Apply posts the whole draft and says what it costs
-        self.assertIn("let mcpDraft = null;", self.js)
-        self.assertIn('data-mcp-apply', self.js)
-        self.assertIn('data-mcp-discard', self.js)
-        self.assertIn("read its history again", self.js)
+        # auto-apply with a way back: one snapshot per opened view, and Undo is greyed until something moved
+        self.assertIn("let mcpBaseline = null;", self.js)
+        self.assertIn('data-mcp-undo${n ? "" : " disabled"}', self.js)
+        self.assertIn("mcpSnapshot();", self.body("openMcpPicker"))
+        self.assertIn('if (tab === "monitor") { mcpSnapshot(); loadMcp(); }', self.js)
+        self.assertIn("function redrawMcpViews()", self.js)      # the card and an open panel move together
 
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence

@@ -317,12 +317,13 @@ class McpHttp(Fixture):
         self.assertIn('data-mcp-toggle', js)
         # one state, two views (todo #mcp-chat-picker): the wrench panel and the Monitor card post the SAME
         # change through the SAME function, and there is no per-conversation tool list anywhere
-        # neither view writes on a click: they move one shared draft, and only Apply posts
-        self.assertIn("async function mcpApply()", js)
-        self.assertIn("function mcpToggle(serverName, tool, off)", js)
-        self.assertEqual(js.count("mcpToggle("), 5)               # defined once, called from both views
-        self.assertEqual(js.count('fetch("mcp", {method: "POST"'), 1)   # one write path in the page: Apply
-        self.assertIn('body: JSON.stringify({mcp: changes})', js)  # the whole draft, in one request
+        # one write path for both views, and an Undo that sends the whole baseline back at once
+        self.assertIn("async function mcpPostAll(changes, label)", js)
+        self.assertIn("async function mcpUndo()", js)
+        self.assertIn("function mcpSnapshot()", js)
+        self.assertEqual(js.count("mcpPost("), 2)                 # one call in each view
+        self.assertEqual(js.count('fetch("mcp", {method: "POST"'), 1)   # one fetch for every write
+        self.assertIn('body: JSON.stringify({mcp: changes})', js)  # and it can carry many changes at once
         for gone in ("mcpFrozen", "chatToolsFor", "mcpDefault", "mcpSent", "updateMcpDot", "mcp-dot",
                      "data-mcp-unfreeze", "strata_mcp_tools = "):
             self.assertNotIn(gone, js)
