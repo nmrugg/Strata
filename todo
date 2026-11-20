@@ -441,6 +441,56 @@ all: fold-control replaced them, and the four overlapping switches became one co
     the .then(renderChat) that setHistory used to do, so the list was read and never drawn (harness: "the list
     shows them - 0 !== 4").
 
+`unread-call-instrument`  Say out loud when a tool call the model wrote never became a call. [py] SMALL DONE 2026-11-19
+    DONE: OutputParser counts it (`unread`, `unread_names`) and serve/server.py prints one line and adds
+    `totals.unread_tool_calls`, so /metrics sees it too.  Nothing about what the parser DELIVERS changed - the
+    markup still comes back as text - and every existing test still passed unchanged (fast suite 201 -> 210,
+    serve.test_server 317 OK, the page harnesses 85 ok lines and 37 tests).
+    Four shapes counted, each tested with a control in serve/test_reasoning_rescue.py class UnreadCall (9 cases):
+    a call inside a code fence that never closes (the one that killed several turns of one agent chat: the answer
+    ends with the call as prose, and NO counter fired - not abandoned, the envelope closed; not refused, the name
+    was never reached; not an empty turn, text was delivered); the same inside the thinking; an undeclared name in
+    the thinking; and the JSON form naming an undeclared tool.  A fence that closes, inline code, and prose that
+    names the format are quotes and stay uncounted - that is its own test, so the number is not noise.
+    The count and the name do not depend on how the text arrives (whole, or one character per delta).
+    Not in the Monitor's per-request record, on purpose: history.append in Service.run runs before
+    parser.finish(), and the fence case is only decided there - a field would read absent for the very shape it
+    flags (LESSONS.md).  The printed line and totals.unread_tool_calls are what carry it.
+    Needs a restart to take effect (serve/server.py).  The next time a turn dies this way the log names the tool
+    and says which of the two causes it was: a name the request did not declare, or a form the template does not
+    use.  What to do about it is item unread-call-recovery.
+
+`markdown-cheatsheet-gaps`  What the page's markdown does not render, measured against a cheatsheet. [ui] SMALL
+    Reviewed 2026-11-20 against https://github.com/im-luka/markdown-cheatsheet by running every construct in it
+    through the page's own markdown() / inline() under the node harness stub - not by reading the renderer.
+    Works: paragraphs, headings, **bold**, *italic*, _italic_, ***both***, blockquotes, inline code, fenced code
+    with a language and a copy button, inline links, ordered and unordered lists (- and *), tables with alignment,
+    *** rules, and escaping (5 < 6 & 7 > 2 stays safe).  Raw HTML is NOT passed through - the page escapes first,
+    and that is the security posture, not a gap.
+    FIXED 2026-11-20 (asked: "words like __still__ are still wrong"):
+      - __bold__ - the pair of the _emphasis_ rule, same guards, so strata__mcp__tools stays literal and a code
+        span stays as typed
+      - ~~strikethrough~~ -> del
+      - the rule regex: it was ^\s*([-*_])\s*\1\s*\1[\s\1]*$ and [\s\1] inside a character class is
+        whitespace-or-the-control-character \x01, NOT a backreference, so only a run of exactly three matched.
+        Now ^\s{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$ : ---, -----, _____, ***, ****, "- - -" and "_ _ _" are rules,
+        "--" and "-" are not.
+    Pinned in serve/test_chat_sidebar.js case 92; four controls fail it (drop either new rule, put the old regex
+    back, loosen the identifier guard).  Page-only: a reload, no restart.
+    Still does not:
+      - images: ![a](url) renders as a LINK with a literal ! in front of it - there is no img path at all
+      - link and image titles: [t](url "T") renders the whole thing as literal text
+      - reference links and images: [t][r] with the [r]: url definition
+      - in-page anchors: [go](#some-id) renders as literal text - the link rule wants a scheme
+      - task lists: - [x] done shows the brackets
+      - nested lists: an indented item under a numbered one flattens to a sibling
+      - an ordered list written 1. 2. 7. loses the 7
+      - double-backtick inline code (two backticks around `x`) mangles
+    Footnotes ([^1]) are GitHub-specific and probably out of scope for a chat.  Bare URLs are already item
+    auto-link-urls.  The decision left to the owner: an img path means the page fetches whatever URL the model
+    writes - worth a rule (attachments already render pictures the user put there); titles, reference links and
+    footnotes look like docs features a chat does not owe.
+
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
 `trim-tool-results`  Trim long tool calls before they reach the DOM. [py] [ui] - decide the policy first
@@ -595,23 +645,66 @@ all: fold-control replaced them, and the four overlapping switches became one co
     reload, which is what makes it an IndexedDB problem rather than an array.
 
 `unread-call-recovery`  Stop losing a tool call the model wrote: port upstream's parser fixes. [py] MEDIUM
-    Raised by item unread-call-instrument, which is what makes the loss visible at all.  Upstream has this work
-    (this fork is 1858 commits behind origin/main and 5942 behind upstream/main), and NONE of it applies cleanly:
-    `git apply --check` fails on every one, so it is a hand-port, one piece at a time, with the 37-case corpus in
-    serve/test_reasoning_rescue.py as the tripwire and each newly-fixed shape added to that corpus as a RECORDED
-    specimen rather than an invented one (LESSONS.md: measure before you build):
-      - d71132738  damaged call arguments, a stray closing think tag and a missing function closer no longer cost
-                   the call (#4427 #4077)
-      - 209dcadb3  a fence is closed only by one at least as long as the one that opened it, and an indented code
-                   block is a quote, so calls shown in them are not run (#4702 #4703).  This is the rule that
-                   would have saved the unclosed-fence loss the instrument now counts: an open fence turned a real
-                   act into answer prose and the turn ended with no call and no error.
-      - 70f424072  a drifted opener of a DECLARED tool is read as the call; a call for a name the request did not
-                   declare stays text (#3441 #3075)
-      - the nine #6032 R1-R6 commits: damaged parameter openers, an arguments JSON body, XML-element parameters, a
-        cut opener, empty stubs, a function opener with its closer left out, and the invoke/parameter dialect
-      - e05e6e0cc  a reply that ends in unread call markup is written again once (strata_unread_tool_markup), so
-        the turn continues instead of dying - the piece that stops the death, not the piece that explains it
+    STEP 1 DONE 2026-11-19 - the drift instrument.  An agent chat died twice on this box with a round that
+    delivered text, ended on stop, and ran no call, and item unread-call-instrument's counter said zero: the
+    markup was not the template's envelope at all, so the envelope logic never saw it.  Measured against the real
+    parser with tool_call_recovery on, before any of it was handled:
+      - a function opener with a space where = should be   -> no call, no counter, delivered as text
+      - the invoke dialect (Claude's form)                 -> no call, no counter, delivered as text
+      - a parameter written as a named parameter tag       -> THE CALL RAN with {} arguments
+      - a parameter written as an XML element              -> THE CALL RAN with {} arguments
+      - two parameters, one of them named                  -> the call ran with one mangled value: the closer and
+        the next parameter's name swallowed into the first value
+    The last three are worse than the deaths: the tool runs, answers, and the conversation goes on as if it
+    worked.  Nothing on the box said so.
+    What shipped: OutputParser counts `drift` / `drift_kinds` (a round that declared tools, delivered no call, and
+    ends on markup of that shape - DRIFT_MARKS, composed from the parser's own constants, never spelled out) and
+    `empty_args` / `empty_args_names` (a call that fired with no arguments although the tool declares properties).
+    serve/server.py prints both and totals them (drift_tool_markup, calls_with_empty_args).  Two things the tests
+    pin, because they are what makes the numbers readable rather than noise: a quoted example - closed fence,
+    tilde fence, inline code - is NOT drift (marks_outside_code walks the tail the same way the answer's fence
+    rules do), a call swallowed by a fence that never closes is counted by unread and NOT again by drift, and a
+    round that ran its call is not counted even if it then writes about the shape.  Tests:
+    serve/test_reasoning_rescue.py class DriftMarkup (8), five controls, each mapped to the test that fails when
+    the mechanism is removed - two of my first controls were insensitive (wrong edit, wrong test) and were
+    rebuilt.  Needs a restart.
+    STILL OPEN - the ports, in this order:
+      - 9c349c45a  empty stubs skipped, a cut opener dropped, a call with no readable parameter is NOT run
+                   (#6032 R5).  NOT ported, and its order changed: it sits on infrastructure this tree does not
+                   have (opener_at, a `names` set threaded through param_end and call_end), and its "not run"
+                   rule trades a wrong execution for a death.  Read the dialects first; refusing comes after.
+      - 7c743ad7f  DONE 2026-11-20 (the first port).  A parameter written as a named parameter tag is that
+                   parameter.  Before, measured: it parsed to NO arguments - the tool ran with nothing and
+                   answered as if it had worked; with two parameters, the second named, the first value swallowed
+                   the closer and the next parameter's whole opener.  Now: {"cmd": "ls", "n": 3}.  Three sites,
+                   not one - parse_tool_call's loop, param_end's follower test (this is the one that fixed the
+                   mangled value), and call_end's walk - reached through two helpers (param_opener,
+                   next_param_opener) composed from PARAM_START so no tag is spelled out, with a partial-form
+                   match so a streaming opener still holds instead of deciding.  Single-quoted and spaced-out
+                   variants read too.  Tests: serve/test_reasoning_rescue.py class NamedParameterForm (6,
+                   including #210's value-that-quotes-the-tags case unchanged, and every chunk width with
+                   streaming on and off).  Controls: reverting each of the three sites fails the class and the
+                   module.  The corpus of 37 stayed green throughout.
+      - still to read: a parameter written as an XML element (dcde1156c) - measured, it still fires with {}
+        arguments here; the empty_args counter now says so out loud, which is the only reason it is not silent
+      - 05795a845  the invoke dialect inside the wrapper is the call (#5969 parser part)
+      - 69a8dad81  a function opener with its closer left out, of a declared tool, opens the call (#6032 R6)
+      - 209dcadb3  a fence is closed only by one at least as long as the one that opened it, and an indented
+                   code block is a quote, so calls shown in them are not run (#4702 #4703)
+      - 2569c79ec / b3e6361c5 / ae9b390af / dcde1156c  the rest of the R-series (damaged openers, an arguments
+        JSON body, XML-element parameters)
+      - d71132738  damaged arguments and a missing function closer no longer cost the call (#4427 #4077).  Its
+        #4077 half does NOT apply here: this tree already zeroes the fence/line/ticks tracking when the thinking
+        ends, so a fence left open by the reasoning cannot swallow the answer's call - measured, six probes.
+      - e05e6e0cc  a reply that ends in unread markup is written again once (strata_unread_tool_markup).  Needs a
+        decision first: the retry has to put something in the conversation for the model to react to, and the page
+        rebuilds that turn's history itself, so server and page must agree exactly or the prompt prefix breaks and
+        the chat re-reads.  A bare re-run at greedy sampling emits the identical tokens, so it is not a fix.
+    None of it applies cleanly (this fork is 1858 behind origin/main, 5942 behind upstream/main; `git apply
+    --check` fails on every one), so each is a hand-port with the 37-case corpus in
+    serve/test_reasoning_rescue.py as the tripwire.  Add the four shapes above to that corpus as fixtures,
+    labelled as constructed: the recorded specimen is the round that died at 22:40:11 and its text was not kept
+    (api_monitor off), so the real example is still to be caught - by these counters now.
     Reconcile with what this tree already has rather than cherry-picking over it: tool_call_recovery (#2037), the
     declared-tool rule inside the reasoning (#804), and _bare_opener.
     Also open in this tree, and unproven: the ValueError branch of _finish_call (recover on, a body that does not

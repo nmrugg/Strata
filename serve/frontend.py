@@ -593,19 +593,61 @@ CALL_END = "</tool_call>"
 PARAM_END = "</parameter>"
 FUNC_START = "<function="
 FUNC_END = "</function>"
+# todo #unread-call-recovery: shapes that read as an act to a reader but are not the template's envelope, so the
+# envelope logic never sees them and no counter fires - measured on this tree: a function opener with a space
+# instead of =, and the invoke dialect, both come back as plain text with unread=0 abandoned=0 refused=0.
+# Built from the constants above rather than spelled out, and a test composes the same shapes the same way.
+TAG_OPEN = FUNC_START[:1]
+DRIFT_TAIL = 400        # only the END of a reply is looked at: a quoted example in the middle of an answer is
+                        # not the death this is for, markup the reply stops on is
+DRIFT_MARKS = ((FUNC_START, "a function opener"),
+               (TAG_OPEN + "function ", "a function opener with a space where = should be"),
+               (TAG_OPEN + "invoke name=", "the invoke dialect"),
+               (TAG_OPEN + "parameter name=", "a named parameter"),
+               (TAG_OPEN + "arguments>", "an arguments block"))
+
+
+def marks_outside_code(text: str) -> list[str]:
+    """The DRIFT_MARKS that appear in `text` outside a code fence or inline code.  A model showing the format is
+    writing about a call, not making one - the answer's own fence rules already treat that as text - so a tail
+    scan that ignored code would count every quoted example as a lost call.  Line-based and approximate: the tail
+    is a suffix, so its first line may be cut mid-shape.  A call swallowed by a fence that never closes is not
+    found here either, and that is deliberate: _swallowed and unread already own that shape, and counting it twice
+    would make the two numbers impossible to read."""
+    out, fence, ticks = [], "", 0
+    for line in text.split("\n"):
+        s = line.lstrip()
+        if fence:
+            if s.startswith(fence * 3):
+                fence = ""
+            continue
+        if s[:3] in ("```", "~~~"):
+            fence = s[0]
+            continue
+        if not s:
+            ticks = 0
+        else:
+            ticks += line.count("`")
+        if ticks % 2 == 0:
+            for mark, kind in DRIFT_MARKS:
+                if mark in line and kind not in out:
+                    out.append(kind)
+    return out
 
 
 def param_end(text: str, final: bool = False) -> int:
     """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by the next
-    `<parameter=` or `</function>` - the same text inside a value (a file that documents the call format, #210) is
-    part of the value.  -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
+    parameter opener (either form) or `</function>` - the same text inside a value (a file that documents the
+    call format, #210) is part of the value.  -1: none yet; -2: a candidate whose follower has not arrived
+    (streaming; `final` accepts it)."""
     at = text.find(PARAM_END)
     while at >= 0:
         after = text[at + len(PARAM_END):].lstrip()
-        if after.startswith(("<parameter=", FUNC_END)):
-            return at
-        if not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
-            return at if final else -2
+        op = param_opener(after)
+        if (op and op[1] >= 0) or after.startswith(FUNC_END):
+            return at                                  # the next parameter, or the call's own end
+        if not after or PARAM_START.startswith(after) or FUNC_END.startswith(after) or (op and op[1] < 0):
+            return at if final else -2                 # the follower has not arrived yet: hold
         at = text.find(PARAM_END, at + 1)
     return -1
 
@@ -626,21 +668,20 @@ def call_end(text: str) -> int:
         rest = text[pos:]
         s = rest.lstrip()
         pos += len(rest) - len(s)
-        if s.startswith("<parameter="):
-            gt = text.find(">", pos)
-            if gt < 0:
-                return -1
-            end = param_end(text[gt + 1:])
+        op = param_opener(s)
+        if op and op[1] >= 0:                       # a parameter opener, either form
+            past = pos + op[1]
+            end = param_end(text[past:])
             if end < 0:
                 return -1
-            pos = gt + 1 + end + len(PARAM_END)
+            pos = past + end + len(PARAM_END)
         elif s.startswith(FUNC_END):
             rest = text[pos + len(FUNC_END):]
             s = rest.lstrip()
             if s.startswith(CALL_END):
                 return pos + len(FUNC_END) + len(rest) - len(s)
             return -1 if CALL_END.startswith(s) else text.find(CALL_END, pos)
-        elif not s or "<parameter=".startswith(s) or FUNC_END.startswith(s):
+        elif not s or PARAM_START.startswith(s) or FUNC_END.startswith(s) or (op and op[1] < 0):
             return -1
         else:
             return text.find(CALL_END, pos)
@@ -691,6 +732,45 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
 
 
 PARAM_START = "<parameter="
+
+# The model also writes a parameter the way Claude's tools name them - `<parameter name="k">` instead of the
+# template's `<parameter=k>` (upstream #5969's third form, item unread-call-recovery).  Read as the same
+# parameter: measured on this tree before this change, the named form parsed to NO arguments at all, so the tool
+# ran with nothing and answered as if it had worked.  Composed from PARAM_START, so no tag is spelled out here.
+_NAMED_TAIL = r"\s+name\s*=\s*(['\"])(?P<nm>[^'\"]*)\1\s*>"
+_PARAM_NAMED = re.compile(PARAM_START[:-1] + _NAMED_TAIL)
+_PARAM_NAMED_PART = re.compile(PARAM_START[:-1] + r"(\s+name(\s*=\s*(['\"][^'\"]*)?)?)?$")
+
+
+def param_opener(text: str):
+    """A parameter opener at the start of `text`, in either form: (name, index just past it).  None when `text`
+    does not open a parameter, and ("", -1) when an opener is arriving but has not finished - the streaming case
+    the callers hold on rather than guess."""
+    if text.startswith(PARAM_START):
+        gt = text.find(">")
+        return ("", -1) if gt < 0 else (text[len(PARAM_START):gt].strip(), gt + 1)
+    m = _PARAM_NAMED.match(text)
+    if m:
+        return m.group("nm").strip(), m.end()
+    return ("", -1) if _PARAM_NAMED_PART.match(text) else None
+
+
+def next_param_opener(text: str):
+    """(index, name, index past it) for the next parameter opener anywhere in `text`, either form; None if there
+    is none.  The two forms cannot be found by one search: the named one has no `=` after the tag, so the
+    template's opener string does not match it."""
+    m = _PARAM_NAMED.search(text)
+    i = text.find(PARAM_START)
+    if m and (i < 0 or m.start() < i):
+        return m.start(), m.group("nm").strip(), m.end()
+    if i >= 0:
+        gt = text.find(">", i)
+        if gt < 0:
+            return None
+        return i, text[i + len(PARAM_START):gt].strip(), gt + 1
+    return None
+
+
 
 
 def function_end(text: str) -> int:
@@ -751,7 +831,8 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
 
 
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
-    """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
+    """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall.  A parameter written as
+    `<parameter name="P">` is the same parameter (upstream #5969's third form).  Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
     objects/arrays/numbers/booleans)."""
     body = body.strip()
@@ -761,10 +842,11 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     args = {}
-    while "<parameter=" in rest:
-        rest = rest[rest.index("<parameter=") + len("<parameter="):]
-        pname = rest[:rest.index(">")]
-        rest = rest[rest.index(">") + 1:]
+    while True:
+        nxt = next_param_opener(rest)               # either opener form: see next_param_opener
+        if nxt is None:
+            break
+        pname, rest = nxt[1], rest[nxt[2]:]
         end = param_end(rest, final=True)
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
@@ -785,6 +867,24 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
 THINK_HOLD_MAX = 4096    # a closing think tag inside an open code fence is held at most this long for it to close
+
+
+def call_name(body: str) -> str:
+    """The tool name the model wrote inside a call envelope, or "" when it never got that far.  Best effort, and
+    used only to name an unread call in the log - nothing is decided from it (todo #unread-call-instrument)."""
+    s = body.strip()
+    i = s.find(FUNC_START)
+    if i >= 0:
+        j = s.find(">", i + len(FUNC_START))
+        return s[i + len(FUNC_START):j if j >= 0 else i + len(FUNC_START) + 40].strip()
+    i = s.find("{")                                        # the JSON form: the name is a field, not a tag
+    if i >= 0:
+        try:
+            d, _ = json.JSONDecoder().raw_decode(s[i:])    # the wrapper's closer follows the object
+        except ValueError:
+            return ""
+        return str(d.get("name") or "") if isinstance(d, dict) else ""
+    return ""
 
 
 class OutputParser:
@@ -809,6 +909,27 @@ class OutputParser:
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.abandoned = 0           # a call the model opened and never finished, dropped at the end of the turn
+        # todo #unread-call-instrument: a whole call envelope that did not become a call of a declared tool.  The
+        # other three counters cover a call that was read (rescued / refused) or opened and left unfinished
+        # (abandoned); this one is the case where the model wrote an act and the parser handed the text back -
+        # answer text, or reasoning folded away in a block - and the turn simply ends with no call and no error.
+        # It is the shape a chat sees as "the agent stopped instead of calling a tool", and nothing said so.
+        self.unread = 0
+        self.unread_names: list[str] = []      # the names the model wrote, first-seen order
+        # an opener the code-quote rule turned into text while a code FENCE was open.  A fence that closes was a
+        # quoted example; one still open when the turn ends swallowed a real act, and that is counted at the end
+        # (see _swallowed; the two cannot be told apart earlier - _fence_quoted_think says so).
+        self._fenced: list[str] = []
+        # todo #unread-call-recovery: call-shaped markup the envelope logic never saw at all (see DRIFT_MARKS),
+        # and a call that fired with no arguments although its tool declares some.  Both measured on this tree,
+        # both invisible to every counter above: the first ends the turn with the call as text and no log line,
+        # the second runs the tool with nothing, or with a mangled value.
+        self.drift = 0
+        self.drift_kinds: list[str] = []
+        self.empty_args = 0
+        self.empty_args_names: list[str] = []
+        self.calls = 0                 # the calls this turn actually delivered
+        self._tail = ""                # the last DRIFT_TAIL characters of what the client was given
         self.delivered = False       # the client got something it can use: answer text, or a completed call
         self.finished_in = ""        # the parser state the turn ended in, and what was held there
         self.held_at_end = ""
@@ -894,6 +1015,8 @@ class OutputParser:
         the current paragraph.  Returns the text."""
         # Most token fragments stay on the current line. Fence and paragraph
         # bookkeeping happens only when a newline completes that line.
+        if self._fenced and self.fence:      # keep what follows a swallowed opener, so the log can name it
+            self._fenced[-1] = (self._fenced[-1] + text)[:240]
         if "\n" not in text:
             if text:
                 self._line_parts.append(text)
@@ -989,10 +1112,31 @@ class OutputParser:
             elif call is None or not deliver:
                 if call is not None:
                     self.refused += 1
+                else:
+                    self._unread(raw)                       # held as an act, and it names no declared tool
                 if raw:
                     out.append(Event("reasoning", self._track(raw)))
         self.pending = []
         return out
+
+    def _unread(self, raw: str) -> None:
+        """Count a whole call envelope that came back as text instead of a call (todo #unread-call-instrument).
+        Only the forms that read as an act are counted: an envelope whose follower is the function opener, or a
+        JSON object in the wrapper.  A tag the model wrote to talk about the format - in a code fence, in inline
+        code, or with prose after it - is deliberately text and stays uncounted, or the number would be noise."""
+        self.unread += 1
+        name = call_name(raw)[:64]
+        if name and name not in self.unread_names:
+            self.unread_names.append(name)
+
+    def _swallowed(self, rest: str, in_fence: bool) -> None:
+        """Remember a call opener that the code-quote rule handed back as text while a code fence (not inline
+        code) was open (todo #unread-call-instrument).  Nothing is counted yet: an unclosed fence and a quoted
+        example look identical until the fence closes or the turn ends, so _finish decides which it was.
+        `in_fence` is passed in, not read: the caller restores the tracking state it snapshotted before the
+        opener, and the fence marker that opened it is in the text before the opener."""
+        if in_fence:
+            self._fenced.append(rest[:240])
 
     def _reset_scan(self):
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
@@ -1116,11 +1260,30 @@ class OutputParser:
 
     def note_delivered(self, evs: list[Event]) -> None:
         """Remember that the client was given something it can use.  Answer text, or a
-        call that actually completed - a call only announced (tool_start) is not, since it may never finish."""
+        call that actually completed - a call only announced (tool_start) is not, since it may never finish.
+        Every delivered event passes through here, so the drift counters live here too
+        (todo #unread-call-recovery)."""
         for ev in evs:
-            if ev.kind == "tool_call" or (ev.kind == "content" and ev.text):
+            if ev.kind == "tool_call":
                 self.delivered = True
+                self.calls += 1
+                self._check_empty_args(ev.call)
+            elif ev.text:
+                self._tail = (self._tail + ev.text)[-DRIFT_TAIL:]     # marks_outside_code decides what counts
+                if ev.kind == "content":
+                    self.delivered = True
         return
+
+    def _check_empty_args(self, call) -> None:
+        """A call that fired with no arguments although the tool declares properties.  Measured on this tree: a
+        parameter written as a named parameter tag, or as an XML element, parses to {} - the tool runs, answers,
+        and nothing says the arguments were lost.  A tool whose properties are all optional can legitimately send
+        none, so this counts and names rather than refusing; refusing is the port's job (upstream #6032 R5)."""
+        props = ((self.schemas.get(call.name) or {}).get("parameters") or {}).get("properties") or {}
+        if props and not call.arguments:
+            self.empty_args += 1
+            if call.name not in self.empty_args_names:
+                self.empty_args_names.append(call.name)
 
     def feed(self, delta: str) -> list[Event]:
         out = self._feed(delta)
@@ -1148,6 +1311,7 @@ class OutputParser:
                     if call is not None or self.pending:
                         self.pending.append([raw, call])    # settled by what follows it (see __init__)
                     else:
+                        self._unread(raw)                   # an act in the thinking that named nothing declared
                         out.append(Event("reasoning", self._track(raw)))
                     self.buf = body[end + len(CALL_END):]
                     self.state = "reasoning"
@@ -1191,6 +1355,7 @@ class OutputParser:
                         self.buf = self.buf[tool:]
                         self.state = "rcall"
                     else:                            # mid-sentence, in a fence or in inline code: a quote
+                        self._swallowed(self.buf[tool:], bool(self.fence))
                         out.append(Event("reasoning", self._track(CALL_START)))
                         self.buf = self.buf[tool + len(CALL_START):]
                     continue
@@ -1259,9 +1424,10 @@ class OutputParser:
                 # text before it decides, so streamed and whole outputs agree.  Mid-sentence openers still count.
                 snap = (self.fence, self.line, self.ticks)
                 self._track(self.buf[:i])
-                in_code = self._in_code()
+                in_code, in_fence = self._in_code(), bool(self.fence)
                 self.fence, self.line, self.ticks = snap
                 if in_code:
+                    self._swallowed(self.buf[i:], in_fence)        # a fence here may never close
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
                     continue
@@ -1306,6 +1472,7 @@ class OutputParser:
                     return out
                 call = json_tool_call(self.buf[:i].strip(), self.schemas)
                 if call is None:
+                    self._unread(CALL_START + self.buf[:i + len(CALL_END)])
                     out.append(Event("content", self._track(CALL_START + self.buf[:i + len(CALL_END)])))
                 else:
                     out.append(Event("tool_call", call=call))
@@ -1363,6 +1530,17 @@ class OutputParser:
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
         self.finished_in, self.held_at_end = self.state, self.buf[:120]
+        if self._fenced and self.fence:       # the fence never closed: those openers were acts, not examples
+            for raw in self._fenced:          # todo #unread-call-instrument
+                self._unread(raw)
+        self._fenced = []
+        if self.schemas and not self.calls:   # tools declared, no call delivered: look at how the reply ends
+            kinds = marks_outside_code(self._tail)     # todo #unread-call-recovery
+            if kinds:
+                self.drift += 1                        # one round that ended this way, however many shapes
+                for kind in kinds:
+                    if kind not in self.drift_kinds:
+                        self.drift_kinds.append(kind)
         if self.state == "rcall":
             self.abandoned += 1      # a call opened INSIDE the reasoning and never closed: nothing is delivered
         if self.pending:
@@ -1415,6 +1593,7 @@ class OutputParser:
                 raise
             self._reset_scan()
             self.state = "content"
+            self._unread(body if bare else CALL_START + body + CALL_END)
             return [Event("content", self._track(body if bare else CALL_START + body + CALL_END))]
         if self.scall is not None:
             call.id = self.scall.id

@@ -30,7 +30,18 @@ own output contained them while it was *describing* the bug: some consumer (Stra
 parser, the MCP transport, or the harness rendering the agent's reasoning) read the text as
 a real boundary and cut the turn. Refer to them in words. In commands and test files build
 them from pieces (`chr(60) + "/think" + chr(62)`) so the literal sequence never appears in
-output. Markdown fences are safe; tag names are not.
+output. Tag names are safe; the tags themselves are not, and **a markdown fence is not protection**. On 2026-11-19 an agent
+broke its own turn twice in one session by spelling the closing think tag while *describing* this bug - once inside
+a fenced code block in its answer (the turn ended and the tool call it then wrote arrived as an ordinary chat
+message), once inside its own reasoning. Neither was prose, and the fence did not help: the structure is recognised
+in the text stream, not in the rendered page.
+
+**In tests and probes, import the parser's constants instead of spelling or assembling the tags.** `serve/frontend.py`
+exports `CALL_START`, `CALL_END`, `FUNC_START`, `FUNC_END`, `PARAM_START`, `PARAM_END`, `THINK_END`. Deriving one is
+a trap that cost a wrong conclusion the same day: `FUNC_START` ends with `=`, so replacing `<` with `</` and adding
+`>` produces a closer one character wrong, the fixture silently takes a different parser path (`call_end` returns
+-1, the turn is counted as abandoned instead), and the code under test looks broken when the fixture is. Check a
+suspicious fixture by calling the helper directly before believing anything about the code.
 
 ## Verify, then claim
 
@@ -86,6 +97,37 @@ evidence.
 - so a 1M-token conversation is **~18 GiB of state**: ~8 s to save, ~6 s to resume, ~500 s
   to re-read — and RAM cannot hold one (4 GiB park budget, 34 GiB available, 35 GiB in swap)
 
+**A `tee -a` log is several processes, and a grep that returns 0 can mean "not instrumented".** On 2026-11-19
+several turns of one agent chat died with the tool call rendered as text. The first measurements said zero of
+everything, and both readings were wrong in the same way. `/tmp/strata-server.log` is appended across restarts, so
+the two "tool calls inside the thinking" lines belonged to the **previous** process - the current one's start-up
+banner was at line 23362 of 25624, and any count has to be taken after that boundary. And the failure mode itself
+had no print and no counter in this tree at all, so no pattern could find an event that never emitted one: the
+counters that exist (`rescued`, `refused`, `abandoned`, `empty_turns`) each describe a call the parser *recognised*
+in some way, and a call envelope handed back as prose is none of them. Cross-check a log count against `/metrics`
+`totals` before believing either - they disagreed here for exactly that reason. Fixed by item
+unread-call-instrument: `unread` / `unread_names` on the parser, one printed line and `totals.unread_tool_calls`
+in the server.
+
+**Where a state is decided late, an instrument has to wait for the end.** An unclosed code fence and a quoted
+example of the format are indistinguishable while the text is arriving (`_fence_quoted_think` already says so for
+the think tag). So the parser now *remembers* the openers the code-quote rule turned into text and only decides in
+`finish()` whether the fence ever closed. Counting at the moment of the swallow would have counted every quote the
+corpus insists must stay text.
+
+**A class named for an input reaches a textarea.** `.st-input` in `serve/web/components.css` is
+`height: 44px; padding: 0 14px` — right for a one-line field, and it made every multi-line field in the MCP server
+form a 44 px strip with the text clipped under the top edge. A `textarea.st-input` needs `height: auto` and real
+vertical padding; a `min-height` alone does not fix it, because the fixed `height` still wins. Pinned by a CSS
+assertion in `serve/test_chat_sidebar.py`, because no test on this box renders a page.
+
+**A popover's outside-click rule will close the popover under a modal it opened.** `serve/web/app.js` keeps one
+document click listener that calls `closePopover()` unless the click is inside `.chat-menu`, on an opener
+(`[data-chat-menu]`, `[data-msg-edit]`, `#mcp-btn`). A modal lives on `<body>` inside `.att-viewer`, so the first
+click in the MCP server form counted as an outside click and the wrench panel behind it vanished - the view the
+modal was editing. The rule now excludes `.att-viewer`. Escape was already right (modal first, then popover), which
+is the tell: the keyboard path and the mouse path disagreed.
+
 ## Where things actually go
 
 **Two logs, and the important one is lost by default.** Engine stderr →
@@ -111,6 +153,19 @@ Anchor patterns, and prefer `/metrics` counters (`totals.empty_turns`,
 **Counters appear only when non-zero.** `/metrics` omits `empty_turns` entirely rather than
 reporting `0`. Absent means zero, not broken — but it reads like a missing feature and cost
 a detour.
+
+**The Monitor's per-request record is written before the parser decides anything at the end of the turn.**
+`self.history.append({...})` in `Service.run` (`serve/server.py`) runs before `parser.finish()`, so a verdict the
+parser only reaches at the end — whether an open code fence swallowed a real call, the `unread` count of item
+unread-call-instrument — cannot live in that record: it would read absent for exactly the case it exists to flag.
+The printed line and `totals` are the only places those are visible. Found by adding the field, watching a test
+that otherwise passed come back `None`, and reading the order instead of blaming the assertion.
+
+**`serve/frontend.py`'s tag constants are not in one place.** `CALL_START`, `CALL_END`, `PARAM_END`, `FUNC_START`
+and `FUNC_END` sit together near the top; `PARAM_START` is about 100 lines further down, with the parameter
+helpers. A module-level regex composed from `PARAM_START` and placed with the first group raises `NameError` at
+import — the edit looks fine in the diff. Compose from a constant only after that constant, and `py_compile` the
+file before believing any edit that adds module-level code.
 
 **The web app's harness had never run `send()`.** `serve/test_chat_sidebar.js`
 drives the real `serve/web/app.js` against a stub DOM, but that stub had no `innerHeight`

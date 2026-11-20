@@ -13,15 +13,18 @@ plus the live one cut by max tokens).
 """
 from __future__ import annotations
 
+import io
 import json
 import random
 import sys
 import unittest
 import urllib.request
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.frontend import ChatTemplate, OutputParser  # noqa: E402
+from serve.frontend import (CALL_END, CALL_START, FUNC_END, FUNC_START, PARAM_END, PARAM_START,
+                            ChatTemplate, OutputParser)  # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 from serve.test_server import CTX  # noqa: E402
 
@@ -281,6 +284,288 @@ class OverHttp(unittest.TestCase):
             with self.subTest(name):
                 a = self.ask( "ok</think>\n\n" + body)
                 self.assertEqual(set(a.values()), {want}, a)
+
+
+class UnreadCall(unittest.TestCase):
+    """todo #unread-call-instrument: an act the model wrote that the parser could not carry out is counted and
+    named.  What comes OUT of the parser is already pinned above and by the corpus - the markup comes back as text -
+    and none of that changes here.  What is new is that the turn reports it, because no existing counter covers
+    it: a call swallowed by a code fence that never closes is not abandoned (the envelope closed), not refused
+    (the name was declared and never reached that decision) and not an empty turn (text was delivered); an
+    undeclared name inside the reasoning is not refused either (refused counts the declared ones).  A chat sees
+    both as "the agent stopped instead of calling a tool"."""
+
+    UNDECLARED = CALL.replace(FUNC_START + "write>", FUNC_START + "write_file>")
+    JSON_ENV = CALL_START + '\n{"name": "write_file", "arguments": {"path": "x"}}\n' + CALL_END
+    OPEN_FENCE = VisibleAnswer.HEAD + "```python\n" + CALL            # the fence is never closed
+    QUOTED = VisibleAnswer.HEAD + "```python\n" + CALL + "\n```\nDone."
+
+    def parse(self, text, tools=SCHEMA, recover=False):
+        p = OutputParser(thinking=True, tools=tools, recover=recover)
+        return p, p.feed(text) + p.finish()
+
+    def test_a_call_inside_a_fence_that_never_closes_is_counted(self):
+        p, evs = self.parse(self.OPEN_FENCE, recover=True)
+        self.assertEqual(calls(evs), [], "the fence rule made it text - that rule is not changing here")
+        self.assertEqual((p.unread, p.unread_names), (1, ["write"]), "but the turn says so, and names it")
+        self.assertEqual(p.abandoned + p.rescued + p.refused, 0, "no other counter claims it")
+
+    def test_a_call_shown_as_an_example_is_not_counted(self):
+        for label, text in (("closed fence", self.QUOTED),
+                            ("inline code", VisibleAnswer.HEAD + "Use `" + CALL + "` here."),
+                            ("prose naming the format",
+                             VisibleAnswer.HEAD + "Format: " + CALL_START + " blocks name the tool, then I explain.")):
+            with self.subTest(label):
+                p, evs = self.parse(text, recover=True)
+                self.assertEqual(calls(evs), [])
+                self.assertEqual(p.unread, 0, "the model was showing the format, not acting")
+
+    def test_an_undeclared_name_in_the_thinking_is_counted(self):
+        p, evs = self.parse("let me write it.\n" + self.UNDECLARED)
+        self.assertEqual(calls(evs), [])
+        self.assertEqual((p.unread, p.unread_names), (1, ["write_file"]))
+
+    def test_a_real_call_is_not_counted(self):
+        p, evs = self.parse("let me write it.\n" + CALL)
+        self.assertEqual(calls(evs), ["write"], "rescued, as #804 established")
+        self.assertEqual(p.unread, 0)
+
+    def test_the_json_form_naming_nothing_declared_is_counted(self):
+        p, evs = self.parse(VisibleAnswer.HEAD + self.JSON_ENV, recover=True)
+        self.assertEqual(calls(evs), [])
+        self.assertEqual((p.unread, p.unread_names), (1, ["write_file"]))
+        p, _ = self.parse(VisibleAnswer.HEAD + self.JSON_ENV.replace("write_file", "write"), recover=True)
+        self.assertEqual(p.unread, 0, "the same envelope naming a declared tool is a call, not an unread act")
+
+    def test_a_pending_undeclared_call_is_counted_when_the_thinking_releases(self):
+        p, evs = self.parse("let me write.\n" + CALL + "\n" + self.UNDECLARED)
+        self.assertEqual(calls(evs), ["write"], "the declared one is rescued, as #804 established")
+        self.assertEqual((p.unread, p.unread_names), (1, ["write_file"]), "the other went back as reasoning")
+
+    def test_a_call_in_a_fence_inside_the_thinking_is_counted(self):
+        p, evs = self.parse("```python\n" + CALL)
+        self.assertEqual(calls(evs), [])
+        self.assertEqual((p.unread, p.unread_names), (1, ["write"]))
+        p, _ = self.parse("```python\n" + CALL + "\n```\nmore thinking")
+        self.assertEqual(p.unread, 0, "a fence that closes inside the thinking is an example, not a swallowed act")
+
+    def test_the_count_does_not_depend_on_how_the_text_arrives(self):
+        for width in WIDTHS:
+            p = OutputParser(thinking=True, tools=SCHEMA, recover=True)
+            i, rnd = 0, random.Random(7)
+            while i < len(self.OPEN_FENCE):
+                k = width or rnd.randint(1, 9)
+                p.feed(self.OPEN_FENCE[i:i + k])
+                i += k
+            p.finish()
+            with self.subTest(width=width):
+                self.assertEqual(p.unread, 1)
+                self.assertEqual(p.unread_names, ["write"], "named even when the opener arrives one character "
+                                                           "at a time")
+
+    def test_the_server_logs_it_and_counts_it(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, self.OPEN_FENCE, max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        body = {"model": "x", "messages": [{"role": "user", "content": "save my notes"}], "max_tokens": 800,
+                "tools": [{"type": "function", "function": {"name": "write",
+                                                            "parameters": {"type": "object", "properties": PROPS}}}]}
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    r.read()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        said = out.getvalue()
+        self.assertIn("came back as text and never ran", said, said)
+        self.assertIn("write", said, "the line names what the model asked for")
+        self.assertEqual(svc.totals.get("unread_tool_calls"), 1, "and /metrics can see the count")
+        # deliberately NOT asserted on svc.history: that record is written before parser.finish() runs, and an
+        # unclosed fence is only known to be an act (rather than a quoted example) at the end of the turn.  A
+        # field there would read "none" for the one shape this exists to catch.
+
+
+class DriftMarkup(unittest.TestCase):
+    """todo #unread-call-recovery: the shapes that are not the template's envelope at all, so the envelope logic
+    never sees them and item unread-call-instrument's counter cannot either.  Measured on this tree before any
+    handling: a function opener with a space where = should be, and the invoke dialect, both come back as plain
+    text with every counter at zero - that is the death the chat sees as "the agent stopped instead of calling a
+    tool".  And a parameter written as a named parameter tag, or as an XML element, fires a call with NO
+    arguments: the tool runs, answers, and nothing says the arguments were lost - worse than a death, because the
+    conversation goes on as if it worked.  What the parser DELIVERS does not change here; the counters do."""
+
+    LT = FUNC_START[:1]                       # composed from the constants, never spelled out
+    CALL_RUN = (CALL_START + "\n" + FUNC_START + "run>\n" + PARAM_START + "cmd>\nls\n" + PARAM_END
+                + "\n" + FUNC_END + "\n" + CALL_END)
+    SPACE = LT + "function run>\n" + PARAM_START + "cmd>\nls\n" + PARAM_END + "\n" + FUNC_END
+    INVOKE = (LT + 'invoke name="run">\n' + LT + 'parameter name="cmd">\nls\n' + LT + "/parameter>\n"
+              + LT + "/invoke>")
+    NAMED = (CALL_START + "\n" + FUNC_START + "run>\n" + LT + 'parameter name="cmd">\nls\n' + LT
+             + "/parameter>\n" + FUNC_END + "\n" + CALL_END)
+    ELEMENT = (CALL_START + "\n" + FUNC_START + "run>\n" + LT + "cmd>ls" + LT + "/cmd>\n" + FUNC_END
+               + "\n" + CALL_END)
+    SCHEMA = [{"name": "run", "parameters": {"properties": {"cmd": {"type": "string"}}}}]
+
+    def parse(self, text, thinking=False):
+        p = OutputParser(thinking=thinking, tools=self.SCHEMA, recover=True, stream_tools=True)
+        return p, p.feed(text) + p.finish()
+
+    def test_the_drift_shapes_are_counted_and_named(self):
+        for label, body in (("a function opener with a space", self.SPACE), ("the invoke dialect", self.INVOKE)):
+            with self.subTest(label):
+                p, evs = self.parse(body)
+                self.assertEqual(calls(evs), [], "no call ran - that is the death")
+                self.assertEqual(p.drift, 1, "and the turn now says so")
+                self.assertTrue(p.drift_kinds)
+                self.assertEqual(p.unread + p.abandoned + p.rescued + p.refused, 0,
+                                 "no other counter sees it either: this was the whole blind spot")
+
+    def test_a_quoted_example_is_not_counted(self):
+        for label, body in (("closed fence", VisibleAnswer.HEAD + "Format:\n```xml\n" + self.CALL_RUN + "\n```\nNot running it."),
+                            ("tilde fence", VisibleAnswer.HEAD + "Example:\n~~~\n" + self.CALL_RUN + "\n~~~\nEnd of it."),
+                            ("inline code", VisibleAnswer.HEAD + "Use `" + self.CALL_RUN + "` to call it.")):
+            with self.subTest(label):
+                p, evs = self.parse(body, thinking=True)
+                self.assertEqual(calls(evs), [])
+                self.assertEqual(p.drift, 0, "the model was writing about a call, not making one")
+
+    def test_a_call_swallowed_by_an_unclosed_fence_is_counted_once_not_twice(self):
+        p, evs = self.parse(VisibleAnswer.HEAD + "```python\n" + self.CALL_RUN, thinking=True)
+        self.assertEqual(calls(evs), [])
+        self.assertEqual(p.unread, 1, "that shape belongs to unread-call-instrument")
+        self.assertEqual(p.drift, 0, "and drift does not claim it as well")
+
+    def test_a_turn_that_ran_its_call_is_not_counted_even_if_it_mentions_the_shape(self):
+        # the guard is "this round delivered a call", not "the reply contains nothing shaped like one": a model
+        # that ran a tool and then wrote about the format in prose is not the death this counts
+        p, evs = self.parse(self.CALL_RUN + "\nBy the way, one writes " + self.LT + "function name> for this.")
+        self.assertEqual(calls(evs), ["run"])
+        self.assertEqual(p.drift, 0, "the round ran its call; what follows is prose")
+
+    def test_a_call_that_fires_with_no_arguments_is_counted(self):
+        # the named-parameter form is fixed (class NamedParameterForm); this pins the shape that is still not
+        # read - a parameter written as an XML element, which upstream handles in a later commit of the series
+        p, evs = self.parse(self.ELEMENT)
+        got = [(c.call.name, c.call.arguments) for c in evs if c.kind == "tool_call"]
+        self.assertEqual([g[0] for g in got], ["run"], "the tool DID run")
+        self.assertEqual(got[0][1], {}, "with nothing in it")
+        self.assertEqual((p.empty_args, p.empty_args_names), (1, ["run"]))
+
+
+    def test_a_real_call_and_a_plain_answer_count_nothing(self):
+        p, evs = self.parse(self.CALL_RUN)
+        self.assertEqual(calls(evs), ["run"])
+        self.assertEqual((p.drift, p.empty_args), (0, 0))
+        p, evs = self.parse("All good, nothing to run.")
+        self.assertEqual((p.drift, p.empty_args, p.unread), (0, 0, 0))
+
+    def test_the_count_does_not_depend_on_how_the_text_arrives(self):
+        for width in WIDTHS:
+            p = OutputParser(thinking=False, tools=self.SCHEMA, recover=True, stream_tools=True)
+            i, rnd = 0, random.Random(7)
+            while i < len(self.INVOKE):
+                k = width or rnd.randint(1, 9)
+                p.feed(self.INVOKE[i:i + k])
+                i += k
+            p.finish()
+            with self.subTest(width=width):
+                self.assertEqual(p.drift, 1)
+                self.assertIn("the invoke dialect", p.drift_kinds)
+
+    def test_the_server_logs_the_drift_and_counts_it(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, self.INVOKE, max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        body = {"model": "x", "messages": [{"role": "user", "content": "list the files"}], "max_tokens": 800,
+                "tools": [{"type": "function", "function": {"name": "run",
+                                                            "parameters": {"type": "object", "properties": {
+                                                                "cmd": {"type": "string"}}}}}]}
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    r.read()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        said = out.getvalue()
+        self.assertIn("not the template's form", said, said[:400])
+        self.assertIn("the invoke dialect", said, "the line names the shape, never the text")
+        self.assertEqual(svc.totals.get("drift_tool_markup"), 1)
+        self.assertIsNone(svc.totals.get("calls_with_empty_args"), "absent means zero, like the other counters")
+
+
+class NamedParameterForm(unittest.TestCase):
+    """The named parameter form - upstream #5969's third form, item unread-call-recovery.  Before: it parsed to
+    NO arguments, so the tool ran with nothing and answered as if it had worked; with two parameters, the second
+    one named, the first value swallowed the closer and the next parameter's whole opener.  Now it is the same
+    parameter the template's form is.  The template's own form is untouched, including #210's case where a value
+    quotes the tags."""
+
+    LT = FUNC_START[:1]
+    SCHEMA = [{"name": "run", "parameters": {"properties": {"cmd": {"type": "string"}, "n": {"type": "integer"}}}}]
+
+    def envelope(self, params):
+        return CALL_START + "\n" + FUNC_START + "run>\n" + params + FUNC_END + "\n" + CALL_END
+
+    def parse(self, text):
+        p = OutputParser(thinking=False, tools=self.SCHEMA, recover=True, stream_tools=True)
+        return p, p.feed(text) + p.finish()
+
+    def one(self, text):
+        _, evs = self.parse(text)
+        calls = [c.call for c in evs if c.kind == "tool_call"]
+        self.assertEqual(len(calls), 1, [e.kind for e in evs])
+        return calls[0].arguments
+
+    def test_a_named_parameter_is_the_parameter(self):
+        self.assertEqual(self.one(self.envelope(
+            self.LT + 'parameter name="cmd">\nls\n' + self.LT + "/parameter>\n")), {"cmd": "ls"})
+        self.assertEqual(self.one(self.envelope(
+            self.LT + "parameter name='cmd'>\nls\n" + self.LT + "/parameter>\n")), {"cmd": "ls"})
+        self.assertEqual(self.one(self.envelope(
+            self.LT + 'parameter  name = "cmd" >\nls\n' + self.LT + "/parameter>\n")), {"cmd": "ls"})
+
+    def test_two_parameters_one_named_are_both_read(self):
+        args = self.one(self.envelope(
+            PARAM_START + "cmd>\nls\n" + PARAM_END + "\n" + self.LT + 'parameter name="n">\n3\n'
+            + self.LT + "/parameter>\n"))
+        self.assertEqual(args, {"cmd": "ls", "n": 3}, "the mangled single value this used to give is the bug")
+
+    def test_the_template_form_and_a_value_that_quotes_the_tags_are_unchanged(self):
+        self.assertEqual(self.one(self.envelope(PARAM_START + "cmd>\nls\n" + PARAM_END + "\n")), {"cmd": "ls"})
+        quoted = PARAM_START + "cmd>\nuse " + PARAM_START + "x>" + PARAM_END + " like this\n" + PARAM_END + "\n"
+        self.assertEqual(self.one(self.envelope(quoted)),
+                         {"cmd": "use " + PARAM_START + "x>" + PARAM_END + " like this"}, "#210")
+
+    def test_the_named_form_no_longer_counts_as_an_empty_call(self):
+        p, _ = self.parse(self.envelope(self.LT + 'parameter name="cmd">\nls\n' + self.LT + "/parameter>\n"))
+        self.assertEqual((p.empty_args, p.drift, p.unread), (0, 0, 0))
+
+    def test_it_holds_across_the_chunk_sizes_and_without_streaming(self):
+        body = self.envelope(self.LT + 'parameter name="cmd">\nls\n' + self.LT + "/parameter>\n")
+        for width in WIDTHS:
+            for st in (True, False):
+                p = OutputParser(thinking=False, tools=self.SCHEMA, recover=True, stream_tools=st)
+                i, rnd, evs = 0, random.Random(7), []
+                while i < len(body):
+                    k = width or rnd.randint(1, 9)
+                    evs += p.feed(body[i:i + k])
+                    i += k
+                evs += p.finish()
+                got = [c.call.arguments for c in evs if c.kind == "tool_call"]
+                with self.subTest(width=width, stream_tools=st):
+                    self.assertEqual(got, [{"cmd": "ls"}])
 
 
 if __name__ == "__main__":

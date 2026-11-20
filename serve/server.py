@@ -4374,6 +4374,34 @@ class Service:
             self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
                   f"reasoning (quoted, or the turn did not end on a stop)", flush=True)
+        if parser.unread:
+            # todo #unread-call-instrument: the shape a chat sees as "the agent stopped instead of calling a
+            # tool".  Nothing counted it before: it is not an empty turn (text was delivered), not abandoned (the
+            # envelope was closed), not refused (the name was never declared), and the text it turns into is
+            # answer prose or a folded thinking block.  Counted here, and named, so the next one is evidence
+            # rather than another argument about which of the two causes it was.
+            self.totals["unread_tool_calls"] = self.totals.get("unread_tool_calls", 0) + parser.unread
+            print(f"[strata] {parser.unread} tool call(s) the model wrote came back as text and never ran: the "
+                  "request did not declare that name, or the form is not the template's (the turn ends with no "
+                  "call, no error and nothing to react to)"
+                  + (f"; the names the model wrote: {', '.join(parser.unread_names)}" if parser.unread_names else ""),
+                  flush=True)
+        if parser.drift:
+            # todo #unread-call-recovery: markup that is call-shaped but not the template's envelope never
+            # reaches the envelope logic, so `unread` cannot see it either.  Measured on this tree: a function
+            # opener with a space where = should be, and the invoke dialect - both end the turn with the call as
+            # text, both with every existing counter at zero.  This is the death, finally named.
+            self.totals["drift_tool_markup"] = self.totals.get("drift_tool_markup", 0) + parser.drift
+            print(f"[strata] {parser.drift} reply ended on tool-call markup that is not the template's form "
+                  f"({', '.join(parser.drift_kinds)}): there was no envelope for the parser to read, so the turn "
+                  "ended with the call as text and no call ran", flush=True)
+        if parser.empty_args:
+            # the silent one: the tool RAN, with nothing (or a mangled value), and answered.  Worse than a death,
+            # because the conversation goes on as if it worked.
+            self.totals["calls_with_empty_args"] = self.totals.get("calls_with_empty_args", 0) + parser.empty_args
+            print(f"[strata] {parser.empty_args} call(s) ran with no arguments although the tool declares some: "
+                  f"{', '.join(parser.empty_args_names)} - a parameter written in a form the parser does not "
+                  "read; nothing else says it happened", flush=True)
         if parser.abandoned:
             # the model opened a tool call and stopped without closing it: nothing is delivered for it (#211), so
             # without this line the turn simply looks dead - the answer ends early and no call ever runs.
