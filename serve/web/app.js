@@ -1531,16 +1531,16 @@ function closePopover() { if (activePopover) activePopover.remove(); activePopov
 // scrolls inside the window instead of running off the bottom (the MCP panel with 31 tools did exactly that).
 function placePopover(el, anchor) {
   if (!anchor.getBoundingClientRect) return;               // the harness stub has no layout; skip geometry
-  const r = anchor.getBoundingClientRect(), w = el.offsetWidth || 168;
-  const below = (innerHeight || 0) - r.bottom - 8, above = r.top - 8;
+  const r = anchor.getBoundingClientRect(), w = el.offsetWidth || 168, vh = innerHeight || 0;
+  const below = vh - r.bottom - 8, above = r.top - 8;
   const bottomSide = below >= above, room = Math.max(120, bottomSide ? below : above);
   el.style.maxHeight = `${room}px`;                        // .mcp-picker / .chat-menu scroll their own body
   el.style.left = `${Math.max(4, Math.min(r.left, Math.max(4, (innerWidth || 0) - w - 4)))}px`;
-  // Never sit on the anchor: the button that opened a popover has to stay clickable so a second click closes it.
-  // Park the panel with its bottom edge just above the button, measure what it actually took (after the cap -
-  // measuring before it can come back 0 and drop the panel right on top of the button), then lift it by that.
-  el.style.top = bottomSide ? `${r.bottom + 6}px` : `${Math.max(4, r.top - 6)}px`;
-  if (!bottomSide) el.style.top = `${Math.max(4, r.top - 6 - Math.min(el.offsetHeight || room, room))}px`;
+  // Pin the edge NEAREST the button, never the far one.  Then the panel cannot cover the button that opened it
+  // however tall it turns out to be - and nothing depends on measuring the rendered height, which is what made
+  // the old version land on top of it (a 0 measurement put the panel's top at the button's top).
+  if (bottomSide) { el.style.bottom = ""; el.style.top = `${r.bottom + 6}px`; }
+  else { el.style.top = ""; el.style.bottom = `${Math.max(4, vh - r.top + 6)}px`; }
 }
 function openPopover(anchor, items, onPick) {
   closePopover();

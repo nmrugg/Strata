@@ -3075,27 +3075,31 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
 
   done.push("markdown: _emphasis_ works, and underscores inside an identifier (strata_mcp_tools, a_b_c) stay literal");
 
-  // 93. a popover must not sit on the button that opened it (the human: the wrench panel covered the button, so a
-  //     second click could not close it).  The composer button is at the bottom of the window, so the panel goes
-  //     above it, and its bottom edge has to stop short of the button.
+  // 93. a popover must never sit on the button that opened it (the human: the wrench panel covered the button, so
+  //     the cursor ended up under its Undo button and a second click could not close it).  The rule is now
+  //     geometric, not measured: pin the edge nearest the button.
   const sP = run({}, {});                                   // the stub window is 1200 x 800
-  const anchor = {getBoundingClientRect: () => ({left: 24, top: 740, bottom: 768})};
-  const panel = {style: {}, offsetHeight: 500, offsetWidth: 640};
-  sP.s.placePopover(panel, anchor);
-  const top = parseFloat(panel.style.top), room = parseFloat(panel.style.maxHeight);
-  assert.ok(top + Math.min(panel.offsetHeight, room) <= anchor.getBoundingClientRect().top - 4,
-            `the panel stops above the button: top=${top} h=${panel.offsetHeight} bottom=${top + panel.offsetHeight} vs button at ${anchor.getBoundingClientRect().top}`);
-  assert.ok(top >= 4, "and stays inside the window");
-  const tall = {style: {}, offsetHeight: 100000, offsetWidth: 640};   // taller than the room: it scrolls, still clear
-  sP.s.placePopover(tall, anchor);
-  assert.ok(parseFloat(tall.style.top) + parseFloat(tall.style.maxHeight) <= anchor.getBoundingClientRect().top - 4,
-            `a taller panel still clears it: top=${tall.style.top} max=${tall.style.maxHeight}`);
-  // and the button itself toggles: open, then close, with no geometry involved
-  const sT = run({fetch: async () => ({ok: true, json: async () => ({servers: [], tools: 0, configured: {}})})}, {});
-  await wait();
-  assert.strictEqual(sT.s.chatMenu, null, "nothing open to begin with");
+  const rect = (top, bottom) => ({left: 24, top, bottom});
+  const low = {getBoundingClientRect: () => rect(740, 768)};   // the composer button, near the bottom
+  const p1 = {style: {}, offsetHeight: 500, offsetWidth: 640};
+  sP.s.placePopover(p1, low);
+  assert.strictEqual(p1.style.top, "", "no top for an upward panel - its far edge is what is pinned");
+  assert.strictEqual(p1.style.bottom, `${800 - 740 + 6}px`, "its bottom edge sits 6 px above the button");
+  assert.ok(parseFloat(p1.style.maxHeight) <= 740 - 4, "and the cap keeps it inside the room above");
+  // the height of the content cannot change the answer - that is the whole point of pinning the near edge
+  for (const h of [40, 500, 9000, 0]) {
+    const p2 = {style: {}, offsetHeight: h, offsetWidth: 640};
+    sP.s.placePopover(p2, low);
+    assert.strictEqual(p2.style.bottom, p1.style.bottom, `a panel of height ${h} lands the same way`);
+  }
+  // and a button near the top of the window gets its panel below, pinned at the top edge
+  const high = {getBoundingClientRect: () => rect(30, 58)};
+  const p3 = {style: {}, offsetHeight: 400, offsetWidth: 640};
+  sP.s.placePopover(p3, high);
+  assert.strictEqual(p3.style.top, "64px", "below the button, pinned there");
+  assert.strictEqual(p3.style.bottom, "", "and the far edge is left to the content");
 
-  done.push("placePopover: a panel never sits on the button that opened it, so a second click closes it");
+  done.push("placePopover: the edge nearest the button is pinned, so no panel can cover the button that opened it");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

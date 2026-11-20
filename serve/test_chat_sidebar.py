@@ -287,11 +287,12 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("placePopover(panel, anchor);", self.body("openMcpPicker"))
         self.assertIn("el.style.maxHeight = `${room}px`;", self.body("placePopover"))
         self.assertIn("room = Math.max(120, bottomSide ? below : above)", self.body("placePopover"))
-        # the panel must never sit on the button that opened it: park it, measure after the cap, then lift it
+        # the edge NEAREST the button is pinned, so the panel cannot cover it however tall it is, and nothing
+        # depends on measuring the rendered height (that measurement is what made it land on the button)
         body = self.body("placePopover")
-        self.assertIn("el.style.top = bottomSide ? `${r.bottom + 6}px` : `${Math.max(4, r.top - 6)}px`;", body)
-        self.assertIn("Math.min(el.offsetHeight || room, room)", body)
-        self.assertLess(body.index("el.style.top = bottomSide"), body.index("el.offsetHeight || room"))
+        self.assertIn('if (bottomSide) { el.style.bottom = ""; el.style.top = `${r.bottom + 6}px`; }', body)
+        self.assertIn('else { el.style.top = ""; el.style.bottom = `${Math.max(4, vh - r.top + 6)}px`; }', body)
+        self.assertNotIn("el.offsetHeight", body)
         self.assertIn('$("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));', self.js)
         self.assertIn("mcpBtn.onclick = () => openMcpPicker(mcpBtn);", self.body("openEditBox"))
         self.assertIn('$("mcp-btn").hidden = !list.length;', self.body("renderMcp"))   # no MCP: no button

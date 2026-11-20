@@ -774,13 +774,19 @@ all: fold-control replaced them, and the four overlapping switches became one co
     the number never showed at all.  Control: moving the assignment back after the redraw fails "the only text
     is the cost of the change just made".  A second control had to be tightened first - asserting the note did
     not mention re-reading passed even with the narration restored; it now asserts the span is literally empty.
-    THE PANEL COVERED ITS OWN BUTTON, so a second click could not close it.  placePopover put the panel at
-    `r.top - min(h, space) - 4`, where h was el.offsetHeight measured BEFORE the max-height was set - and when
-    that measure comes back 0 the panel lands at r.top - 4, right on top of the button.  It now parks the panel
-    with its bottom edge just above the anchor, sets the cap, measures what it actually took, and lifts by that;
-    the same helper serves the row menu.  Harness case 93 feeds it a real-ish rect and asserts the panel's bottom
-    edge stays above the button, including a panel far taller than the room (it scrolls, still clear).  Control:
-    restoring the measure-before-the-cap order fails with "top=736 h=500 bottom=1236 vs button at 740".
+    THE PANEL COVERED ITS OWN BUTTON, so a second click could not close it (the human saw the cursor land under
+    the panel's Undo button).  Three attempts, and the first two were wrong for the same reason.  (1) It used
+    `r.top - min(h, space) - 4` with h = el.offsetHeight measured BEFORE the max-height was set; a 0 there puts
+    the panel's top at the button's top.  (2) Park it, set the cap, measure, lift - still covered it in the
+    browser, because the whole approach depends on measuring a rendered height that the browser reports
+    differently than a test stub does.  (3) The fix that cannot fail is geometric: pin the edge NEAREST the
+    button.  An upward panel gets `bottom = vh - r.top + 6` and no `top` at all, so its bottom edge is 6 px above
+    the button whatever its content; a downward one gets `top = r.bottom + 6`.  max-height still caps it to the
+    room and the panel scrolls inside that.  No offsetHeight read anywhere in the function, and the row menu
+    shares it.
+    Harness case 93 asserts the contract, including that four different content heights (40, 500, 9000, 0) all
+    land the panel in exactly the same place - which is the whole point of pinning the near edge.  Control:
+    pinning the far edge again fails "no top for an upward panel - its far edge is what is pinned".
     mdmine is now ON by default (the human asked, after typing _Never_ and seeing it literal - the other half of
     that was the renderer having no _emphasis_ rule, fixed in 394d7fdb).  A browser that has already saved the
     sampling block keeps its own choice, so this only changes a fresh one; the human was told to flip "Format my
