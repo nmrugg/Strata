@@ -134,6 +134,16 @@ all: fold-control replaced them, and the four overlapping switches became one co
     shielded chat, the status line naming whichever chat is on screen).  Controls: rendering the button always
     fails the "no button at all" check; dropping renderMcp() from send() leaves the status line stale and fails;
     dropping it from showChat fails the per-chat check.
+    FIXED 2026-11-20 (the human, once the Settings tab shipped): the cost note went stale.  "This re-reads
+    328,811 tokens in this conversation" stayed on screen after the conversation had sent a message and paid it.
+    The note is a promise about the NEXT message, so the page now remembers, per chat and in memory only, the
+    tool-list signature the last turn used (mcpPaid, mcpSignature - captured when the turn starts, recorded when
+    it ends), and mcpCostText() stays empty while the open chat's paid signature equals the current list.  Not
+    one-way: a new change makes a new promise and the number comes back.  Harness case 96 drives it - switch, the
+    number; send, silence; switch again, the number back - and four controls fail it (not recording the signature,
+    dropping the guard, not capturing it when the turn starts, not redrawing after it).  One of my first three
+    attempts at that case was wrong rather than the code: clicking the SAME switch back matches the baseline
+    again, and then there is genuinely nothing to warn about, so the second change has to be a different switch.
 
 `block-reload-while-editing`  Ask before a reload/navigation while a message edit box is open. [ui]
     Raised with item edit-posts.  There is already a beforeunload guard while a live turn runs (warnOnLeave,

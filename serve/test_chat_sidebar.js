@@ -3252,5 +3252,58 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   done.push("mcp-picker-entry-points: the wrench panel adds and removes servers through the same modals, and a " +
             "click inside a modal does not close the panel behind it");
 
+  // 96. the cost note is a promise about the NEXT message, so it goes quiet once this conversation has paid
+  //     (the human: "I send a message, and it re-reads. Good. But then the MCP menus still say 'This re-reads'").
+  let on96 = new Set(["one", "two"]);
+  const as96 = () => ({servers: [{name: "a", transport: "stdio", status: "ready", error: null, info: {},
+      tools: ["one", "two"].map((x) => ({name: `a__${x}`, tool: x, enabled: on96.has(x), description: ""}))}],
+      tools: on96.size, configured: {a: {disabled: false, disabled_tools: ["one", "two"].filter((x) => !on96.has(x))}}});
+  const posts96 = [];
+  const s96 = run({fetch: async (url, opts) => {
+    if (String(url).split("?")[0] === "mcp") {
+      if (opts && opts.method === "POST") {
+        const list = JSON.parse(opts.body).mcp;
+        posts96.push(list);
+        for (const ch of list) { if (ch.tool !== undefined) { if (ch.enabled) on96.add(ch.tool); else on96.delete(ch.tool); } }
+        return {ok: true, json: async () => ({changed: ["a__two (off)"], configured: as96().configured, live: ["a__two"], reloads: []})};
+      }
+      return {ok: true, json: async () => as96()};
+    }
+    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
+    return {ok: true, body: {getReader: () => ({read: async () => ({done: true, value: undefined})})}};
+  }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first"),
+       {role: "assistant", text: "done", time: Date.now(), usage: {prompt_tokens: 328811}}]}});
+  await wait();
+  await s96.s.loadMcp();
+  const note96 = () => {
+    const m = /<span class="mcp-note-text muted small">([^<]*)<\/span>/.exec(s96.s.el("mcp-set-list")._html || "");
+    return m ? m[1] : "(no note span)";
+  };
+  const pick96 = (name) => {
+    const b = find95(s96.s.chatMenu, "data-mcp-pick").find((x) => x.attrs["data-mcp-pick"] === name);
+    s96.s.chatMenu._l.click({target: b});
+  };
+  s96.s.el("mcp-btn").onclick();                       // the panel opens and takes the Undo baseline
+  assert.strictEqual(note96(), "", "quiet before anything moves: " + note96());
+  pick96("a__two");
+  await wait();
+  assert.strictEqual(posts96.length, 1, "the switch wrote");
+  assert.match(note96(), /This re-reads 328,811 tokens in this conversation\./, "and the cost is stated: " + note96());
+  // send a message: this conversation now reads its history back, which is the whole cost
+  s96.s.el("input").value = "next";
+  await s96.s.send();
+  await wait();
+  assert.strictEqual(note96(), "", "the note goes quiet on its own once the re-read has happened: " + note96());
+  // and it is not a one-way silence: a NEW change promises a new read.  (Putting the first switch back would
+  // match the baseline again, and then there is genuinely nothing to warn about - which is its own rule.)
+  pick96("a__one");
+  await wait();
+  assert.strictEqual(posts96.length, 2, "the second switch wrote too");
+  assert.match(note96(), /This re-reads 328,811 tokens in this conversation\./, "so the number comes back: " + note96());
+
+  done.push("mcp-cost-note: the re-read warning goes quiet once this conversation has paid, and returns when " +
+            "something else moves");
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

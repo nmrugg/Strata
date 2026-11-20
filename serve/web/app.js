@@ -587,15 +587,28 @@ const chatPromptTokens = () => {
   }
   return (lastLive && lastLive.prompt_tokens) || 0;
 };
+// The cost a change carries is a promise about the NEXT message: the conversation reads its history once.  Once
+// this conversation has sent one with the new list, it has paid, and the note goes quiet on its own.  It used to
+// stay: the number sat there after the re-read had already happened, which is the opposite of "only when true".
+// In memory, keyed by chat id - it is a fact about this page session, not part of the conversation, and a chat
+// with no history has nothing to re-read (chatPromptTokens answers 0 for that, so the note is empty anyway).
+const mcpPaid = new Map();                 // chat id -> the tool-list signature its last turn used
+const mcpSignature = () => mcpServers().map((s) => `${s.name}${s.off ? "-off" : "-on"}` +
+  `:${[...mcpLiveOn(s)].sort().join(",")}`).join("|");
+function mcpCostText() {
+  if (!mcpChangedServers().length) return "";             // nothing moved since this view opened
+  if (mcpPaid.get(chatId) === mcpSignature()) return "";  // and this conversation has already read it back
+  const n = chatPromptTokens();
+  return n ? `This re-reads ${fmt(n)} tokens in this conversation.` : "";
+}
 // One fact, not a flag: the note shows the same thing Undo does - whether the live list still differs from the
 // one this view started with.  Click a chip twice and you are back where you began, so both go quiet on their
 // own; there is nothing to remember and nothing to clear.
 function mcpUndoRow() {
   const n = mcpChangedServers().length;
-  const cost = n ? (chatPromptTokens() || null) : null;
   return `<p class="mcp-note" title="Undo everything changed since you opened this.">` +
     `<button class="st-btn st-btn--secondary" data-mcp-undo${n ? "" : " disabled"}>Undo</button>` +
-    `<span class="mcp-note-text muted small">${cost ? `This re-reads ${fmt(cost)} tokens in this conversation.` : ""}</span></p>`;
+    `<span class="mcp-note-text muted small">${mcpCostText()}</span></p>`;
 }
 // The server card, in the one place that changes servers (todo #mcp-settings-page): the Settings tab.  The
 // Monitor carries no MCP card at all now - status, switches, chips and the entry buttons are all in Settings,
@@ -686,9 +699,7 @@ function openMcpPicker(anchor) {
   undo.disabled = !n;
   undo.title = "Put back everything as it was when you opened this.";
   foot.appendChild(undo);
-  const cost = n ? (chatPromptTokens() || null) : null;
-  foot.appendChild(node("span", "mcp-picker__cost muted small",
-    cost ? `This re-reads ${fmt(cost)} tokens in this conversation.` : ""));
+  foot.appendChild(node("span", "mcp-picker__cost muted small", mcpCostText()));
   const add = node("button", "st-btn st-btn--secondary", "Add server");
   add.type = "button";
   add.setAttribute("data-mcp-add", "1");
@@ -2805,6 +2816,7 @@ async function send(editOf) {
   if (asstEl) { asstEl.classList.add("streaming"); asstEl.querySelector(".meta-text").textContent = liveMeta(m); }
   const controller = new AbortController();
   busy = {controller, msg: m, chat, chatId};      // which conversation this turn belongs to, not which is open
+  busy.mcpSig = mcpSignature();                   // the list this turn will be read against; see mcpPaid
   lastLive = null;                                // new turn: drop the previous turn's held live figures
   setBusy(true);
 
@@ -2934,6 +2946,10 @@ async function send(editOf) {
   const fin = rowOf(m);
   if (fin) { const follow = following(); updateAssistant(fin, m, false); if (follow) stickBottom(); }
   saveChat(turn.chat);                              // write it into ITS chat, not whichever one is open now
+  // the re-read a tool-list change promised has now happened for this conversation, so the note goes quiet by
+  // itself - and comes back the moment something else moves (todo #mcp-live-toggles)
+  if (turn.mcpSig) mcpPaid.set(turn.chatId, turn.mcpSig);
+  renderMcp();
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
