@@ -925,9 +925,14 @@ function inline(s) {
   s = esc(s)
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>")
+    // `__bold__` is the pair of the `_emphasis_` rule below, with the same guards: an underscore inside a word
+    // (strata__mcp__tools, a__b) is part of the identifier, not markup.  Runs before the single-underscore rule;
+    // that one cannot match `__x__` anyway (its content excludes _), but the order keeps the two readable.
+    .replace(/(^|[^_\w])__([^_\n]+)__(?![_\w])/g, "$1<strong>$2</strong>")
     // `_emphasis_` too, with the same guards: an underscore inside a word (strata_mcp_tools, a_b_c) is part of
     // the identifier, not markup.  Code spans are stashed away before this runs, so `x_y` is already safe.
     .replace(/(^|[^_\w])_([^_\n]+)_(?![_\w])/g, "$1<em>$2</em>")
+    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
@@ -946,7 +951,10 @@ function blocks(text) {
     let m;
     if (!l.trim()) { flushPara(); flushList(); continue; }
     if ((m = l.match(/^(#{1,6})\s+(.*)$/))) { flushPara(); flushList(); out.push(`<${m[1].length <= 2 ? "h3" : "h4"}>${inline(m[2])}</${m[1].length <= 2 ? "h3" : "h4"}>`); continue; }
-    if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(l)) { flushPara(); flushList(); out.push("<hr>"); continue; }
+    // a rule is three or more of the same character, spaces allowed between them.  The old pattern ended in
+    // [\s\1]*, and inside a character class \1 is not a backreference but the control character \x01 - so it
+    // matched exactly three and failed on ----- and _____ (item markdown-cheatsheet-gaps)
+    if (/^\s{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l)) { flushPara(); flushList(); out.push("<hr>"); continue; }
     if ((m = l.match(/^>\s?(.*)$/))) { flushPara(); flushList(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); continue; }
     if (/^\s*\|.*\|\s*$/.test(l) && i + 1 < lines.length && /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(lines[i + 1])) {
       flushPara(); flushList();

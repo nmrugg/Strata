@@ -3078,8 +3078,19 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(mdT("`_Never_`").includes('<code class="inline">_Never_</code>'),
             "inside a code span it stays exactly as typed: " + mdT("`_Never_`"));
   assert.ok(mdT("user_name_here and _real_").includes("<em>real</em>"), mdT("user_name_here and _real_"));
+  // item markdown-cheatsheet-gaps: the pair of the underscore rule, strikethrough, and rules of any length
+  assert.ok(mdT("__still__").includes("<strong>still</strong>"), mdT("__still__"));
+  assert.strictEqual(mdT("strata__mcp__tools"), "<p>strata__mcp__tools</p>", "__ inside an identifier is not bold");
+  assert.ok(mdT("`__x__` and ~~y~~").includes('<code class="inline">__x__</code>'), "a code span stays as typed");
+  assert.ok(mdT("~~gone~~").includes("<del>gone</del>"), mdT("~~gone~~"));
+  for (const rule of ["---", "-----", "_____", "***", "****", "- - -", "_ _ _"]) {
+    assert.ok(mdT(rule).includes("<hr>"), "a rule written " + rule + ": " + mdT(rule));
+  }
+  assert.ok(!mdT("--").includes("<hr>"), "two is not a rule");
+  assert.ok(!mdT("-").includes("<hr>"), "and one is not");
 
-  done.push("markdown: _emphasis_ works, and underscores inside an identifier (strata_mcp_tools, a_b_c) stay literal");
+  done.push("markdown: _emphasis_ and __emphasis__, ~~strike~~, and a rule of three or more (the old character-" +
+            "class backreference matched only exactly three)");
 
   // 93. a popover must never sit on the button that opened it (the human: the wrench panel covered the button, so
   //     the cursor ended up under its Undo button and a second click could not close it).  The rule is now
