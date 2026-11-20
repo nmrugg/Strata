@@ -2955,9 +2955,9 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   // built by hand would pass even if the page never wrote that attribute - which is the bug this case missed.
   const wrote = s90.s.el("mcp-list")._html || "";
   const cardAttr = /data-mcp-server="([^"]*)"/.exec(wrote);
-  const chipAttr = /data-mcp-tool="([^"]*)"/.exec(wrote);
+  const chipAttr = /data-mcp-tool="([^"]*)"[^>]*aria-pressed="false"/.exec(wrote);   // pick one that reads OFF
   assert.ok(cardAttr, "the card the page wrote carries data-mcp-server: the handler reads the name off it");
-  assert.ok(chipAttr, "and each chip carries data-mcp-tool with the server's own tool name");
+  assert.ok(chipAttr, "and each chip carries data-mcp-tool with the server's own tool name: " + wrote.slice(0, 300));
   assert.strictEqual(cardAttr[1], "files", "the card names its server");
   assert.ok(["read_file", "write_file"].includes(chipAttr[1]), `the chip names a tool, got ${chipAttr[1]}`);
   const card = {className: "mcp-server", dataset: {mcpServer: cardAttr[1]}};
@@ -2966,37 +2966,35 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                 closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-tool]" ? this : null; }};
   card._parent = null;
   await s90.s.el("mcp-list")._l.click({target: chip});
-  assert.deepStrictEqual(posts90, [{mcp: [{server: cardAttr[1], tool: chipAttr[1], enabled: true}]}],
-                         "a chip that reads off is clicked back ON");
-  const toast90 = s90.s.el("toasts").children.map((c) => c.querySelector(".st-toast__title").textContent);
-  assert.ok(toast90.includes("Applied"), toast90.join(" | "));
-  const toastText90 = s90.s.el("toasts").children.map((c) => c.querySelector(".t-text").textContent).join(" | ");
-  assert.ok(/files__read_file|already set to that/.test(toastText90), `the toast reports the change: ${toastText90}`);
-  // and the server switch: aria-checked is the current state, so the change is the opposite of it
+  const html90 = s90.s.el("mcp-list")._html || "";
+  assert.deepStrictEqual(posts90, [], "a chip click writes nothing on its own - it is a draft (case 91 covers Apply)");
+  assert.ok(new RegExp(`data-mcp-tool="${chipAttr[1]}"[^>]*aria-pressed="true"`).test(html90),
+            "and the chip reads ON in the card, from the draft: " + html90.slice(0, 300));
   const sw90 = {className: "st-toggle", attrs: {"aria-checked": "true"}, getAttribute(k) { return this.attrs[k]; },
               closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-toggle]" ? this : null; }};
   await s90.s.el("mcp-list")._l.click({target: sw90});
-  assert.deepStrictEqual(posts90[1], {mcp: [{server: cardAttr[1], disabled: true}]},
-                         "the card's switch turns the server off");
+  assert.ok(/data-mcp-toggle[^>]*aria-checked="false"/.test(s90.s.el("mcp-list")._html || ""),
+            "the card's switch reads off in the draft, still unwritten");
+  assert.deepStrictEqual(posts90, [], "and still nothing was sent");
 
-  done.push("mcp-chips: a chip POSTs one tool's change to /mcp, and a server the config has off keeps a card");
+  done.push("mcp-chips: a server the config has off keeps a card, and a chip or switch only moves the shared draft");
 
-  // 91. one MCP state, two views (todo #mcp-chat-picker): the wrench panel is a shortcut to the Monitor card,
-  //     not a second, per-conversation setting.  Both read the same answer and write the same change.
-  const toolsWith = (twoOn) => ({servers: [{name: "a", transport: "stdio", status: "ready", error: null, info: {},
-      tools: [{name: "a__one", tool: "one", enabled: true, description: ""},
-              {name: "a__two", tool: "two", enabled: twoOn, description: ""}]}],
-      tools: twoOn ? 2 : 1, configured: {a: {disabled: false, disabled_tools: twoOn ? [] : ["two"]}}});
+  // 91. one draft, two views, and nothing written until Apply (todo #mcp-chat-picker).  A switch changes the
+  //     draft; the card and the panel both show it; only Apply writes the config and the running hub, and the
+  //     button says what that costs - each conversation whose tool list changed reads its history again.
+  const toolsWith = (twoOn, offServer) => ({servers: offServer ? [] : [{name: "a", transport: "stdio", status: "ready",
+      error: null, info: {}, tools: [{name: "a__one", tool: "one", enabled: true, description: ""},
+                                     {name: "a__two", tool: "two", enabled: twoOn, description: ""}]}],
+      tools: offServer ? 0 : (twoOn ? 2 : 1),
+      configured: {a: {disabled: !!offServer, disabled_tools: twoOn || offServer ? [] : ["two"]}}});
   let mcpU = toolsWith(true);
   const postsU = [];
   const sU = run({fetch: async (url, opts) => {
     if (String(url).split("?")[0] === "mcp") {
       if (opts && opts.method === "POST") {
-        const ch = JSON.parse(opts.body).mcp[0];
-        postsU.push(ch);
-        if (ch.tool !== undefined) mcpU = toolsWith(!!ch.enabled);          // the real endpoint changes the state;
-        else mcpU = {...toolsWith(true), configured: {a: {disabled: !!ch.disabled, disabled_tools: []}}};   // so must the stub
-        return {ok: true, json: async () => ({changed: ["a__two"], configured: mcpU.configured, live: [], reloads: []})};
+        postsU.push(JSON.parse(opts.body).mcp);
+        mcpU = toolsWith(false);                     // the endpoint writes the config and the hub
+        return {ok: true, json: async () => ({changed: ["a (1 of 2 tools on)"], configured: mcpU.configured, live: ["a"], reloads: []})};
       }
       return {ok: true, json: async () => mcpU};
     }
@@ -3008,39 +3006,30 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await sU.s.loadMcp();
   const findU = (el, attr, out = []) => { (el.children || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findU(c, attr, out); }); return out; };
   const wroteU = () => sU.s.el("mcp-list")._html || "";
-  assert.strictEqual(sU.s.el("mcp-btn").hidden, false, "the wrench is offered wherever the card is");
-  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="true"/.test(wroteU()), wroteU().slice(0, 300));
   sU.s.el("mcp-btn").onclick();
-  const pan = sU.s.chatMenu;
-  assert.ok(pan && pan.className.includes("mcp-picker"), "the panel opened");
-  const chipIn = findU(pan, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two");
-  assert.strictEqual(chipIn.attrs["aria-checked"], "true", "the panel shows the same state as the card");
-  pan._l.click({target: chipIn});                            // click it in the panel
-  await wait();
-  assert.deepStrictEqual(postsU, [{server: "a", tool: "two", enabled: false}],
-                         "and posts exactly what the card's chip would post");
+  let pan = sU.s.chatMenu;
+  assert.ok(/data-mcp-apply disabled/.test(pan.outerHTML || "") || findU(pan, "data-mcp-apply")[0].disabled === true,
+            "Apply starts greyed: there is nothing pending");
+  const chipU = findU(pan, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two");
+  pan._l.click({target: chipU});
+  pan = sU.s.chatMenu;                        // the click rebuilds the panel; the old handle is a removed element
+  assert.deepStrictEqual(postsU, [], "a click writes nothing - the switch is a draft, not a change");
+  assert.strictEqual(findU(pan, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two")
+                     .attrs["aria-checked"], "false", "the panel rebuilt to show the draft");
   assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
-            "the card redraws from the same answer - one state, not two");
-  const pan2 = sU.s.chatMenu;
-  assert.strictEqual(findU(pan2, "data-mcp-pick").find((b) => b.attrs["data-mcp-pick"] === "a__two")
-                     .attrs["aria-checked"], "false", "and the panel rebuilt to match it");
-  // the server switch is the same in both places
-  const srv = findU(pan2, "data-mcp-server")[0];
-  assert.strictEqual(srv.attrs["aria-checked"], "true", "the server reads on");
-  pan2._l.click({target: srv});
+            `and the card shows the same draft: ${wroteU().slice(0, 320)}`);
+  assert.ok(wroteU().includes("data-mcp-apply") && !/data-mcp-apply disabled/.test(wroteU()),
+            "the card's Apply woke up, because the draft differs from the config");
+  assert.ok(wroteU().includes("read its history again"), "and it says what applying costs: " + wroteU().slice(-320));
+  assert.ok(wroteU().includes("data-mcp-discard"), "with an Undo next to it");
+  sU.s.el("mcp-list")._l.click({target: {className: "st-btn", closest(sel) { return sel === "[data-mcp-apply]" ? this : null; }}});
   await wait();
-  assert.deepStrictEqual(postsU[1], {server: "a", disabled: true}, "the panel's switch posts the card's change");
-  // and the card's own chip posts the identical shape
-  sU.s.el("mcp-list")._l.click({target: {className: "chip mcp-tool", attrs: {"aria-pressed": "false"},
-      dataset: {mcpTool: "two", mcpServer: "a"},
-      getAttribute(k) { return this.attrs[k]; },
-      closest(sel) { return sel === ".mcp-server" ? {dataset: this.dataset} : sel === "[data-mcp-tool]" ? this : null; }}});
-  await wait();
-  assert.deepStrictEqual(postsU[2], {server: "a", tool: "two", enabled: true}, "same change, same endpoint, from either view");
-  // no per-conversation tool list survives anywhere in the page
-  for (const gone of ["mcpTools", "mcpDefault", "mcpSent"]) assert.ok(!sU.s.chat[gone], `the chat carries no ${gone}`);
+  assert.deepStrictEqual(postsU, [[{server: "a", tools: ["one"]}]],
+                         "Apply sends the whole draft in one request: the tools that should be ON");
+  assert.ok(!wroteU().includes("data-mcp-apply"), "and once applied, there is nothing to apply");
 
-  done.push("mcp-one-state: the wrench panel and the Monitor card are two views of one setting, posting the same change");
+  done.push("mcp-draft: switches edit one shared draft that both views show; nothing is written until Apply, " +
+            "which says it will make conversations re-read their history");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

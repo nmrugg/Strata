@@ -311,19 +311,20 @@ class McpHttp(Fixture):
 
     def test_the_page_has_the_chips(self):
         js = (ROOT / "serve" / "web" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: [change]})})', js)
+        self.assertIn('fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: changes})})', js)
         self.assertIn('data-mcp-server', js)
         self.assertIn('data-mcp-tool', js)
         self.assertIn('data-mcp-toggle', js)
         # one state, two views (todo #mcp-chat-picker): the wrench panel and the Monitor card post the SAME
         # change through the SAME function, and there is no per-conversation tool list anywhere
-        self.assertIn("async function mcpPost(change, again)", js)
-        self.assertEqual(js.count("mcpPost("), 4)                 # defined once, called from both views
-        self.assertIn("mcpPost({server, tool, enabled: pick.getAttribute", js)   # the panel's chip
-        self.assertIn("const change = chip ? {server, tool: chip.dataset.mcpTool,", js)   # the card's chip
-        self.assertIn("await mcpPost(change);", js)
+        # neither view writes on a click: they move one shared draft, and only Apply posts
+        self.assertIn("async function mcpApply()", js)
+        self.assertIn("function mcpToggle(serverName, tool, off)", js)
+        self.assertEqual(js.count("mcpToggle("), 5)               # defined once, called from both views
+        self.assertEqual(js.count('fetch("mcp", {method: "POST"'), 1)   # one write path in the page: Apply
+        self.assertIn('body: JSON.stringify({mcp: changes})', js)  # the whole draft, in one request
         for gone in ("mcpFrozen", "chatToolsFor", "mcpDefault", "mcpSent", "updateMcpDot", "mcp-dot",
-                     "data-mcp-unfreeze", "data-mcp-apply", "strata_mcp_tools = "):
+                     "data-mcp-unfreeze", "strata_mcp_tools = "):
             self.assertNotIn(gone, js)
         self.assertIn("reads its history again on its next message", js)   # the cost, said where the switches are
         self.assertNotIn("Saved for the next start", js)         # no longer true: the hub is updated live

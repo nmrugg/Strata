@@ -743,6 +743,22 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Two test bugs of my own showed up while wiring this: after a rebuild the old panel handle is a REMOVED element
     (every click needs `panel = s94.s.chatMenu` again), and the cost text moved inside the footer, so a top-level
     text join stopped seeing it - the helper now walks the subtree.
+    DRAFT, THEN APPLY (the human, after trying the immediate version: "it seems to apply right away. There should
+    be an apply button with text indicating that a re-read is necessary").  With one shared list, an immediate
+    switch is the dangerous case: it changes the first system turn of every conversation.  So a switch now moves
+    ONE draft (mcpDraft: server -> {off, on}) that both views render from - the card and the panel move together -
+    and nothing is written until Apply.  Apply is greyed while the draft matches the config, is labelled with the
+    number of pending changes, sits next to Undo, and both views carry the sentence: "Not applied yet. Applying
+    makes each conversation whose tool list changed read its history again."  Apply posts the whole draft in one
+    request: a {server, disabled} change where the switch moved, plus one {server, tools:[...]} change per live
+    server (the hub supplies the names; a stopped server can only be enabled, not re-tooled).
+    Tests: harness case 91 - Apply starts greyed, a chip click sends NOTHING (postsU stays empty) and both views
+    show the draft, the card's Apply wakes up, the cost sentence is there, Undo is there, and Apply sends
+    [{server:"a", tools:["one"]}] once.  Case 90 rewritten: a chip or a switch only moves the draft.
+    Controls: a chip click that writes at once fails "a click writes nothing"; Apply never greyed fails "Apply
+    starts greyed"; dropping the cost sentence from the card fails "and it says what applying costs" - that
+    control had to be re-run, because the sentence is split across two template lines and my first edit hit the
+    panel's copy instead of the card's.
     THE 400s THE HUMAN HIT, and the cause: the card had been made to show the CHAT's list while it wrote the
     CONFIG's - so a click could land on the state the config already had, and set_mcp answered a no-op with
     ValueError("nothing to change") -> 400, which is why the Monitor's chips stopped toggling.  Fixed twice over:
