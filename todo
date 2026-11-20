@@ -695,10 +695,25 @@ all: fold-control replaced them, and the four overlapping switches became one co
         one engine turn) so it goes red the day the loop is fixed and must be rewritten, not deleted; and a
         client-declared tool is not counted.  Three controls bite (stop counting, drop the notice, loosen the
         gate).  Needs a restart.
-      - THE FIX, not yet done and it is the owner's call: when a call names neither the request's tools nor the
-        hub's, answer it with a tool error ("there is no tool named X") and let the round continue, instead of
-        ending the turn - upstream 18af37321 does exactly this in the other tree ("the turn goes on, two times at
-        most").  That is a behaviour change on the default path, so it needs an explicit yes.
+      - THE FIX, done 2026-11-20 (asked: "make any fix you can").  A call naming neither the request's tools nor
+        the hub's tools is now ANSWERED instead of ending the turn: it goes through the same call/result channel,
+        and `hub.call` already produces exactly the right result for a name it has no server for - "error: there
+        is no tool named X" - so the model sees it and gets another turn to pick the tool it meant.  Routed that
+        way on purpose: the page replays any tool with a result (assistantMessages filters on
+        `t.result != null && t.state !== "skipped"`), so the server's round_msg and the page's rebuild stay
+        identical and the prompt prefix does not break - the hazard that made the retry idea (e05e6e0cc) expensive.
+        A tool the REQUEST declared is untouched: it still goes out as a tool_calls delta for the client to
+        answer.  Capped at two answered rounds per request (upstream #TOOLCALL-B caps it the same way) - with
+        mcp.max_rounds at 900 in this config, an uncapped model inventing names would burn rounds for a long
+        time; past the cap the call is shown as not run and the turn ends, as it used to.
+        Tests: serve/test_mcp.py class UnknownCall (4) - the notice and the total; the error reaches the client
+        as start/call/result with ok False and the model gets a third engine turn and ends with an answer; the cap
+        (two answered, the third "not run", three counted); and a client-declared tool is not counted.  Four
+        controls bite (refuse unknown names again, never merge them, drop the cap, drop the over-cap notice) - the
+        last one only after I strengthened the cap test, which had not asserted the skipped result at all.
+        Also fixed in passing: UnknownCall inherited ToolLoop, so it silently re-ran ToolLoop's tests (45 tests
+        here, not the 64 that inflation produced); the fixture is now LoopFixture and both classes use it.
+        Needs a restart.
       - Also still true: the name the model actually asked for in that dead chat is unrecoverable - api_monitor
         keeps what the CLIENT received, and the call never reached it.  Only the new counter can name it.
 

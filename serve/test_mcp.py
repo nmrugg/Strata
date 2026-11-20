@@ -305,9 +305,9 @@ class Config(unittest.TestCase):
 
 
 # ------------------------------------------------------------------------------------------------ the tool loop
-class ToolLoop(unittest.TestCase):
-    """The web app's chat (`"strata_mcp": true`): the model calls an MCP tool, the server runs it and the model
-    answers with its result; plain API requests never see the MCP tools."""
+class LoopFixture(unittest.TestCase):
+    """The web app's chat against the fake MCP hub: one script per engine call, the streamed answer read
+    back as events.  Shared by ToolLoop and UnknownCall, so neither one inherits the other's tests."""
 
     def setUp(self):
         self.log = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
@@ -349,6 +349,12 @@ class ToolLoop(unittest.TestCase):
     @staticmethod
     def chunks(text):
         return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
+
+
+class ToolLoop(LoopFixture):
+    """The web app's chat (`"strata_mcp": true`): the model calls an MCP tool, the server runs it and the model
+    answers with its result; plain API requests never see the MCP tools."""
+
 
     def test_argument_pieces_stream_when_the_client_asks(self):
         # todo #tool-args-stream: the page asks for a call's JSON as it is written, so it can show what the model is typing
@@ -646,7 +652,7 @@ class ToolLoop(unittest.TestCase):
         self.assertIn("fake__echo", [t["name"] for t in self.hub.template_tools()])
         self.assertFalse(self.hub.set_server_disabled("nope", True))  # a name that is not there changes nothing
 
-class UnknownCall(ToolLoop):
+class UnknownCall(LoopFixture):
     """A call naming a tool that neither the request declared nor the hub offers.  Reproduced from a live death
     on this box: the turn returned 200 with finish_reason tool_calls, no MCP activity at all and an empty answer,
     while every parser counter stayed at zero - because a call WAS delivered, so the turn is not "empty", and it
@@ -665,20 +671,40 @@ class UnknownCall(ToolLoop):
         self.assertIn("fake__nothere", said, "and it names what the model asked for")
         self.assertEqual(self.svc.totals.get("unknown_tool_calls"), 1)
 
-    def test_the_turn_still_ends_without_running_it(self):
-        # the CURRENT behaviour, pinned on purpose: this is the bug.  The day the loop answers the call instead of
-        # ending the turn, this case goes red and must be rewritten rather than deleted.
-        self.start(call_script("fake__nothere", text="hi"), "</think>\n\nNothing to say.")
+    def test_the_model_is_told_the_tool_does_not_exist_and_gets_another_turn(self):
+        # the fix: the hub has no server behind the name, so its own answer - "there is no tool named X" - goes
+        # back as the tool result and the model gets a turn to pick the one it meant.  The page sees the usual
+        # start/call/result, so it shows a block and replays the round: the two rebuilds stay identical and the
+        # prompt prefix does not break (serve/web/app.js assistantMessages replays any tool with a result).
+        self.hub.settings["max_rounds"] = 5
+        self.start(call_script("fake__nothere", text="hi"),
+                   call_script("fake__echo", text="now the right one"),
+                   "</think>\n\nDone.")
         code, text = self.post({"strata_mcp": True})
         self.assertEqual(code, 200, text)
-        chunks = self.chunks(text)
-        self.assertEqual([c["strata_mcp"] for c in chunks if "strata_mcp" in c], [], "no call, no result")
-        fin = [c["choices"][0]["finish_reason"] for c in chunks if c["choices"][0].get("finish_reason")]
-        self.assertEqual(fin[-1], "tool_calls", "yet the client is told a call happened")
-        answer = "".join((c["choices"][0].get("delta") or {}).get("content") or "" for c in chunks)
-        self.assertEqual(answer, "Let me check.", "the only text is what the model wrote BEFORE the call")
-        self.assertEqual(len(self.engine.prompts), 1,
-                         "and it never got a second turn to answer its own call - that is the dead chat")
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        kinds = [m["event"] for m in mcp]
+        self.assertEqual(kinds[:3], ["start", "call", "result"], "the unknown call is a block, not a silence")
+        bad = [m for m in mcp if m["event"] == "result"][0]
+        self.assertFalse(bad["ok"])
+        self.assertIn("there is no tool named", bad["text"], bad["text"][:120])
+        self.assertEqual(len(self.engine.prompts), 3, "the model was given a turn after the error, and another")
+        answer = "".join((c["choices"][0].get("delta") or {}).get("content") or "" for c in self.chunks(text))
+        self.assertIn("Done.", answer, "and the chat ends with an answer instead of nothing")
+
+    def test_the_answer_is_capped_so_a_model_inventing_names_cannot_burn_the_rounds(self):
+        self.hub.settings["max_rounds"] = 8
+        self.start(*([call_script("fake__nothere", text="hi")] * 4))
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        results = [m for m in mcp if m["event"] == "result"]
+        answered = [m for m in results if not m.get("skipped")]
+        self.assertEqual(len(answered), 2, "the error goes back twice, no more")
+        self.assertEqual(len([m for m in results if m.get("skipped")]), 1,
+                         "and the third is shown as not run, not swallowed on the way out")
+        self.assertEqual(len(self.engine.prompts), 3, "then the turn ends rather than looping")
+        self.assertEqual(self.svc.totals.get("unknown_tool_calls"), 3, "and every one is still counted")
 
     def test_a_tool_the_client_declared_is_not_unknown(self):
         # the other half of the rule: a tool the request brought itself is the client's to answer, and that is

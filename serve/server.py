@@ -4536,21 +4536,30 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     # the names this request brought itself, which the client answers, as distinct from names NOBODY declared -
     # see the unknown-call notice below (item unread-call-recovery)
     own_names = {t.get("name") for t in (tools or []) if isinstance(t, dict)}
-    unknown_calls, unknown_names = 0, set()
+    unknown_calls, unknown_names, unknown_rounds = 0, set(), 0
     handle = object()          # this generator: the key its running calls are tracked under, for /metrics
     while True:
-        text, reasoning, calls, own_calls = [], [], [], 0
+        text, reasoning, calls, unknown, own_calls = [], [], [], [], 0
         for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
             if kind == "done":
                 done = x
                 continue
             if kind == "event":
                 ev: Event = x
-                if ev.call is not None and ev.call.name in mcp_names:
+                # A call the SERVER answers: an MCP tool the hub offers, or a name nobody offers at all - the
+                # hub's own answer for that is "there is no tool named X", which is exactly what the model needs
+                # to see in order to pick the one it meant (item unread-call-recovery).  A tool the request
+                # brought itself stays on the ordinary stream, for the client to answer.
+                if ev.call is not None and (ev.call.name in mcp_names or ev.call.name not in own_names):
                     if ev.kind == "tool_start":          # the model has started writing a call: say so at once
                         yield "mcp", {"event": "start", "id": ev.call.id, "name": ev.call.name}
                     elif ev.kind == "tool_call":
-                        calls.append(ev.call)
+                        if ev.call.name in mcp_names:
+                            calls.append(ev.call)
+                        else:
+                            unknown.append(ev.call)      # answered below, or skipped if the cap is reached
+                            unknown_calls += 1           # counted either way - see the notice at the end
+                            unknown_names.add(ev.call.name)
                     elif stream_args and ev.kind == "tool_args":
                         # todo #tool-args-stream: the call's raw JSON as it is written, so the page can show what the model is
                         # typing instead of "(being written)".  Only for requests that asked (strata_mcp_args);
@@ -4558,16 +4567,24 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                         yield "mcp", {"event": "args", "id": ev.call.id, "text": ev.text}
                     continue                             # the argument pieces stay off the ordinary stream
                 if ev.kind == "tool_call":
-                    own_calls += 1
-                    if ev.call.name not in mcp_names and ev.call.name not in own_names:
-                        unknown_calls += 1          # a name neither side can answer - see the notice below
-                        unknown_names.add(ev.call.name)
+                    own_calls += 1                # the client's own tool: it answers, and the turn ends as before
                 elif ev.kind == "content":
                     text.append(ev.text)
                 elif ev.kind == "reasoning":
                     reasoning.append(ev.text)
             yield kind, x
         total += done["completion_tokens"]
+        if unknown and not own_calls and done["finish"] == "stop" and not cancel.is_set() and unknown_rounds < 2:
+            # answer it.  The hub has no server behind the name, so the result is its own error text and the
+            # model gets a turn to pick the tool it meant - which is what the chat needed instead of dying
+            # (item unread-call-recovery; upstream caps the same thing at two).
+            unknown_rounds += 1
+            calls += unknown
+        elif unknown:
+            for c in unknown:                    # over the cap, or the client has its own call to answer
+                yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
+                              "chars": 0, "truncated": False, "ms": 0}
+        unknown = []
         run_them = calls and not own_calls and done["finish"] == "stop" and not cancel.is_set()
         if run_them and rounds >= max_rounds:
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
