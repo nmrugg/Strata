@@ -594,7 +594,30 @@ all: fold-control replaced them, and the four overlapping switches became one co
     and a decision about a second message arriving while one is queued. It must survive a
     reload, which is what makes it an IndexedDB problem rather than an array.
 
-`mcp-server-add`  Add and remove MCP servers in the web app. [ui] [py] MEDIUM
+`unread-call-recovery`  Stop losing a tool call the model wrote: port upstream's parser fixes. [py] MEDIUM
+    Raised by item unread-call-instrument, which is what makes the loss visible at all.  Upstream has this work
+    (this fork is 1858 commits behind origin/main and 5942 behind upstream/main), and NONE of it applies cleanly:
+    `git apply --check` fails on every one, so it is a hand-port, one piece at a time, with the 37-case corpus in
+    serve/test_reasoning_rescue.py as the tripwire and each newly-fixed shape added to that corpus as a RECORDED
+    specimen rather than an invented one (LESSONS.md: measure before you build):
+      - d71132738  damaged call arguments, a stray closing think tag and a missing function closer no longer cost
+                   the call (#4427 #4077)
+      - 209dcadb3  a fence is closed only by one at least as long as the one that opened it, and an indented code
+                   block is a quote, so calls shown in them are not run (#4702 #4703).  This is the rule that
+                   would have saved the unclosed-fence loss the instrument now counts: an open fence turned a real
+                   act into answer prose and the turn ended with no call and no error.
+      - 70f424072  a drifted opener of a DECLARED tool is read as the call; a call for a name the request did not
+                   declare stays text (#3441 #3075)
+      - the nine #6032 R1-R6 commits: damaged parameter openers, an arguments JSON body, XML-element parameters, a
+        cut opener, empty stubs, a function opener with its closer left out, and the invoke/parameter dialect
+      - e05e6e0cc  a reply that ends in unread call markup is written again once (strata_unread_tool_markup), so
+        the turn continues instead of dying - the piece that stops the death, not the piece that explains it
+    Reconcile with what this tree already has rather than cherry-picking over it: tool_call_recovery (#2037), the
+    declared-tool rule inside the reasoning (#804), and _bare_opener.
+    Also open in this tree, and unproven: the ValueError branch of _finish_call (recover on, a body that does not
+    parse) has the unread hook but no input was found that reaches it.
+
+`mcp-server-add`  Add and remove MCP servers in the web app. [ui] [py] MEDIUM DONE 2026-11-19
     Reading is done, and WRITING now has a home: POST /mcp (serve/server.py, _mcp_post) and
     runconfig.set_mcp / mcp_state / mcp_block (serve/runconfig.py) write one flag of one server entry with the
     same _own_page guard, API key and .bak as /config, leaving every other key of the file exactly as it was.
@@ -608,6 +631,62 @@ all: fold-control replaced them, and the four overlapping switches became one co
     MCP settings page" - so the entry points are wanted in BOTH the per-chat picker and the settings page.  The
     picker half is per-chat and cheap (its tools are already grouped by server there); the settings half is the
     real thing: a form for name / command or url / args / env, and deleting the whole entry.
+    DONE (the settings half; the picker half is item mcp-picker-entry-points).  ASKED: Settings tab or the
+    Monitor's card - the human chose the Settings tab, so the form lives in the new fourth tab (item
+    mcp-settings-page's first slice) and the Monitor's card is untouched until that one is verified in a browser.
+      - runconfig.set_mcp now also takes {"server": n, "add": entry} / {"server": n, "edit": entry} /
+        {"server": n, "remove": true}.  The form owns command, args, env, cwd, url, headers and nothing else:
+        "disabled" and "disabled_tools" - which the switches write - and any key from another tool's config file
+        are carried over exactly, and an unowned key in the payload is ignored, so a pasted SSE block cannot
+        smuggle the retired transport in as a new entry (an entry that already carries one is still refused).
+        An env or headers value of null keeps the value in the file, because the page is never shown the values:
+        GET /mcp answers "entries" with the command line and the NAMES of env / headers.  A no-op edit is a 200
+        with changed: [], like a no-op click.  Adding to a config with no MCP block creates the block
+        (mcp_servers, the documented spelling); a switch there still refuses.
+      - The entry is checked with mcp.check_server, the ValueError form of the start-up check.  _check_server
+        raises SystemExit, which on a request thread is not caught by `except ValueError` and would have taken
+        the server down; _mcp_post also answers 400 for a SystemExit as a second line of defence.  check_server
+        is stricter than the file's own check (both a command and a url, a non-text arg or env value), which
+        changes nothing for a config that starts today.
+      - The running hub is kept in step: an added or changed entry goes through McpHub.replace_server, which ends
+        the old process and starts a McpServer from the new entry - a toggle would leave the hub answering with
+        tools the file no longer describes.  A removed one is closed and dropped, and its name goes into
+        "reloads" so the page can say which conversations will read their history again.  If the config had no
+        MCP servers at all, adding the first one starts a hub, so that case is not the exception to "no restart".
+      - The page: a fourth header tab (Chat | Monitor | Info | Settings) whose MCP section renders the same card
+        the Monitor shows, plus Edit and Delete.  One card function, one click handler for both lists, one write
+        path (POST /mcp).  The form shows the command line that will run before it writes - "Runs on this PC
+        with your rights: npx -y srv (env: TOKEN)" - and nothing is written until Save.  Delete is a modal that
+        names the command and states the cost once, in the open conversation's own token count.
+    Tests: serve/test_runconfig.py McpApply +7 and McpHttp +6 (add / edit / remove, every other key of the file
+    byte-identical, the .bak, env null keeps, unowned keys preserved, malformed -> 400 with the file untouched and
+    the server still answering, duplicate name -> 400, remove of an unknown name -> 400, no-op edit -> 200
+    changed: [], foreign Origin -> 403, GET never carries an env value); serve/test_mcp.py RuntimeChange (3) -
+    the hub starts a server added at runtime and routes its tools, a changed entry replaces the running one and
+    its process ends, a removed one stops routing and its process ends; harness case 94 (the form's fields come
+    from the config, the preview line, Save posts exactly that body, the delete modal names the command and the
+    328,811 tokens, nothing written before Save, both lists redraw) and one markup test in
+    serve/test_chat_sidebar.py.  15 controls, every one of them failing as required - including one the node
+    harness cannot see (dropping the fourth tab from showTab), which only the markup test catches.
+    NOT verified in a browser: the form's layout, and what a rebuilt server looks like in the card while it is
+    starting.  Needs a restart for the server half; the page half needs a reload.
+
+`mcp-picker-entry-points`  The composer's wrench panel should reach Add / Edit / Remove too. [ui] SMALL DONE 2026-11-19
+    The human asked for the entry points in BOTH the per-chat picker and the settings page (item mcp-server-add,
+    2026-11-19); the settings page had them and the wrench panel did not.  ASKED AGAIN (2026-11-19): "still lacking
+    a way to add/remove/edit mcp servers from the wrench menu or a link" - so the panel carries the same three
+    buttons.  Not a second copy of the form: they open the SAME modals (openMcpForm / openMcpDelete), which post
+    the same bodies through the same POST /mcp, and the name rides on the button rather than being read off an
+    ancestor card - which is the trap LESSONS.md records for the Monitor's card.
+    One thing that had to change to make this sane: a click inside a modal used to count as an outside click and
+    closed the popover behind it, so opening the form from the panel dropped the panel.  The rule now excludes
+    .att-viewer (every modal's backdrop).  Escape already goes modal-then-popover, in that order.
+    Tests: harness case 95 drives it by clicks - the panel carries Edit/Delete/Add, Delete opens the modal that
+    names the command, a document click inside the modal leaves the panel open, Remove posts the same body, the
+    panel rebuilds after the write (the old handle is a removed node, so the case re-reads it), and Add opens an
+    empty form whose name field is editable and posts the add body.  Plus the markup pins in
+    serve/test_chat_sidebar.py.  Controls: dropping each of the three buttons, unwiring Add, writing the Monitor's
+    list again, and removing the .att-viewer exclusion - all six fail as required.
 
 `tool-exclude`  Enable and disable INDIVIDUAL tools. [py] [ui] MEDIUM DONE 2026-11-19
     DONE: a server entry can carry "disabled_tools": [its own tool names], checked at the start (serve/mcp.py,
@@ -820,6 +899,19 @@ all: fold-control replaced them, and the four overlapping switches became one co
     calls already exist: McpHub.set_tool_disabled / set_server_disabled, POST /mcp).  The Monitor's MCP card becomes
     read-only status - server state, errors, how many tools the model can actually see - with a link to Settings;
     one fact, one place, and the Monitor is not where you go to change something.
+    PROGRESS (2026-11-19, with item mcp-server-add): the fourth tab exists - Chat | Monitor | Info | Settings - and
+    its MCP section renders the same card the Monitor shows, with Edit and Delete on it.  The "Apply button" in the
+    title is WITHDRAWN: the human later chose immediate apply with Undo-to-baseline (item mcp-chat-picker), and the
+    Settings section follows that, same state, same write path.
+    DONE the same day, from the human's read of the page: the Monitor carries NO MCP card at all - asked, and the
+    alternative (keep the card as status, with the tool chips back as read-only) was declined.  Status, switches,
+    chips, Undo and the two buttons that change an entry are all in Settings, which is the only place that writes
+    one; the composer's wrench panel is a shortcut to the same state.  The Info page's non-info cards moved over:
+    the run-config card (cfg-card) and "This browser" (the API key and the dark theme); Info keeps Model and
+    engine, This PC, Connect your tools.  The Settings view now measures itself like Info - .settings shares
+    .monitor/.about's width, margin and padding and the same card gap - and it scrolls, which it did not:
+    .view--settings was missing from the overflow rule.
+    Still open: the Sampling drawer's controls (item settings-page).
 
 `settings-page`  A real Settings page: the app's settings are in four places now. [ui] MEDIUM
     DECIDED with the human: a fourth header tab (Chat | Monitor | About | Settings).  Today: the Sampling drawer is
@@ -829,6 +921,10 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Move them in slices, one per commit, keeping the old entry point until the new one is verified - a control must
     never disappear before its replacement exists.  Suggested order: MCP (item mcp-settings-page) -> the Sampling
     drawer's 15 controls -> the cfg-card and the switches in About -> the API key and theme.
+    PROGRESS (2026-11-19): MCP is in (item mcp-settings-page), and so are the last two slices - the cfg-card and
+    the API key / dark theme ("This browser") - which left the Info page, now that the tab is called Settings.
+    What remains is the Sampling drawer's controls.  The Info page keeps what informs: Model and engine, This PC,
+    Connect your tools.
     Worth an item of its own later: a PER-CHAT sampling override, which is a different feature from the drawer and
     would want the same frozen-at-creation care as the system prompt (item system-prompt) and the chat tool list
     (item mcp-chat-tools) - all three are prompt-shaping, all three cost a re-read when changed mid-conversation.

@@ -14,6 +14,8 @@ import os
 import shutil
 from pathlib import Path
 
+from serve import mcp as mcp_mod
+
 # (key, kind, help).  kind: "bool", "int>=0", "num>=0", ("enum", values), "names", or ("sampling", check) for a key
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
 EDITABLE = [
@@ -120,6 +122,7 @@ def check(key: str, v, cfg: dict):
 
 
 MCP_KEYS = ("mcp_servers", "mcpServers")          # both spellings are read (serve/mcp.py, config_mcp)
+MCP_MANAGED = ("command", "args", "env", "cwd", "url", "headers")   # what the page's server form owns
 
 
 def mcp_block(cfg: dict) -> tuple[dict, str | None]:
@@ -145,28 +148,142 @@ def mcp_state(cfg: dict) -> dict:
     return out
 
 
+def mcp_entries(cfg: dict) -> dict:
+    """What the page's form has to show about each configured server: the command line it would run, or the
+    address it would connect to, and the NAMES of its env and header entries - never their values, which are
+    usually API keys and are not handed to a page (todo #mcp-server-add, SECURITY.md)."""
+    block, _ = mcp_block(cfg)
+    out = {}
+    for name, entry in block.items():
+        if not isinstance(entry, dict):
+            continue
+        args = entry.get("args")
+        out[str(name)] = {
+            "transport": "http" if entry.get("url") else "stdio",
+            "command": str(entry.get("command") or ""),
+            "args": [str(a) for a in args] if isinstance(args, list) else [],
+            "url": str(entry.get("url") or ""),
+            "cwd": str(entry.get("cwd") or ""),
+            "env": sorted(str(k) for k in (entry.get("env") if isinstance(entry.get("env"), dict) else {})),
+            "headers": sorted(str(k) for k in (entry.get("headers") if isinstance(entry.get("headers"), dict) else {})),
+        }
+    return out
+
+
+def _merge_map(name: str, old, sent, what: str) -> dict:
+    """env / headers as the form sends them: the map it sends replaces the one in the file, and a value of null
+    means keep the value already there - the page is never shown the values (todo #mcp-server-add).  Leaving a
+    name out of the map is how a name is removed."""
+    had = old if isinstance(old, dict) else {}
+    if sent is None:                                      # the form did not touch this map
+        return {str(k): v for k, v in had.items()}
+    if not isinstance(sent, dict):
+        raise ValueError(f'MCP server {name!r}: "{what}" must be an object')
+    out = {}
+    for k, v in sent.items():
+        k = str(k).strip()
+        if not k:
+            raise ValueError(f'MCP server {name!r}: "{what}" needs a name on every line')
+        if v is None:
+            if k not in had:
+                raise ValueError(f'MCP server {name!r}: "{what}" {k} has no saved value to keep')
+            out[k] = had[k]
+        elif isinstance(v, str):
+            out[k] = v
+        else:
+            raise ValueError(f'MCP server {name!r}: "{what}" {k} must be text')
+    return out
+
+
+def _entry_change(block: dict, name: str, ch: dict, key: str) -> str | None:
+    """Add, change or remove one whole server entry in `block`, in place; the label for what moved, or None when
+    it turns out to be a no-op (todo #mcp-server-add).
+
+    The form owns MCP_MANAGED and nothing else: "disabled" and "disabled_tools" - which the switches write - and
+    any key Strata does not show are carried over exactly as they were.  A managed key the form leaves out is
+    dropped, which is how a server switches from a command to an address.  The entry is checked with
+    mcp.check_server before anything is written: that is the ValueError form of the start-up check, because
+    _check_server raises SystemExit and that would take the request thread - and with it the server - down."""
+    if not name or name != name.strip() or len(name) > 64 or any(c in name for c in "\r\n\t"):
+        raise ValueError("an MCP server name must be text, with no line break in it and no spaces at the ends")
+    if ch.get("remove") is not None:
+        if ch["remove"] is not True:
+            raise ValueError(f'MCP server {name!r}: "remove" must be true')
+        if not isinstance(block.get(name), dict):
+            raise ValueError(f"there is no MCP server {name!r} in {key}")
+        block.pop(name)
+        return f"{name} (removed)"
+    adding = ch.get("add") is not None
+    raw = ch.get("add") if adding else ch.get("edit")
+    if not isinstance(raw, dict):
+        raise ValueError(f"MCP server {name!r}: the entry must be an object")
+    old = block.get(name)
+    if adding and old is not None:
+        raise ValueError(f"there is already an MCP server {name!r} in {key}")
+    if not adding and not isinstance(old, dict):
+        raise ValueError(f"there is no MCP server {name!r} in {key}")
+    old = old if isinstance(old, dict) else {}
+    merged = {k: v for k, v in old.items() if k not in MCP_MANAGED}
+    for k in ("command", "url", "cwd"):
+        v = raw.get(k)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        if not isinstance(v, str):
+            raise ValueError(f'MCP server {name!r}: "{k}" must be text')
+        merged[k] = v.strip()
+    if raw.get("args") is not None:
+        if not isinstance(raw["args"], list) or not all(isinstance(a, str) for a in raw["args"]):
+            raise ValueError(f'MCP server {name!r}: "args" must be a list of text entries')
+        args = [a for a in raw["args"] if a.strip()]
+        if args:
+            merged["args"] = args
+    for k in ("env", "headers"):
+        m = _merge_map(name, old.get(k), raw.get(k), k)
+        if m:
+            merged[k] = m
+    mcp_mod.check_server(name, merged, key)
+    if merged == old:
+        return None                                        # an edit that changes nothing is not an error
+    block[name] = merged
+    return f"{name} ({'added' if adding else 'edited'})"
+
+
 def set_mcp(cfg: dict, changes: list, known: dict | None = None) -> tuple[dict, list[str]]:
     """Turn one MCP server off/on, or one of its tools off/on, in a copy of the config; every other key stays as
     it is.  A change is {"server": name, "disabled": true} or {"server": name, "tool": tool, "enabled": false},
     or {"server": name, "tools": [the tool names that should be ON]} - the last one is the Monitor writing a
     whole server at once, and it needs `known` ({server: [tool names]}) because the config itself never lists a
     server's tools: the running hub does.  Bad or unknown names raise ValueError and nothing is written - the
-    same all-or-nothing rule as apply().  Tool names are the server's own, not the namespaced one the model sees."""
+    same all-or-nothing rule as apply().  Tool names are the server's own, not the namespaced one the model sees.
+
+    A change can also add, change or remove a whole server: {"server": name, "add": entry} / {"server": name,
+    "edit": entry} / {"server": name, "remove": true}, where entry carries the fields the page's form owns -
+    command, args, env, cwd, url, headers (see _entry_change).  An env or headers value of null keeps the value
+    in the file, because the page is never shown the values (todo #mcp-server-add)."""
     if not isinstance(changes, list) or not changes:
         raise ValueError('send {"mcp": [{"server": "<name>", "disabled": true}, ...]}')
     _, key = mcp_block(cfg)
-    if key is None:
+    adding = any(isinstance(ch, dict) and ch.get("add") is not None for ch in changes)
+    if key is None and not adding:
         raise ValueError("this run config names no MCP servers (a --mcp-config file is not written from here)")
     new = json.loads(json.dumps(cfg))
+    if key is None:                    # the first server this config will have: the documented spelling wins
+        key = MCP_KEYS[0]
+        new[key] = {}
     block = new[key]
     changed: list[str] = []
     for ch in changes:
         if not isinstance(ch, dict):
             raise ValueError("each MCP change must be an object")
         # a change that names nothing to change is a bug in the caller, not a no-op: catch it before the file write
-        if not any(k in ch for k in ("disabled", "tool", "tools")):
-            raise ValueError('an MCP change must carry "disabled", "tool" or "tools"')
+        if not any(k in ch for k in ("disabled", "tool", "tools", "add", "edit", "remove")):
+            raise ValueError('an MCP change must carry "disabled", "tool", "tools", "add", "edit" or "remove"')
         name = str(ch.get("server") or "")
+        if any(k in ch for k in ("add", "edit", "remove")):
+            label = _entry_change(block, name, ch, key)
+            if label:
+                changed.append(label)
+            continue
         entry = block.get(name)
         if not isinstance(entry, dict):
             raise ValueError(f"there is no MCP server {name!r} in {key}")

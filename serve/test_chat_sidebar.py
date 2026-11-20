@@ -306,8 +306,69 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("let mcpBaseline = null;", self.js)
         self.assertIn('data-mcp-undo${n ? "" : " disabled"}', self.js)
         self.assertIn("mcpSnapshot();", self.body("openMcpPicker"))
-        self.assertIn('if (tab === "monitor") { mcpSnapshot(); loadMcp(); }', self.js)
+        self.assertIn("if (tab === \"monitor\") loadMcp();", self.js)
         self.assertIn("function redrawMcpViews()", self.js)      # the card and an open panel move together
+
+    def test_the_settings_tab_holds_the_mcp_server_form(self):
+        """todo #mcp-server-add / #mcp-settings-page: the fourth header tab exists and the server form is wired
+        to it.  The clicks themselves are driven in serve/test_chat_sidebar.js (case 94); what is pinned here is
+        the markup and the wiring the harness cannot reach cheaply."""
+        self.assertIn('data-tab="settings"', self.html)
+        self.assertIn('id="view-settings"', self.html)
+        self.assertIn('id="mcp-set-list"', self.html)
+        self.assertIn('id="mcp-set-add"', self.html)
+        self.assertIn('"chat", "monitor", "about", "settings"', self.js)     # showTab knows the fourth view
+        self.assertIn('if (tab === "settings") { mcpSnapshot(); loadMcp(); loadConfig(); }', self.js)
+        # the card the Settings list writes carries the two buttons that change the entry itself
+        self.assertIn("data-mcp-edit", self.js)
+        self.assertIn("data-mcp-del", self.js)
+        self.assertIn('$("mcp-set-list").addEventListener("click", mcpListClick);', self.js)
+        self.assertIn('$("mcp-set-add").onclick = () => openMcpForm(null);', self.js)
+        # one write path, the same POST /mcp the switches use; add and edit carry the entry, remove the name
+        self.assertIn('mcpPostAll([{server: n, [editing ? "edit" : "add"]: entry}]', self.js)
+        self.assertIn('mcpPostAll([{server: name, remove: true}]', self.js)
+        # nothing is written as you type: the field listeners repaint the preview of the command line only
+        self.assertIn('.forEach((el) => el.addEventListener("input", paint));', self.js)
+        self.assertIn("runs.textContent = mcpRunsText(read());", self.js)
+        # a server entry is a command line that runs here, so the form says so before it writes, and the delete
+        # confirm is a modal naming that command (SECURITY.md)
+        self.assertIn("Runs on this PC with your rights:", self.js)
+        self.assertIn('node("div", "msg-del__quote", mcpRunsText(have))', self.js)
+        # the form's inputs carry ids, or their labels point at nothing a browser can follow
+        self.assertIn("el.id = id;", self.js)
+        # the wrench panel reaches the entry too (todo #mcp-picker-entry-points): it is a shortcut, so it carries
+        # the same three buttons, and a modal opened from it must not close the panel behind it
+        self.assertIn('add.setAttribute("data-mcp-add", "1");', self.js)
+        self.assertIn('ed.setAttribute("data-mcp-edit", s.name);', self.js)
+        self.assertIn('del.setAttribute("data-mcp-del", s.name);', self.js)
+        self.assertIn('!e.target.closest(".att-viewer")) closePopover();', self.js)
+        # the Monitor carries no MCP card at all now (todo #mcp-settings-page): status, switches, chips and the
+        # entry buttons are all in Settings, and the wrench panel is a shortcut to that same state
+        for gone in ('id="mcp-card"', 'id="mcp-list"', 'id="mcp-sum"', 'id="mcp-goto-settings"',
+                     '$("mcp-list")', '$("mcp-card")', '$("mcp-sum")'):
+            self.assertNotIn(gone, self.html, "the Monitor's MCP card is gone from the page")
+            self.assertNotIn(gone, self.js, "and nothing still tries to write it")
+        self.assertNotIn(".mcp-card__link", (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8"))
+        # the non-info parts of the Info page moved: the run-config card and this browser's own settings
+        def section(name):
+            m = re.search(r'<section class="view view--%s".*?</section>' % name[5:], self.html, re.S)
+            return m.group(0) if m else ""
+        about, settings = section("view-about"), section("view-settings")
+        self.assertTrue(about and settings, "both sections exist")
+        for moved in ('id="cfg-card"', 'id="api-key"', 'id="dark-toggle"'):
+            self.assertIn(moved, settings, "%s belongs on the Settings tab" % moved)
+            self.assertNotIn(moved, about, "and not on the Info page")
+        for info in ('id="facts-engine"', 'id="facts-hw"', 'id="facts-api"'):
+            self.assertIn(info, about, "the Info page keeps what actually informs")
+        # and the page measures itself like the Info page, not like the dashboard
+        css = (Path(__file__).parent / "web" / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".settings { max-width: 860px; }", css)
+        self.assertIn(".monitor, .about, .settings {", css)
+        self.assertIn(".view--monitor, .view--about, .view--settings { overflow-y: auto; }", css)
+        self.assertIn(".settings .st-card { display: flex; flex-direction: column; gap: var(--st-s-3); }", css)
+        # a textarea is not a one-line input: .st-input's 44px height and zero vertical padding made every
+        # argument list a clipped strip with no padding above the text
+        self.assertIn(".mcp-form textarea.st-input { height: auto; min-height: 6em; padding: 10px 14px;", css)
 
     def test_the_drawer_warns_before_losing_unapplied_changes(self):
         # todo #drawer-discard-warn: only Apply writes, so the X, the scrim and Escape used to throw away moved switches in silence

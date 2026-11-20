@@ -2932,10 +2932,11 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   done.push("autoscroll-cooldown: a scroll up during a turn holds the follow off for a moment, and it resumes " +
             "when the reader comes back to the bottom");
 
-  // 90. the Monitor's MCP chips are the control (todo #mcp-server-toggle, #tool-exclude): clicking a tool chip
-  //     POSTs the change to /mcp, the card says the change is for the next start, and a server the config has
-  //     turned off still gets a card - the hub does not hold it at all, so without "configured" it would vanish
-  //     from the page and could never be switched back on.
+  // 90. the MCP chips and switches are the control, and they live in the Settings list (todo #mcp-server-toggle,
+  //     #tool-exclude, #mcp-settings-page): clicking a tool chip POSTs the change to /mcp, and a server the config
+  //     has turned off still gets a card - the hub does not hold it at all, so without "configured" it would vanish
+  //     from the page and could never be switched back on.  The Monitor's card of the same server carries neither
+  //     the switch nor the chips: it is status, and its link is how you get to the controls.
   const posts90 = [];
   let cfg90 = {files: {disabled: false, disabled_tools: []}};
   const s90 = run({fetch: async (url, opts) => {
@@ -2957,10 +2958,14 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const off90 = list90().find((x) => x.name === "extra");
   assert.strictEqual(off90.off, true, "and it reads as off");
   assert.deepStrictEqual(off90.chips, [], "with no tools to show until it starts again");
+  // the Monitor keeps nothing MCP-shaped: the card is gone, not merely stripped.  el() hands back a stub node, so
+  // "_html is undefined" means the page never wrote a list there - an assertion about the absence, not a lookup
+  // that succeeds because nothing exists to check.
+  assert.strictEqual(s90.s.el("mcp-list")._html, undefined, "renderMcp wrote no Monitor list at all");
   // the click: a chip sends the change, and the page does not pretend it is live.  The names come out of the HTML
   // the page itself wrote, not out of the test: the handler reads card.dataset.mcpServer off the card, and a card
   // built by hand would pass even if the page never wrote that attribute - which is the bug this case missed.
-  const wrote = s90.s.el("mcp-list")._html || "";
+  const wrote = s90.s.el("mcp-set-list")._html || "";
   const cardAttr = /data-mcp-server="([^"]*)"/.exec(wrote);
   const chipAttr = /data-mcp-tool="([^"]*)"[^>]*aria-pressed="false"/.exec(wrote);   // pick one that reads OFF
   assert.ok(cardAttr, "the card the page wrote carries data-mcp-server: the handler reads the name off it");
@@ -2972,17 +2977,18 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                 getAttribute(k) { return this.attrs[k]; },
                 closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-tool]" ? this : null; }};
   card._parent = null;
-  await s90.s.el("mcp-list")._l.click({target: chip});
-  const html90 = s90.s.el("mcp-list")._html || "";
+  await s90.s.el("mcp-set-list")._l.click({target: chip});
+  const html90 = s90.s.el("mcp-set-list")._html || "";
   assert.deepStrictEqual(posts90[0], {mcp: [{server: cardAttr[1], tool: chipAttr[1], enabled: true}]},
                          "a chip click writes at once (Undo is the way back, case 91)");
   const sw90 = {className: "st-toggle", attrs: {"aria-checked": "true"}, getAttribute(k) { return this.attrs[k]; },
               closest(sel) { return sel === ".mcp-server" ? card : sel === "[data-mcp-toggle]" ? this : null; }};
-  await s90.s.el("mcp-list")._l.click({target: sw90});
+  await s90.s.el("mcp-set-list")._l.click({target: sw90});
   assert.deepStrictEqual(posts90[1], {mcp: [{server: cardAttr[1], disabled: true}]},
-                         "the card's switch posts the same shape as the panel's (case 91 covers the redraw and Undo)");
+                         "the card's switch posts the same change the panel sends (case 91 covers the redraw and Undo)");
 
-  done.push("mcp-chips: a server the config has off keeps a card, and its chips and switch post the same change the panel sends");
+  done.push("mcp-chips: the Settings list carries the chips and the switch, a server the config has off keeps a " +
+            "card, and the Monitor's card of the same server carries neither");
 
   // 91. auto-apply with a way back (todo #mcp-chat-picker): a switch writes at once, and Undo puts everything
   //     back as it was when this view was opened.  Both views show the same thing and redraw together.
@@ -3016,7 +3022,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await wait();
   await sU.s.loadMcp();
   const findU = (el, attr, out = []) => { ((el && el.children) || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); findU(c, attr, out); }); return out; };
-  const wroteU = () => sU.s.el("mcp-list")._html || "";
+  const wroteU = () => sU.s.el("mcp-set-list")._html || "";
   const undoBtn = () => findU(sU.s.chatMenu, "data-mcp-undo")[0];
   // the page redraws the panel after every write, so the test has to open it the way a reader would: if it is
   // already open, the button closes it
@@ -3033,7 +3039,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await wait();
   assert.deepStrictEqual(postsU, [[{server: "a", tool: "two", enabled: false}]], "a switch writes at once");
   assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
-            "the Monitor card moved with it, unprompted: " + wroteU().slice(0, 320));
+            "the Settings card moved with it, unprompted: " + wroteU().slice(0, 320));
   assert.ok(sU.s.chatMenu, "the panel is still open after the write");
   assert.strictEqual(findU(sU.s.chatMenu, "data-mcp-pick").find((x) => x.attrs["data-mcp-pick"] === "a__two")
                      .attrs["aria-checked"], "false", "and the page rebuilt it to show the new state");
@@ -3100,6 +3106,151 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(p3.style.bottom, "", "and the far edge is left to the content");
 
   done.push("placePopover: the edge nearest the button is pinned, so no panel can cover the button that opened it");
+
+  // 94. the Settings tab's server form (todo #mcp-server-add): Edit and Delete come from the card the page
+  //     wrote; the form shows the command line before it writes anything; nothing is written until Save; the
+  //     delete confirm is a modal that names the command and the cost; one write redraws both lists.
+  const cfg94 = {files: {disabled: false, disabled_tools: []}};
+  const posts94 = [];
+  const s94 = run({fetch: async (url, opts) => {
+    if (String(url).split("?")[0] === "mcp") {
+      if (opts && opts.method === "POST") {
+        posts94.push(JSON.parse(opts.body));
+        return {ok: true, json: async () => ({changed: ["files (edited)"], configured: cfg94, live: [], reloads: []})};
+      }
+      return {ok: true, json: async () => ({servers: [{name: "files", transport: "stdio", status: "ready",
+                error: null, info: {}, tools: [{name: "files__read", tool: "read", enabled: true, description: "d"}]}],
+                tools: 1, configured: cfg94,
+                entries: {files: {transport: "stdio", command: "npx", args: ["-y", "srv"], url: "", cwd: "",
+                                  env: ["TOKEN"], headers: []}}})};
+    }
+    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
+    return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
+  }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first"),
+       {role: "assistant", text: "done", time: Date.now(), usage: {prompt_tokens: 328811}}]}});
+  await wait();
+  await s94.s.loadMcp();
+  const setHtml94 = () => s94.s.el("mcp-set-list")._html || "";
+  assert.ok(/data-mcp-edit/.test(setHtml94()), "the Settings card carries an Edit button: " + setHtml94().slice(0, 160));
+  assert.ok(/data-mcp-del/.test(setHtml94()), "and a Delete button");
+  assert.strictEqual(s94.s.el("mcp-list")._html, undefined, "the Monitor has no MCP list to change anything in");
+  const walk94 = (el, out = []) => { for (const c of (el.children || [])) { out.push(c); walk94(c, out); } return out; };
+  const byId94 = (id) => walk94(s94.s.modalEl).find((c) => c.id === id);
+  const byText94 = (t) => walk94(s94.s.modalEl).find((c) => c.textContent === t && c.onclick);
+  // the click reaches the button through its card, as in the real DOM - and the attributes above are what prove
+  // the page really wrote them (LESSONS.md: a hand-built card would pass on markup that never existed)
+  const click94 = (attr) => {
+    const card = {className: "mcp-server", dataset: {mcpServer: "files"},
+                  closest: (sel) => (sel === ".mcp-server" ? card : null)};
+    const btn = {className: "st-btn", attrs: {[attr]: ""}, _parent: card,
+                 closest: (sel) => (sel === `[${attr}]` ? btn : sel === ".mcp-server" ? card : null)};
+    s94.s.el("mcp-set-list")._l.click({target: btn});
+  };
+  click94("data-mcp-edit");
+  const modal94 = s94.s.modalEl;
+  assert.ok(modal94, "Edit opens a modal, not a bare confirm");
+  assert.strictEqual(byId94("mcp-f-name").value, "files", "the form starts from what the config says");
+  assert.strictEqual(byId94("mcp-f-name").disabled, true, "and the name is not editable: renaming is remove plus add");
+  assert.strictEqual(byId94("mcp-f-command").value, "npx", "the command, filled in");
+  assert.strictEqual(byId94("mcp-f-args").value, "-y\nsrv", "one argument per line");
+  assert.strictEqual(byId94("mcp-f-env").value, "TOKEN", "the env NAME is shown, never its value");
+  assert.strictEqual(posts94.length, 0, "opening the form writes nothing");
+  const runs94 = walk94(modal94).find((c) => (c.className || "").includes("mcp-form__runs"));
+  assert.match(runs94.textContent, /Runs on this PC with your rights: npx -y srv \(env: TOKEN\)\./,
+               "it says what will run before it writes: " + runs94.textContent);
+  byId94("mcp-f-command").value = "node";
+  byId94("mcp-f-command")._l.input({target: byId94("mcp-f-command")});
+  assert.match(runs94.textContent, /node -y srv/, "and the line follows what you type");
+  byText94("Save").onclick();
+  await wait();
+  assert.deepStrictEqual(posts94[0], {mcp: [{server: "files",
+    edit: {command: "node", url: "", cwd: "", args: ["-y", "srv"], env: {TOKEN: null}, headers: {}}}]},
+    "the body it posts, and only on Save; an env name with no = keeps the saved value");
+  assert.ok(/data-mcp-edit/.test(setHtml94()), "the Settings list redrew after the write");
+  assert.strictEqual(s94.s.el("mcp-list")._html, undefined, "and nothing appeared in the Monitor");
+  click94("data-mcp-del");
+  const del94 = s94.s.modalEl;
+  assert.ok(del94 && del94 !== modal94, "Delete opens its own modal");
+  const quote94 = walk94(del94).find((c) => (c.className || "").includes("msg-del__quote"));
+  assert.match(quote94.textContent, /npx -y srv/, "it names what is being removed by the command that runs");
+  const warn94 = walk94(del94).find((c) => (c.className || "").includes("msg-del__warn"));
+  assert.match(warn94.textContent, /reads its history again on its next message \(328,811 tokens\)/,
+               "and says the cost once, in this conversation's own number: " + warn94.textContent);
+  assert.strictEqual(posts94.length, 1, "the confirm writes nothing by itself");
+  byText94("Remove").onclick();
+  await wait();
+  assert.deepStrictEqual(posts94[1], {mcp: [{server: "files", remove: true}]});
+
+  done.push("mcp-server-add: the Settings form shows the command line before it writes, writes only on Save, " +
+            "and its delete confirm names the command and the token cost");
+
+  // 95. the wrench panel reaches the entry itself (todo #mcp-picker-entry-points): Add / Edit / Delete are in the
+  //     panel and open the same modals the Settings list does, and a click inside that modal does not close the
+  //     panel behind it.
+  const posts95 = [];
+  const s95 = run({fetch: async (url, opts) => {
+    if (String(url).split("?")[0] === "mcp") {
+      if (opts && opts.method === "POST") {
+        posts95.push(JSON.parse(opts.body));
+        return {ok: true, json: async () => ({changed: ["files (removed)"], configured: cfg94, live: [], reloads: ["files"]})};
+      }
+      return {ok: true, json: async () => ({servers: [{name: "files", transport: "stdio", status: "ready", error: null,
+                info: {}, tools: [{name: "files__read", tool: "read", enabled: true, description: "d"}]}],
+                tools: 1, configured: cfg94,
+                entries: {files: {transport: "stdio", command: "npx", args: ["-y", "srv"], url: "", cwd: "",
+                                  env: [], headers: []}}})};
+    }
+    if (String(url).startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
+    return {ok: true, body: {getReader: () => ({read: async () => ({done: true})})}};
+  }}, {"strata.history": "true", "strata.chatId": JSON.stringify("a")},
+     {a: {id: "a", title: "Parser work", time: Date.now(), messages: [msg("first"),
+       {role: "assistant", text: "done", time: Date.now(), usage: {prompt_tokens: 4242}}]}});
+  await wait();
+  await s95.s.loadMcp();
+  const find95 = (el, attr, out = []) => {
+    ((el && el.children) || []).forEach((c) => { if (c.attrs && attr in c.attrs) out.push(c); find95(c, attr, out); });
+    return out;
+  };
+  const walk95 = (el, out = []) => { for (const c of (el.children || [])) { out.push(c); walk95(c, out); } return out; };
+  s95.s.el("mcp-btn").onclick();
+  const panel95 = s95.s.chatMenu;
+  assert.ok(panel95, "the wrench panel opened");
+  assert.strictEqual(find95(panel95, "data-mcp-edit").length, 1, "the panel carries Edit for each server");
+  assert.strictEqual(find95(panel95, "data-mcp-del").length, 1, "and Delete");
+  assert.strictEqual(find95(panel95, "data-mcp-add").length, 1, "and Add server");
+  assert.strictEqual(find95(panel95, "data-mcp-edit")[0].attrs["data-mcp-edit"], "files",
+                     "the button names its own server, so no ancestor lookup is involved");
+  s95.s.chatMenu._l.click({target: find95(panel95, "data-mcp-del")[0]});
+  const del95 = s95.s.modalEl;
+  assert.ok(del95, "Delete opened the same modal from the panel");
+  assert.ok(walk95(del95).some((c) => (c.className || "").includes("msg-del__quote")
+                                 && /npx -y srv/.test(c.textContent)), "naming the command that runs");
+  // a click inside the modal is not an outside click: the panel behind it stays open, so the view the modal
+  // edits is still there when the modal closes
+  s95.fireDoc("click", {target: {closest: (sel) => (sel === ".att-viewer" ? {} : null)}});
+  assert.strictEqual(s95.s.chatMenu, panel95, "the panel survived the click inside the modal");
+  walk95(del95).find((c) => c.textContent === "Remove").onclick();
+  await wait();
+  assert.deepStrictEqual(posts95[0], {mcp: [{server: "files", remove: true}]}, "the same write path");
+  // the panel rebuilt itself after the write, so re-read it: the old handle is a removed node
+  const panel95b = s95.s.chatMenu;
+  assert.ok(panel95b && panel95b !== panel95, "and the panel redrew");
+  panel95b._l.click({target: find95(panel95b, "data-mcp-add")[0]});
+  const form95 = s95.s.modalEl;
+  assert.ok(form95 && form95 !== del95, "Add opens the same form");
+  const nameEl95 = walk95(form95).find((c) => c.id === "mcp-f-name");
+  assert.strictEqual(nameEl95.value, "", "empty, for a new server");
+  assert.strictEqual(nameEl95.disabled, undefined, "and the name is editable when adding");
+  nameEl95.value = "weather";
+  walk95(form95).find((c) => c.id === "mcp-f-command").value = "node";
+  walk95(form95).find((c) => c.textContent === "Add").onclick();
+  await wait();
+  assert.deepStrictEqual(posts95[1], {mcp: [{server: "weather", add: {command: "node", url: "", cwd: "",
+    args: [], env: {}, headers: {}}}]}, "the add body, from the panel");
+
+  done.push("mcp-picker-entry-points: the wrench panel adds and removes servers through the same modals, and a " +
+            "click inside a modal does not close the panel behind it");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

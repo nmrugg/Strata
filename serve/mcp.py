@@ -668,6 +668,27 @@ class McpHub:
         t.start()
         return True
 
+    def replace_server(self, name: str, cfg: dict) -> bool:
+        """Rebuild one server from a config entry that just changed (todo #mcp-server-add).  A toggle is not
+        enough here: the entry names a different program or address now, and a hub still holding the old one would
+        answer with tools the file no longer describes - the config and the hub drift apart, which is what made a
+        chip click a no-op once.  The old process is ended first, the new one starts on its own thread (the card
+        shows "starting" and the page polls again), and the name keeps its place in the list."""
+        old = self.servers.get(name)
+        if old is not None:
+            try:
+                old.close()
+            except Exception as e:                        # a server that will not die must not fail the edit
+                print(f"[strata] MCP server {name}: closing it before starting the changed entry failed: {e}",
+                      flush=True)
+        s = McpServer(name, cfg, self.settings)
+        self.servers[name] = s
+        t = threading.Thread(target=s.start, daemon=True, name=f"mcp-{name}")
+        self.threads.append(t)
+        t.start()
+        self.routes()
+        return True
+
     def close(self):
         for s in self.servers.values():
             try:
@@ -677,25 +698,59 @@ class McpHub:
 
 
 # ------------------------------------------------------------------------------------------------ config
-def _check_server(name, cfg, where) -> dict:
+def entry_problem(name, cfg) -> str | None:
+    """What is wrong with one MCP server entry, or None when it is usable.  The sentence without the
+    "[strata] <where>: " prefix, so both callers can put it in their own words: _check_server below turns it into
+    the SystemExit that stops a bad config from starting, and check_server turns it into the ValueError a request
+    thread can answer 400 with (todo #mcp-server-add)."""
     if not isinstance(cfg, dict):
-        raise SystemExit(f"[strata] {where}: MCP server {name!r} must be an object with \"command\" or \"url\"")
+        return "must be an object with \"command\" or \"url\""
     if cfg.get("url"):
         if cfg.get("type") == "sse":
-            raise SystemExit(f"[strata] {where}: MCP server {name!r} uses the old SSE transport (\"type\": \"sse\"); "
-                             "Strata speaks Streamable HTTP - most servers offer it at /mcp")
+            return ("uses the old SSE transport (\"type\": \"sse\"); "
+                    "Strata speaks Streamable HTTP - most servers offer it at /mcp")
         if not isinstance(cfg.get("headers") or {}, dict):
-            raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"headers\" must be an object")
-        return cfg
+            return "\"headers\" must be an object"
+        return None
     if not isinstance(cfg.get("command"), str) or not cfg["command"].strip():
-        raise SystemExit(f"[strata] {where}: MCP server {name!r} needs \"command\" (a program to start) or \"url\"")
+        return "needs \"command\" (a program to start) or \"url\""
     if not isinstance(cfg.get("args") or [], list):
-        raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"args\" must be a list")
+        return "\"args\" must be a list"
     if not isinstance(cfg.get("env") or {}, dict):
-        raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"env\" must be an object")
+        return "\"env\" must be an object"
     if not isinstance(cfg.get("disabled_tools") or [], list) or \
             not all(isinstance(t, str) and t.strip() for t in (cfg.get("disabled_tools") or [])):
-        raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"disabled_tools\" must be a list of tool names")
+        return "\"disabled_tools\" must be a list of tool names"
+    return None
+
+
+def _check_server(name, cfg, where) -> dict:
+    problem = entry_problem(name, cfg)
+    if problem:
+        raise SystemExit(f"[strata] {where}: MCP server {name!r} {problem}")
+    return cfg
+
+
+def check_server(name, cfg, where: str = "config") -> dict:
+    """The start-up check, as a ValueError.  A request thread must not call _check_server: SystemExit there is not
+    caught by the handler's `except ValueError` and would take the whole server down (todo #mcp-server-add).
+
+    Stricter than the file's own check, because this is a form that just wrote the entry rather than a config that
+    already starts: an entry with both a command and a url, an arg that is not text, an env or header value that is
+    not text.  None of that changes what a config that starts today does - servers_from still calls _check_server."""
+    problem = entry_problem(name, cfg)
+    if problem is None:
+        if cfg.get("url") and str(cfg.get("command") or "").strip():
+            problem = "has both \"command\" and \"url\"; give it one or the other"
+        elif any(k in cfg and cfg[k] is not None and not isinstance(cfg[k], str)
+                 for k in ("command", "url", "cwd")):
+            problem = "\"command\", \"url\" and \"cwd\" must be text"
+        elif not all(isinstance(a, str) for a in (cfg.get("args") or [])):
+            problem = "every \"args\" entry must be text"
+        elif not all(isinstance(v, str) for m in ("env", "headers") for v in (cfg.get(m) or {}).values()):
+            problem = "every \"env\" and \"headers\" value must be text"
+    if problem:
+        raise ValueError(f"{where}: MCP server {name!r} {problem}")
     return cfg
 
 

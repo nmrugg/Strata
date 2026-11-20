@@ -644,6 +644,48 @@ class ToolLoop(unittest.TestCase):
         self.assertIn("fake__echo", [t["name"] for t in self.hub.template_tools()])
         self.assertFalse(self.hub.set_server_disabled("nope", True))  # a name that is not there changes nothing
 
+class RuntimeChange(unittest.TestCase):
+    """todo #mcp-server-add: a server can be added, changed or removed while Strata runs.  The hub has to
+    construct and start an added entry, rebuild a changed one (a toggle would leave it answering with the tools
+    the file no longer describes), and close a removed one."""
+
+    def setUp(self):
+        self.hub = McpHub({}, {"timeout_s": 10, "start_timeout_s": 30})
+        self.assertEqual(self.hub.routes(), {}, "a hub with no servers routes nothing")
+
+    def tearDown(self):
+        self.hub.close()
+
+    def test_a_server_added_at_runtime_starts_and_routes_its_tools(self):
+        self.assertTrue(self.hub.replace_server("fake", stdio()))
+        self.hub.wait(20)
+        self.assertIn("fake__echo", self.hub.routes())
+        self.assertEqual([s["name"] for s in self.hub.status()["servers"]], ["fake"])
+        self.assertEqual(self.hub.status()["tools"], len(self.hub.routes()))
+
+    def test_a_changed_entry_replaces_the_running_server(self):
+        self.hub.replace_server("fake", stdio())
+        self.hub.wait(20)
+        old = self.hub.servers["fake"].transport
+        self.assertIn("fake__echo", self.hub.routes())
+        self.hub.replace_server("fake", stdio("--crash-at-start"))
+        self.hub.wait(20)
+        self.assertEqual([n for n in self.hub.routes() if n.startswith("fake__")], [],
+                         "the old entry's tools are no longer offered")
+        self.assertFalse(old.alive(), "and its process was ended, not left running next to the new one")
+        self.assertEqual(self.hub.servers["fake"].status, "failed", "what the new entry actually does")
+
+    def test_a_removed_server_stops_routing_and_its_process_ends(self):
+        self.hub.replace_server("fake", stdio())
+        self.hub.wait(20)
+        proc = self.hub.servers["fake"].transport.proc
+        self.assertIsNotNone(proc)
+        self.assertTrue(self.hub.set_server_disabled("fake", True))
+        self.assertEqual(self.hub.routes(), {})
+        self.assertNotIn("fake", self.hub.servers)
+        self.assertIsNotNone(proc.poll(), "the process closed with it (a stopped hub is not a stopped PC)")
+
+
 class NoServers(unittest.TestCase):
     def test_opt_in_without_servers_is_a_plain_chat(self):
         tok = ByteTokenizer()
@@ -652,7 +694,7 @@ class NoServers(unittest.TestCase):
         try:
             base = f"http://127.0.0.1:{httpd.server_address[1]}"
             with urllib.request.urlopen(base + "/mcp", timeout=10) as r:
-                self.assertEqual(json.loads(r.read()), {"servers": [], "tools": 0, "configured": {}})
+                self.assertEqual(json.loads(r.read()), {"servers": [], "tools": 0, "configured": {}, "entries": {}})
             req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(
                 {"model": "m", "messages": [{"role": "user", "content": "x"}], "strata_mcp": True}).encode(),
                 headers={"Content-Type": "application/json"})

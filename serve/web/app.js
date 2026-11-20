@@ -1,4 +1,4 @@
-// serve/web/app.js - the Strata web app: Chat, Monitor, About. No framework, no network beyond this server.
+// serve/web/app.js - the Strata web app: Chat, Monitor, Info, Settings. No framework, no network beyond this server.
 // The Monitor tab rebuilds PR #22's dashboard idea (code-martin) on the server's own /metrics.
 "use strict";
 
@@ -75,13 +75,13 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "monitor", "about", "settings"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "monitor", "about", "settings"]) $(`view-${v}`).hidden = v !== tab;
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
-  if (tab === "monitor") { mcpSnapshot(); loadMcp(); }   // Undo covers the card from the moment you open it
-  if (tab === "about") loadConfig();
+  if (tab === "monitor") loadMcp();          // status only: the switches and the entry buttons live in Settings
+  if (tab === "settings") { mcpSnapshot(); loadMcp(); loadConfig(); }
   if (lastMetrics) render(lastMetrics);
   pollNow();                       // the tab we just moved to wants its own kind of answer now (?lite vs full)
 }
@@ -597,34 +597,42 @@ function mcpUndoRow() {
     `<button class="st-btn st-btn--secondary" data-mcp-undo${n ? "" : " disabled"}>Undo</button>` +
     `<span class="mcp-note-text muted small">${cost ? `This re-reads ${fmt(cost)} tokens in this conversation.` : ""}</span></p>`;
 }
+// The server card, in the one place that changes servers (todo #mcp-settings-page): the Settings tab.  The
+// Monitor carries no MCP card at all now - status, switches, chips and the entry buttons are all in Settings,
+// and the composer's wrench panel is a shortcut to that same state.
+function mcpCardHtml(s) {
+  const [cls, text] = s.off ? ["st-badge--queued", "Off"] : (MCP_STATE[s.status] || ["", s.status]);
+  const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
+  return `<div class="mcp-server" data-mcp-server="${esc(s.name)}"><div class="mcp-server__head">` +
+    `<button class="st-toggle" role="switch" data-mcp-toggle aria-checked="${String(!s.off)}" ` +
+    `aria-label="Use the MCP server ${esc(s.name)}"></button>` +
+    `<span class="st-badge ${cls}">${esc(text)}</span>` +
+    `<strong>${esc(s.name)}</strong>` +
+    `<span class="muted small">${esc(s.transport || "")} · ${fmt(s.tools.length)} tools${esc(info)}</span>` +
+    `<span class="mcp-server__actions">` +
+    `<button class="st-btn st-btn--secondary" data-mcp-edit type="button">Edit</button>` +
+    `<button class="st-btn st-btn--secondary" data-mcp-del type="button">Delete</button></span>` +
+    `</div>` +
+    (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
+    (s.chips.length ? `<div class="mcp-server__tools">` + s.chips.map((c) =>
+      `<button class="chip mcp-tool${c.enabled ? "" : " off"}" data-mcp-tool="${esc(c.tool)}" ` +
+      `aria-pressed="${String(c.enabled)}" title="${esc(c.name)}${esc(c.description ? " — " + c.description : "")}">` +
+      `${esc(c.tool || c.name)}</button>`).join("") + `</div>` : "") +
+    (s.off ? `<p class="mcp-note muted small">off in the config; its tools are not listed until it starts again</p>` : "") +
+    `</div>`;
+}
 function renderMcp() {
   const list = mcpServers();
-  $("mcp-card").hidden = !list.length;
+  $("mcp-set-card").hidden = !list.length;          // the Settings tab: the one place that changes servers
   $("mcp-row").hidden = !list.length;
   $("mcp-btn").hidden = !list.length;              // the wrench is the same control, reachable from the composer
   const ready = list.filter((s) => s.status === "ready" || s.status === "stopped");
   const off = list.filter((s) => s.off).length;
-  $("mcp-sum").textContent = list.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${list.length} servers connected`
-                                       + (off ? ` · ${fmt(off)} off` : "") : "";
+  $("mcp-set-sum").textContent = list.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${list.length} servers connected`
+                        + (off ? ` · ${fmt(off)} off` : "") : "";
   $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
-                                               : "no server is connected yet (see the Monitor)";
-  $("mcp-list").innerHTML = list.map((s) => {
-    const [cls, text] = s.off ? ["st-badge--queued", "Off"] : (MCP_STATE[s.status] || ["", s.status]);
-    const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
-    return `<div class="mcp-server" data-mcp-server="${esc(s.name)}"><div class="mcp-server__head">` +
-      `<button class="st-toggle" role="switch" data-mcp-toggle aria-checked="${String(!s.off)}" ` +
-      `aria-label="Use the MCP server ${esc(s.name)}"></button>` +
-      `<span class="st-badge ${cls}">${esc(text)}</span>` +
-      `<strong>${esc(s.name)}</strong>` +
-      `<span class="muted small">${esc(s.transport || "")} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
-      (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
-      (s.chips.length ? `<div class="mcp-server__tools">` + s.chips.map((c) =>
-        `<button class="chip mcp-tool${c.enabled ? "" : " off"}" data-mcp-tool="${esc(c.tool)}" ` +
-        `aria-pressed="${String(c.enabled)}" title="${esc(c.name)}${esc(c.description ? " — " + c.description : "")}">` +
-        `${esc(c.tool || c.name)}</button>`).join("") + `</div>` : "") +
-      (s.off ? `<p class="mcp-note muted small">off in the config; its tools are not listed until it starts again</p>` : "") +
-      `</div>`;
-  }).join("") + mcpUndoRow();
+                                               : "no server is connected yet (see Settings)";
+  $("mcp-set-list").innerHTML = list.map((s) => mcpCardHtml(s)).join("") + mcpUndoRow();
 }
 // The wrench panel: the same servers, the same switches, the same writes.  Nothing here is per conversation.
 function openMcpPicker(anchor) {
@@ -644,6 +652,17 @@ function openMcpPicker(anchor) {
     head.appendChild(sw);
     head.appendChild(node("strong", "", s.name));
     head.appendChild(node("span", "muted small", `${s.chips.filter((c) => c.enabled).length} of ${s.chips.length} tools on`));
+    // the same three entry points as the Settings list (todo #mcp-picker-entry-points): the panel is a shortcut,
+    // so it must not be a shorter one.  The name rides on the button, so no ancestor lookup is involved.
+    const acts = node("span", "mcp-server__actions");
+    const ed = node("button", "st-btn st-btn--secondary", "Edit");
+    ed.type = "button";
+    ed.setAttribute("data-mcp-edit", s.name);
+    const del = node("button", "st-btn st-btn--secondary", "Delete");
+    del.type = "button";
+    del.setAttribute("data-mcp-del", s.name);
+    acts.append(ed, del);
+    head.appendChild(acts);
     row.appendChild(head);
     panel.appendChild(row);
     const box = node("div", "mcp-server__tools");
@@ -670,9 +689,18 @@ function openMcpPicker(anchor) {
   const cost = n ? (chatPromptTokens() || null) : null;
   foot.appendChild(node("span", "mcp-picker__cost muted small",
     cost ? `This re-reads ${fmt(cost)} tokens in this conversation.` : ""));
+  const add = node("button", "st-btn st-btn--secondary", "Add server");
+  add.type = "button";
+  add.setAttribute("data-mcp-add", "1");
+  foot.appendChild(add);
   panel.appendChild(foot);
   panel.addEventListener("click", (e) => {
     if (e.target.closest("[data-mcp-undo]")) { mcpUndo().then(redrawMcpViews); return; }
+    if (e.target.closest("[data-mcp-add]")) { openMcpForm(null); return; }
+    const ed = e.target.closest("[data-mcp-edit]");
+    if (ed) { openMcpForm(ed.getAttribute("data-mcp-edit")); return; }
+    const del = e.target.closest("[data-mcp-del]");
+    if (del) { openMcpDelete(del.getAttribute("data-mcp-del")); return; }
     const sw = e.target.closest("[data-mcp-server]"), pick = e.target.closest("[data-mcp-pick]");
     let change = null;
     if (sw) change = {server: sw.getAttribute("data-mcp-server"), disabled: sw.getAttribute("aria-checked") === "true"};
@@ -686,22 +714,141 @@ function openMcpPicker(anchor) {
   return panel;
 }
 $("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));
-$("mcp-list").addEventListener("click", (e) => {
+// The Settings list (todo #mcp-server-add): the switches, the chips and Undo, and the two buttons that change
+// or remove the entry itself.  The Monitor's card has no controls at all, so it needs no handler.
+function mcpListClick(e) {
   if (e.target.closest("[data-mcp-undo]")) { mcpUndo().then(redrawMcpViews); return; }
   const card = e.target.closest(".mcp-server");
   if (!card) return;
   const server = card.dataset.mcpServer;
+  if (e.target.closest("[data-mcp-edit]")) { openMcpForm(server); return; }
+  if (e.target.closest("[data-mcp-del]")) { openMcpDelete(server); return; }
   const chip = e.target.closest("[data-mcp-tool]"), sw = e.target.closest("[data-mcp-toggle]");
   if (!chip && !sw) return;
   mcpPost(chip ? {server, tool: chip.dataset.mcpTool, enabled: chip.getAttribute("aria-pressed") !== "true"}
                : {server, disabled: sw.getAttribute("aria-checked") !== "false"}).then(redrawMcpViews);
-});
+}
+$("mcp-set-list").addEventListener("click", mcpListClick);
+$("mcp-set-add").onclick = () => openMcpForm(null);
 // After a write, an open panel has to be rebuilt to show the new state.  The card does not: mcpPostAll awaits
 // loadMcp, and loadMcp renders it.
 function redrawMcpViews() {
   if (activePopover && activePopover.classList.contains("mcp-picker")) {
     const a = $("mcp-btn"); closePopover(); openMcpPicker(a);
   }
+}
+// The form that writes a whole server entry (todo #mcp-server-add).  A server entry is a command line that runs
+// on this PC with the user's rights (SECURITY.md, docs/MCP_SERVER.md "Safety"), so the form shows what will run
+// before it writes anything, and nothing is written until Save.  The VALUES of env and headers are never sent to
+// the page - GET /mcp gives their names only - so a line naming a value it did not type means "keep what is in
+// the file", which is what the server's set_mcp reads as null.
+const mcpNames = (v) => (Array.isArray(v) ? v : Object.keys(v || {}));
+const mcpLines = (el) => String(el.value || "").split("\n").map((x) => x.replace(/\s+$/, "")).filter((x) => x !== "");
+function mcpMapFromLines(el) {
+  const out = {};
+  for (const line of mcpLines(el)) {
+    const at = line.indexOf("=");
+    if (at < 0) out[line.trim()] = null;                    // keep the value already in the file
+    else out[line.slice(0, at).trim()] = line.slice(at + 1);
+  }
+  return out;
+}
+function mcpRunsText(entry) {
+  if (entry.url) {
+    const h = mcpNames(entry.headers);
+    return `Strata connects to ${entry.url}${h.length ? ` (headers: ${h.join(", ")})` : ""}.`;
+  }
+  const line = [entry.command, ...(entry.args || [])].filter(Boolean).join(" ");
+  if (!line) return "Nothing set yet.";
+  const e = mcpNames(entry.env);
+  return `Runs on this PC with your rights: ${line}${entry.cwd ? ` in ${entry.cwd}` : ""}` +
+         `${e.length ? ` (env: ${e.join(", ")})` : ""}.`;
+}
+function openMcpForm(name) {
+  closeModal();
+  const editing = !!name;
+  const have = (mcpInfo.entries || {})[name] || {};
+  const back = node("div", "att-viewer");
+  back.onclick = (e) => { if (e.target === back) closeModal(); };
+  const panel = node("div", "att-viewer__panel mcp-form");
+  panel.appendChild(node("h3", "msg-del__title", editing ? `Change ${name}` : "Add an MCP server"));
+  const field = (label, id, value, ph, rows) => {
+    const f = node("div", "st-field");
+    const l = node("label", "st-label", label);
+    l.htmlFor = id;
+    const el = document.createElement(rows ? "textarea" : "input");
+    if (!rows) el.type = "text";
+    el.className = "st-input";
+    el.id = id;                                       // the label above points at it (htmlFor needs this)
+    el.value = value;
+    if (ph) el.placeholder = ph;
+    if (rows) el.rows = rows;
+    f.append(l, el);
+    panel.appendChild(f);
+    return el;
+  };
+  const nameEl = field("Name", "mcp-f-name", name || "", "files");
+  if (editing) nameEl.disabled = true;              // renaming means removing this one and adding another
+  const cmdEl = field("Command", "mcp-f-command", have.command || "", "npx");
+  const argsEl = field("Arguments, one per line", "mcp-f-args", (have.args || []).join("\n"), "", 3);
+  const urlEl = field("Or an address (Streamable HTTP)", "mcp-f-url", have.url || "", "http://127.0.0.1:8643/mcp");
+  const cwdEl = field("Working folder (optional)", "mcp-f-cwd", have.cwd || "");
+  const envEl = field("Environment, NAME=value per line. A name with no = keeps its saved value",
+                      "mcp-f-env", mcpNames(have.env).join("\n"), "", 2);
+  const headEl = field("Headers, NAME=value per line. A name with no = keeps its saved value",
+                       "mcp-f-headers", mcpNames(have.headers).join("\n"), "", 2);
+  const runs = node("p", "mcp-form__runs muted small");
+  panel.appendChild(runs);
+  const read = () => ({command: cmdEl.value.trim(), url: urlEl.value.trim(), cwd: cwdEl.value.trim(),
+                       args: mcpLines(argsEl), env: mcpMapFromLines(envEl), headers: mcpMapFromLines(headEl)});
+  const paint = () => { runs.textContent = mcpRunsText(read()); };
+  [cmdEl, argsEl, urlEl, cwdEl, envEl, headEl].forEach((el) => el.addEventListener("input", paint));
+  paint();
+  const bar = node("div", "msg-edit__bar");
+  const cancel = node("button", "st-btn st-btn--secondary", "Cancel");
+  cancel.type = "button";
+  cancel.onclick = closeModal;
+  const go = node("button", "st-btn st-btn--primary", editing ? "Save" : "Add");
+  go.type = "button";
+  go.onclick = () => {
+    const entry = read(), n = (nameEl.value || "").trim();
+    closeModal();                                     // the write happens once, on Save, not as you type
+    mcpPostAll([{server: n, [editing ? "edit" : "add"]: entry}], editing ? "Changed" : "Added")
+      .then(redrawMcpViews);
+  };
+  bar.append(cancel, go);
+  panel.appendChild(bar);
+  back.appendChild(panel);
+  document.body.appendChild(back);
+  msgModal = back;
+}
+// A modal, not window.confirm: it names what is being removed by the command that runs, and says once what it
+// costs - the tool list is the first system turn, so every conversation whose list changed reads its history
+// again (the number is this conversation's own, from its last turn).
+function openMcpDelete(name) {
+  closeModal();
+  const have = (mcpInfo.entries || {})[name] || {};
+  const back = node("div", "att-viewer");
+  back.onclick = (e) => { if (e.target === back) closeModal(); };
+  const panel = node("div", "att-viewer__panel msg-del");
+  panel.appendChild(node("h3", "msg-del__title", `Remove ${name}?`));
+  panel.appendChild(node("div", "msg-del__quote", mcpRunsText(have)));
+  const cost = chatPromptTokens();
+  panel.appendChild(node("p", "msg-del__warn",
+    "Its tools go out of every conversation." + (cost ? ` This conversation reads its history again on its next ` +
+    `message (${fmt(cost)} tokens).` : " Nothing else changes.")));
+  const bar = node("div", "msg-edit__bar");
+  const cancel = node("button", "st-btn st-btn--secondary", "Cancel");
+  cancel.type = "button";
+  cancel.onclick = closeModal;
+  const go = node("button", "st-btn st-btn--primary", "Remove");
+  go.type = "button";
+  go.onclick = () => { closeModal(); mcpPostAll([{server: name, remove: true}], "Removed").then(redrawMcpViews); };
+  bar.append(cancel, go);
+  panel.appendChild(bar);
+  back.appendChild(panel);
+  document.body.appendChild(back);
+  msgModal = back;
 }
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
@@ -1726,8 +1873,11 @@ $("sidebar-list").addEventListener("click", (e) => {
 // popover lives on <body> (not in a clipped scroll container), so this listener is on document.  A click on an
 // opener (the row overflow, or a message Edit button) is not an outside click.
 document.addEventListener("click", (e) => {
+  // a modal opened from a popover (the MCP form and delete confirm open from the Settings list and from the
+  // wrench panel) is not an outside click: closing the popover under it would drop the view the modal edits
   if (activePopover && !e.target.closest(".chat-menu") && !e.target.closest("[data-chat-menu]") &&
-      !e.target.closest("[data-msg-edit]") && !e.target.closest("#mcp-btn")) closePopover();
+      !e.target.closest("[data-msg-edit]") && !e.target.closest("#mcp-btn") &&
+      !e.target.closest(".att-viewer")) closePopover();
 });
 document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (settingsModal) closeSettingsModal(); else if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
 

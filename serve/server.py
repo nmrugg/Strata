@@ -58,7 +58,7 @@ sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
-from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.mcp import McpCancelled, McpHub, hub_from_config, servers_from, settings_from  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
@@ -5689,6 +5689,11 @@ def make_handler(svc: Service):
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
                 return
+            except SystemExit as e:
+                # a validator that stops the process is a bug, but nothing a request thread raises may take the
+                # server down with it - that would end every chat on this box (todo #mcp-server-add)
+                self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                return
             except OSError as e:
                 self._json(500, {"error": {"type": "server_error", "message": f"the run config cannot be written: {e}"}})
                 return
@@ -5697,11 +5702,39 @@ def make_handler(svc: Service):
             # (strata_mcp_tools) and keeps its prompt - except when a whole server goes off, whose tools can no
             # longer be rendered at all: that chat re-reads, and "reloads" tells the page to say so.
             live, reloads = [], []
+            block = runconfig.mcp_block(new)[0] or {}
+            if svc.mcp is None and changed and block:
+                # the first MCP server this config ever had.  A switch has needed no restart since
+                # todo #mcp-live-toggles, so an added server must not be the exception (todo #mcp-server-add).
+                # Every entry was checked by runconfig.set_mcp already, and servers_from drops the ones the config
+                # leaves off, so this cannot start something the file does not ask for.
+                try:
+                    hub = McpHub(servers_from(block, Path(svc.config_path).name), settings_from(new))
+                except SystemExit as e:                   # never fatal on a request thread
+                    print(f"[strata] the MCP servers are in the file, but the hub could not start: {e}", flush=True)
+                else:
+                    import atexit
+                    svc.mcp = hub
+                    hub.start()
+                    atexit.register(hub.close)            # what Strata started ends with it, as at start-up
             if svc.mcp is not None:
-                block = runconfig.mcp_block(new)[0] or {}
                 for ch in req["mcp"]:
                     name = str(ch.get("server") or "")
-                    if ch.get("tool") is not None:
+                    if ch.get("add") is not None or ch.get("edit") is not None:
+                        # an added or changed entry is not a toggle: the running server has to be closed and
+                        # rebuilt from the new one, or the hub keeps answering with tools the file no longer
+                        # describes (todo #mcp-server-add)
+                        entry = block.get(name)
+                        if isinstance(entry, dict):
+                            if entry.get("disabled") is True:
+                                svc.mcp.set_server_disabled(name, True)
+                            elif svc.mcp.replace_server(name, entry):
+                                live.append(f"{name} ({'added' if ch.get('add') is not None else 'changed'})")
+                    elif ch.get("remove") is not None:
+                        if svc.mcp.set_server_disabled(name, True):
+                            live.append(f"{name} (removed)")
+                            reloads.append(name)          # its tools can no longer be rendered: those chats re-read
+                    elif ch.get("tool") is not None:
                         if svc.mcp.set_tool_disabled(name, str(ch["tool"]), ch.get("enabled", True) is not True):
                             live.append(f"{name}__{ch['tool']}")
                     elif ch.get("tools") is not None:
@@ -6393,10 +6426,14 @@ def mcp_answer(svc: Service) -> dict:
     server, including the ones it turns off.  The hub holds only the enabled ones (serve/mcp.py, servers_from),
     so a server switched off would otherwise vanish from the page and could never be switched back on from it."""
     out = svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0}
-    out["configured"] = {}
+    out["configured"], out["entries"] = {}, {}
     if svc.config_path:
         try:
-            out["configured"] = runconfig.mcp_state(runconfig.load(svc.config_path))
+            cfg = runconfig.load(svc.config_path)
+            out["configured"] = runconfig.mcp_state(cfg)
+            # what the form must show before it writes: the command line that would run here, and the NAMES of
+            # any env / header entries, never their values (todo #mcp-server-add)
+            out["entries"] = runconfig.mcp_entries(cfg)
         except (OSError, ValueError):
             pass                                    # an unreadable config: the live state is still worth showing
     return out

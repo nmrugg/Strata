@@ -27,6 +27,8 @@
       <svg class="st-icon st-icon--sm"><use href="#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="#i-info"/></svg>Info</button>
+    <button class="st-tab" role="tab" id="tab-btn-settings" aria-controls="view-settings" aria-selected="false" data-tab="settings">
+      <svg class="st-icon st-icon--sm"><use href="#i-settings"/></svg>Settings</button>
   </nav>
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
@@ -161,13 +163,6 @@
         <dl class="facts" id="cc-facts"></dl>
         <p class="muted small cc-note" id="cc-note"></p>
       </div>
-
-      <div class="st-card mcp-card" id="mcp-card" hidden>
-        <div class="req-head"><span class="card-title">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
-        <div class="mcp-list" id="mcp-list"></div>
-        <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
-          (in this page's chat only; switch it off in Sampling).</p>
-      </div>
     </div>
   </section>
 
@@ -187,8 +182,33 @@
         <p class="muted">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
         <dl class="facts" id="facts-api"></dl>
       </div>
+    </div>
+  </section>
+
+  <!-- ============================ Settings ============================ -->
+  <!-- todo #mcp-settings-page: the first slice is MCP, the control that was spread over the Monitor and the
+       composer's wrench.  The Monitor's card stays until this one is verified in the browser. -->
+  <section class="view view--settings" id="view-settings" role="tabpanel" aria-labelledby="tab-btn-settings" hidden>
+    <div class="settings">
+      <div class="st-card mcp-card" id="mcp-set-card" hidden>
+        <div class="req-head"><span class="card-title">MCP servers</span>
+          <span class="muted small" id="mcp-set-sum"></span>
+          <button class="st-btn st-btn--secondary mcp-card__add" id="mcp-set-add" type="button">Add server</button></div>
+        <div class="mcp-list" id="mcp-set-list"></div>
+        <p class="muted small mcp-note">A server is a program that runs on this PC with your rights, or an address
+          Strata connects to. They are kept in the run config.</p>
+      </div>
+      <!-- moved off the Info page (todo #settings-page): these were never information about the model -->
+      <div class="st-card cfg-card" id="cfg-card" hidden>
+        <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
+        <p class="muted small">Kept in the model's run config for every client. An empty field is the default. They
+          take effect the next time the model starts (close Strata's window and start it again).</p>
+        <form class="cfg-form" id="cfg-form"></form>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
+          <span class="muted small" id="cfg-msg" role="status"></span></div>
+      </div>
       <div class="st-card">
-        <span class="card-title">Settings</span>
+        <span class="card-title">This browser</span>
         <div class="st-field">
           <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
@@ -197,14 +217,6 @@
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
         <p class="muted small">Chats, settings and the key are kept in this browser only.
           <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
-      </div>
-      <div class="st-card cfg-card" id="cfg-card" hidden>
-        <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
-        <p class="muted small">Kept in the model's run config for every client. An empty field is the default. They
-          take effect the next time the model starts (close Strata's window and start it again).</p>
-        <form class="cfg-form" id="cfg-form"></form>
-        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
-          <span class="muted small" id="cfg-msg" role="status"></span></div>
       </div>
     </div>
   </section>
