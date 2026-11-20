@@ -410,6 +410,8 @@ class DriftMarkup(unittest.TestCase):
              + "/parameter>\n" + FUNC_END + "\n" + CALL_END)
     ELEMENT = (CALL_START + "\n" + FUNC_START + "run>\n" + LT + "cmd>ls" + LT + "/cmd>\n" + FUNC_END
                + "\n" + CALL_END)
+    ELEMENT_UNDECLARED = (CALL_START + "\n" + FUNC_START + "run>\n" + LT + "zz>1" + LT + "/zz>\n" + FUNC_END
+                          + "\n" + CALL_END)
     SCHEMA = [{"name": "run", "parameters": {"properties": {"cmd": {"type": "string"}}}}]
 
     def parse(self, text, thinking=False):
@@ -449,9 +451,9 @@ class DriftMarkup(unittest.TestCase):
         self.assertEqual(p.drift, 0, "the round ran its call; what follows is prose")
 
     def test_a_call_that_fires_with_no_arguments_is_counted(self):
-        # the named-parameter form is fixed (class NamedParameterForm); this pins the shape that is still not
-        # read - a parameter written as an XML element, which upstream handles in a later commit of the series
-        p, evs = self.parse(self.ELEMENT)
+        # the XML-element form is now read (class XmlElementParameter), so this pins the case that is STILL not
+        # read: a parameter the tool does not declare at all.  It fires with nothing, and empty_args says so.
+        p, evs = self.parse(self.ELEMENT_UNDECLARED)
         got = [(c.call.name, c.call.arguments) for c in evs if c.kind == "tool_call"]
         self.assertEqual([g[0] for g in got], ["run"], "the tool DID run")
         self.assertEqual(got[0][1], {}, "with nothing in it")
@@ -566,6 +568,65 @@ class NamedParameterForm(unittest.TestCase):
                 got = [c.call.arguments for c in evs if c.kind == "tool_call"]
                 with self.subTest(width=width, stream_tools=st):
                     self.assertEqual(got, [{"cmd": "ls"}])
+
+
+class XmlElementParameter(unittest.TestCase):
+    """A declared parameter written as the XML element form - `<n>3</n>` - upstream #6032 R4, item
+    unread-call-recovery.  Before: the call PARSED with no arguments at all, so the tool ran with nothing and
+    answered as if it had worked.  Now it is read as that parameter.  Two things are deliberately NOT read: a name
+    the tool does not declare (no parameters are invented out of thin air), and an element that sits inside
+    another parameter's VALUE (#210), which stays text.  Known gap, recorded in the todo: a template parameter
+    followed by an element still does not close, because param_end's follower rule will not accept an element
+    opener - fixing that needs the declared names threaded through param_end and call_end."""
+
+    LT = FUNC_START[:1]
+    SCHEMA = [{"name": "run", "parameters": {"properties": {"cmd": {"type": "string"}, "n": {"type": "integer"}}}}]
+
+    def env(self, params):
+        return CALL_START + "\n" + FUNC_START + "run>\n" + params + FUNC_END + "\n" + CALL_END
+
+    def args_of(self, body, width=0):
+        p = OutputParser(thinking=False, tools=self.SCHEMA, recover=True, stream_tools=True)
+        evs, i, rnd = [], 0, random.Random(7)
+        while i < len(body):
+            k = width or len(body)
+            evs += p.feed(body[i:i + k])
+            i += k
+        evs += p.finish()
+        calls = [c.call for c in evs if c.kind == "tool_call"]
+        self.assertEqual(len(calls), 1, [e.kind for e in evs])
+        return calls[0].arguments, p.empty_args
+
+    def test_an_element_is_the_declared_parameter(self):
+        self.assertEqual(self.args_of(self.env(self.LT + "cmd>ls" + self.LT + "/cmd>\n")), ({"cmd": "ls"}, 0))
+        self.assertEqual(self.args_of(self.env(self.LT + "n>3" + self.LT + "/n>\n")), ({"n": 3}, 0))
+
+    def test_a_name_the_tool_does_not_declare_is_not_invented(self):
+        args, empty = self.args_of(self.env(self.LT + "zz>1" + self.LT + "/zz>\n"))
+        self.assertEqual(args, {})
+        self.assertEqual(empty, 1, "and the empty call is counted, not silent")
+
+    def test_an_element_inside_a_value_stays_text(self):
+        # #210: a parameter whose value documents another parameter must keep its own text, and must not hand
+        # the documented name to the tool
+        body = self.env(PARAM_START + "cmd>\nuse " + self.LT + "n>3" + self.LT + "/n> like this\n" + PARAM_END + "\n")
+        self.assertEqual(self.args_of(body), ({"cmd": "use " + self.LT + "n>3" + self.LT + "/n> like this"}, 0))
+
+    def test_the_template_form_is_unchanged(self):
+        self.assertEqual(self.args_of(self.env(PARAM_START + "cmd>\nls\n" + PARAM_END + "\n")), ({"cmd": "ls"}, 0))
+
+    def test_a_string_value_keeps_its_own_spaces_and_lines(self):
+        # the template wraps a value in newlines, and those are not part of it - but the value's own spacing and
+        # line breaks are, and a declared string is never JSON-decoded
+        body = self.env(PARAM_START + "cmd>\n  ls -a  \nsecond line\n" + PARAM_END + "\n")
+        self.assertEqual(self.args_of(body), ({"cmd": "  ls -a  \nsecond line"}, 0))
+        self.assertEqual(self.args_of(self.env(self.LT + "cmd>  x  " + self.LT + "/cmd>\n")), ({"cmd": "  x  "}, 0))
+
+    def test_it_holds_when_the_text_arrives_one_character_at_a_time(self):
+        for width in (1, 3, 7, 0):
+            with self.subTest(width=width):
+                self.assertEqual(self.args_of(self.env(self.LT + "cmd>ls" + self.LT + "/cmd>\n"), width),
+                                 ({"cmd": "ls"}, 0))
 
 
 if __name__ == "__main__":

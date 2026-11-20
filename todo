@@ -695,8 +695,21 @@ all: fold-control replaced them, and the four overlapping switches became one co
                    including #210's value-that-quotes-the-tags case unchanged, and every chunk width with
                    streaming on and off).  Controls: reverting each of the three sites fails the class and the
                    module.  The corpus of 37 stayed green throughout.
-      - still to read: a parameter written as an XML element (dcde1156c) - measured, it still fires with {}
-        arguments here; the empty_args counter now says so out loud, which is the only reason it is not silent
+      - dcde1156c  DONE 2026-11-20.  A declared parameter written as the XML element form (`<n>3</n>`) is that
+        parameter.  Before, measured: the call PARSED with no arguments at all - the tool ran with nothing and
+        answered as if it had worked.  Two things deliberately not read: a name the tool does not declare (no
+        parameters are invented), and an element sitting inside another parameter's value (#210), which stays
+        text.  The value decode is now one helper (_param_value) shared by both forms, so a declared string keeps
+        its own leading/trailing spaces and its internal newlines - a test pins that, because a stray .strip()
+        in the helper is otherwise invisible.  Tests: serve/test_reasoning_rescue.py class XmlElementParameter
+        (6, incl. one character at a time); four controls bite (remove the pass, loosen the declared-name gate,
+        strip string values).
+      - NEW GAP found doing it: a template parameter FOLLOWED by an element (`<parameter=cmd>…</parameter>` then
+        `<n>3</n>`) produces no call at all - param_end's follower rule does not accept an element opener, so the
+        first parameter's closer is never believed and the envelope never completes.  Not a regression (it failed
+        the same way before), but it is the reason this port is not the whole of R4: fixing it needs the declared
+        names threaded through param_end and call_end, which is the same infrastructure 9c349c45a wants.  Do those
+        two together, or not at all.
       - 05795a845  the invoke dialect inside the wrapper is the call (#5969 parser part)
       - 69a8dad81  a function opener with its closer left out, of a declared tool, opens the call (#6032 R6)
       - 209dcadb3  a fence is closed only by one at least as long as the one that opened it, and an indented

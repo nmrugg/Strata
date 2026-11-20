@@ -830,11 +830,27 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
 
 
+def _param_value(value: str, spec: dict | None):
+    """A parameter value as its schema asks for it: text when the property says string, otherwise JSON-decoded
+    when it parses, and left as text when it does not.  The template wraps a value in newlines; they are not
+    part of it."""
+    if value.startswith("\n"):
+        value = value[1:]
+    if value.endswith("\n"):
+        value = value[:-1]
+    if (spec or {}).get("type") == "string":
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
-    """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall.  A parameter written as
-    `<parameter name="P">` is the same parameter (upstream #5969's third form).  Values are JSON-decoded
-    when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
-    objects/arrays/numbers/booleans)."""
+    """`<function=NAME>\n<parameter=P>\nVALUE\n</parameter>...</function>` -> ToolCall.  A parameter written as
+    `<parameter name="P">` is the same parameter (upstream #5969's third form), and a declared one written as the
+    XML element `<P>VALUE</P>` is too (#6032 R4).  Values are JSON-decoded when the tool's schema says the
+    parameter is not a string (or, without a schema, when they parse as JSON objects/arrays/numbers/booleans)."""
     body = body.strip()
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
@@ -850,18 +866,21 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         end = param_end(rest, final=True)
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
-        if value.startswith("\n"):
-            value = value[1:]
-        if value.endswith("\n"):
-            value = value[:-1]
-        declared = (props.get(pname) or {}).get("type")
-        if declared == "string":
-            args[pname] = value
-        else:
-            try:
-                args[pname] = json.loads(value)
-            except ValueError:
-                args[pname] = value
+        args[pname] = _param_value(value, props.get(pname))
+    # A declared parameter written as the XML element form - `<n>3</n>` - which is what the model writes when it
+    # has seen XML-shaped tools (upstream #6032 R4, item unread-call-recovery).  Measured here before this: such a
+    # call PARSED, with no arguments at all, so the tool ran with nothing and answered as if it had worked.  Read
+    # only from what the forms above did not already consume, so a value that DOCUMENTS another parameter (#210)
+    # stays a value, and only for names the tool declares and has not been given yet.
+    for m in re.finditer(TAG_OPEN + r"([A-Za-z_][A-Za-z0-9_-]*)[ \t]*>", rest):
+        pname, close = m.group(1), TAG_OPEN + "/" + m.group(1) + ">"
+        if pname not in props or pname in args:
+            continue
+        end = rest.find(close, m.end())
+        if end < 0:
+            continue
+        args[pname] = _param_value(rest[m.end():end], props.get(pname))
+        rest = rest[end + len(close):]
     return ToolCall(name=name, arguments=args)
 
 
