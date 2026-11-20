@@ -774,6 +774,18 @@ all: fold-control replaced them, and the four overlapping switches became one co
     the number never showed at all.  Control: moving the assignment back after the redraw fails "the only text
     is the cost of the change just made".  A second control had to be tightened first - asserting the note did
     not mention re-reading passed even with the narration restored; it now asserts the span is literally empty.
+    THE PANEL COVERED ITS OWN BUTTON, so a second click could not close it.  placePopover put the panel at
+    `r.top - min(h, space) - 4`, where h was el.offsetHeight measured BEFORE the max-height was set - and when
+    that measure comes back 0 the panel lands at r.top - 4, right on top of the button.  It now parks the panel
+    with its bottom edge just above the anchor, sets the cap, measures what it actually took, and lifts by that;
+    the same helper serves the row menu.  Harness case 93 feeds it a real-ish rect and asserts the panel's bottom
+    edge stays above the button, including a panel far taller than the room (it scrolls, still clear).  Control:
+    restoring the measure-before-the-cap order fails with "top=736 h=500 bottom=1236 vs button at 740".
+    mdmine is now ON by default (the human asked, after typing _Never_ and seeing it literal - the other half of
+    that was the renderer having no _emphasis_ rule, fixed in 394d7fdb).  A browser that has already saved the
+    sampling block keeps its own choice, so this only changes a fresh one; the human was told to flip "Format my
+    messages" once.  Tests: harness cases 26 and 27 now drive both directions of the per-message button (on by
+    default, click to off, click again to on), and the drawer-dirty case flips the switch the other way.
     THE 400s THE HUMAN HIT, and the cause: the card had been made to show the CHAT's list while it wrote the
     CONFIG's - so a click could land on the state the config already had, and set_mcp answered a no-op with
     ValueError("nothing to change") -> 400, which is why the Monitor's chips stopped toggling.  Fixed twice over:

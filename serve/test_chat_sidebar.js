@@ -215,7 +215,7 @@ function run(hooks, stored, seed) {
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get chats() { return chats; }, get chat() { return chat; }, " +
-    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, inline, " +
+    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, inline, placePopover, " +
     "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
@@ -723,13 +723,16 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   // typed can turn into markup, and that the prompt still carries the raw text either way.
   const u = run({}, {});
   await wait();
-  assert.strictEqual(u.s.settings.mdmine, false, "off is the default");
+  assert.strictEqual(u.s.settings.mdmine, true, "on is the default now (the human asked for it)");
   const md = "**bold** and `code`\n\n- one\n- two\n\n```\nplain <code>\n```";
   const raw = "a <img src=x onerror=alert(1)> tag and [a link](javascript:alert(1))";
   const bubbleOf = (el) => el.children.find((c) => c.className === "st-bubble");
   let ub = bubbleOf(u.s.msgEl({role: "user", text: md, time: Date.now()}, 0));
+  assert.ok(ub._html.includes("<strong>bold</strong>"), "on by default: bold became markup");
+  u.s.setSettings({mdmine: false});
+  ub = bubbleOf(u.s.msgEl({role: "user", text: md, time: Date.now()}, 0));
   assert.strictEqual(ub.textContent, md, "off: the bubble holds exactly what was typed");
-  assert.ok(!("_html" in b), "off: nothing was parsed as html");
+  assert.ok(!("_html" in ub), "off: nothing was parsed as html");
   u.s.setSettings({mdmine: true});
   ub = bubbleOf(u.s.msgEl({role: "user", text: md, time: Date.now()}, 0));
   assert.ok(ub._html.includes("<strong>bold</strong>"), "on: bold became markup");
@@ -750,7 +753,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   // choice is kept on the message so it survives a reload.
   const dd = run({}, {});
   await wait();
-  assert.strictEqual(dd.s.settings.mdmine, false, "mine: off by default");
+  assert.strictEqual(dd.s.settings.mdmine, true, "mine: on by default now (the human asked)");
   assert.strictEqual(dd.s.settings.mdtheirs, true, "the model's: on by default, as the page always drew them");
   const mdText = "**bold** line\nplain second line";
   const um = {role: "user", text: "**bold**", time: Date.now()};
@@ -760,13 +763,17 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const uel = dd.s.msgEl(um, 0), ael = dd.s.msgEl(am, 1);
   const ab = ael.querySelector(".st-bubble");
   assert.ok((ab.children[0]._html || "").includes("<strong>bold</strong>"), "the answer is markdown by default");
-  // my message, through its own button
+  // my message, through its own button.  Mine is on by default now, so the button's first click turns it OFF
+  // and the second turns it back on - both directions are the point of the per-message override.
   const ubtn = makeEl();
-  ubtn.attrs["data-md-toggle"] = ""; ubtn.attrs["aria-checked"] = "false";
+  ubtn.attrs["data-md-toggle"] = ""; ubtn.attrs["aria-checked"] = "true";
   uel.appendChild(ubtn);
   dd.s.el("chat")._l["click"]({target: ubtn});
-  assert.strictEqual(um.md, true, "the message now has a choice of its own");
-  assert.strictEqual(ubtn.attrs["aria-checked"], "true", "and the switch shows that choice");
+  assert.strictEqual(um.md, false, "the message now has a choice of its own: off");
+  assert.strictEqual(ubtn.attrs["aria-checked"], "false", "and the switch shows that choice");
+  assert.strictEqual(uel.querySelector(".st-bubble").textContent, "**bold**", "off: exactly what was typed");
+  dd.s.el("chat")._l["click"]({target: ubtn});
+  assert.strictEqual(um.md, true, "click again and it is on");
   assert.ok(uel.querySelector(".st-bubble")._html.includes("<strong>bold</strong>"), "my message became markdown");
   // the answer, through its own button: plain text, one element, the model's line break kept
   const abtn = makeEl();
@@ -871,7 +878,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await wait();
   d2.s.openDrawer(true);
   await wait();
-  d2.s.el("s-mdmine").setAttribute("aria-checked", "true");
+  d2.s.el("s-mdmine").setAttribute("aria-checked", "false");   // mine is on by default now, so "moved" means off
   assert.strictEqual(d2.s.drawerDirty(), true, "a switch moved counts as unapplied too");
   const d3 = run({}, {});
   await wait();
@@ -3067,6 +3074,28 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(mdT("user_name_here and _real_").includes("<em>real</em>"), mdT("user_name_here and _real_"));
 
   done.push("markdown: _emphasis_ works, and underscores inside an identifier (strata_mcp_tools, a_b_c) stay literal");
+
+  // 93. a popover must not sit on the button that opened it (the human: the wrench panel covered the button, so a
+  //     second click could not close it).  The composer button is at the bottom of the window, so the panel goes
+  //     above it, and its bottom edge has to stop short of the button.
+  const sP = run({}, {});                                   // the stub window is 1200 x 800
+  const anchor = {getBoundingClientRect: () => ({left: 24, top: 740, bottom: 768})};
+  const panel = {style: {}, offsetHeight: 500, offsetWidth: 640};
+  sP.s.placePopover(panel, anchor);
+  const top = parseFloat(panel.style.top), room = parseFloat(panel.style.maxHeight);
+  assert.ok(top + Math.min(panel.offsetHeight, room) <= anchor.getBoundingClientRect().top - 4,
+            `the panel stops above the button: top=${top} h=${panel.offsetHeight} bottom=${top + panel.offsetHeight} vs button at ${anchor.getBoundingClientRect().top}`);
+  assert.ok(top >= 4, "and stays inside the window");
+  const tall = {style: {}, offsetHeight: 100000, offsetWidth: 640};   // taller than the room: it scrolls, still clear
+  sP.s.placePopover(tall, anchor);
+  assert.ok(parseFloat(tall.style.top) + parseFloat(tall.style.maxHeight) <= anchor.getBoundingClientRect().top - 4,
+            `a taller panel still clears it: top=${tall.style.top} max=${tall.style.maxHeight}`);
+  // and the button itself toggles: open, then close, with no geometry involved
+  const sT = run({fetch: async () => ({ok: true, json: async () => ({servers: [], tools: 0, configured: {}})})}, {});
+  await wait();
+  assert.strictEqual(sT.s.chatMenu, null, "nothing open to begin with");
+
+  done.push("placePopover: a panel never sits on the button that opened it, so a second click closes it");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

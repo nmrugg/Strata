@@ -285,7 +285,13 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("chat-menu__item${danger", self.js)
         self.assertIn("placePopover(menu, anchor);", self.body("openPopover"))
         self.assertIn("placePopover(panel, anchor);", self.body("openMcpPicker"))
-        self.assertIn("el.style.maxHeight = `${Math.max(120, space)}px`;", self.body("placePopover"))
+        self.assertIn("el.style.maxHeight = `${room}px`;", self.body("placePopover"))
+        self.assertIn("room = Math.max(120, bottomSide ? below : above)", self.body("placePopover"))
+        # the panel must never sit on the button that opened it: park it, measure after the cap, then lift it
+        body = self.body("placePopover")
+        self.assertIn("el.style.top = bottomSide ? `${r.bottom + 6}px` : `${Math.max(4, r.top - 6)}px`;", body)
+        self.assertIn("Math.min(el.offsetHeight || room, room)", body)
+        self.assertLess(body.index("el.style.top = bottomSide"), body.index("el.offsetHeight || room"))
         self.assertIn('$("mcp-btn").onclick = () => openMcpPicker($("mcp-btn"));', self.js)
         self.assertIn("mcpBtn.onclick = () => openMcpPicker(mcpBtn);", self.body("openEditBox"))
         self.assertIn('$("mcp-btn").hidden = !list.length;', self.body("renderMcp"))   # no MCP: no button
@@ -320,7 +326,7 @@ class ChatSidebar(unittest.TestCase):
         for el in ("s-mdmine", "s-mdtheirs"):
             self.assertIn(f'id="{el}"', self.html)
             self.assertIn(f'"{el}"', self.js)
-        self.assertIn("mdmine: false, mdtheirs: true", self.js)
+        self.assertIn("mdmine: true, mdtheirs: true", self.js)   # your own messages are formatted by default
         self.assertIn('if (msgMd(m)) b.innerHTML = markdown(m.text || ""); else b.textContent = m.text;',
                       self.body("msgEl"))
         self.assertIn("data-md-toggle", self.js)                       # the button, and the handler for it

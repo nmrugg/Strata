@@ -836,7 +836,10 @@ function markdownBlocks(text) {
 function markdown(text) { return markdownBlocks(text).join(""); }
 
 // ------------------------------------------------------------------ Chat
-const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: "live", mdmine: false, mdtheirs: true, esp: true, mcp: true, mcpthink: false, attachments: true};
+const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: "live", mdmine: true, mdtheirs: true, esp: true, mcp: true, mcpthink: false, attachments: true};
+// Your own messages are formatted as markdown too (the human asked: they typed _Never_ and it came out
+// literal).  A browser that has already saved the sampling block keeps whatever it chose - the default only
+// covers a fresh one.
 // "Show thinking" used to be four switches (show / openthink / opentools / autofold) that overlapped and
 // half-contradicted each other.  They are one choice now - "folded" | "live" | "always" - and an old stored
 // object still has them as booleans, so map it once on load rather than letting a saved true/false decide
@@ -1528,12 +1531,16 @@ function closePopover() { if (activePopover) activePopover.remove(); activePopov
 // scrolls inside the window instead of running off the bottom (the MCP panel with 31 tools did exactly that).
 function placePopover(el, anchor) {
   if (!anchor.getBoundingClientRect) return;               // the harness stub has no layout; skip geometry
-  const r = anchor.getBoundingClientRect(), w = el.offsetWidth || 168, h = el.offsetHeight || 0;
+  const r = anchor.getBoundingClientRect(), w = el.offsetWidth || 168;
   const below = (innerHeight || 0) - r.bottom - 8, above = r.top - 8;
-  const space = Math.max(below, above);
-  el.style.maxHeight = `${Math.max(120, space)}px`;        // .mcp-picker / .chat-menu then scroll their own body
+  const bottomSide = below >= above, room = Math.max(120, bottomSide ? below : above);
+  el.style.maxHeight = `${room}px`;                        // .mcp-picker / .chat-menu scroll their own body
   el.style.left = `${Math.max(4, Math.min(r.left, Math.max(4, (innerWidth || 0) - w - 4)))}px`;
-  el.style.top = below >= above ? `${r.bottom + 4}px` : `${Math.max(4, r.top - Math.min(h, space) - 4)}px`;
+  // Never sit on the anchor: the button that opened a popover has to stay clickable so a second click closes it.
+  // Park the panel with its bottom edge just above the button, measure what it actually took (after the cap -
+  // measuring before it can come back 0 and drop the panel right on top of the button), then lift it by that.
+  el.style.top = bottomSide ? `${r.bottom + 6}px` : `${Math.max(4, r.top - 6)}px`;
+  if (!bottomSide) el.style.top = `${Math.max(4, r.top - 6 - Math.min(el.offsetHeight || room, room))}px`;
 }
 function openPopover(anchor, items, onPick) {
   closePopover();
