@@ -564,7 +564,6 @@ async function mcpUndo() {
   if (!back.length) return;
   await mcpPostAll(back, "Reverted");
   mcpBaseline = null;
-  mcpCost = null;                            // back to what this conversation was built with: nothing owed
 }
 // one write path for both views: the config and the running hub change together, no restart
 async function mcpPostAll(changes, label) {
@@ -572,11 +571,7 @@ async function mcpPostAll(changes, label) {
     const r = await fetch("mcp", {method: "POST", headers: headers(true), body: JSON.stringify({mcp: changes})});
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
-    if ((b.changed || []).length) {
-      // set the cost BEFORE the redraw, or the card paints an empty note and the number never appears
-      mcpCost = label === "Reverted" ? null : (chatPromptTokens() || null);
-      toast("success", label || "Applied", (b.changed || []).join(", "));
-    }
+    if ((b.changed || []).length) toast("success", label || "Applied", (b.changed || []).join(", "));
     await loadMcp();
   } catch (err) {
     toast("error", "Not changed", String(err.message || err), 6000);
@@ -592,12 +587,15 @@ const chatPromptTokens = () => {
   }
   return (lastLive && lastLive.prompt_tokens) || 0;
 };
-let mcpCost = null;                          // tokens this conversation will read again, after a switch
+// One fact, not a flag: the note shows the same thing Undo does - whether the live list still differs from the
+// one this view started with.  Click a chip twice and you are back where you began, so both go quiet on their
+// own; there is nothing to remember and nothing to clear.
 function mcpUndoRow() {
   const n = mcpChangedServers().length;
+  const cost = n ? (chatPromptTokens() || null) : null;
   return `<p class="mcp-note" title="Undo everything changed since you opened this.">` +
     `<button class="st-btn st-btn--secondary" data-mcp-undo${n ? "" : " disabled"}>Undo</button>` +
-    `<span class="mcp-note-text muted small">${mcpCost ? `This re-reads ${fmt(mcpCost)} tokens in this conversation.` : ""}</span></p>`;
+    `<span class="mcp-note-text muted small">${cost ? `This re-reads ${fmt(cost)} tokens in this conversation.` : ""}</span></p>`;
 }
 function renderMcp() {
   const list = mcpServers();
@@ -669,8 +667,9 @@ function openMcpPicker(anchor) {
   undo.disabled = !n;
   undo.title = "Put back everything as it was when you opened this.";
   foot.appendChild(undo);
+  const cost = n ? (chatPromptTokens() || null) : null;
   foot.appendChild(node("span", "mcp-picker__cost muted small",
-    mcpCost ? `This re-reads ${fmt(mcpCost)} tokens in this conversation.` : ""));
+    cost ? `This re-reads ${fmt(cost)} tokens in this conversation.` : ""));
   panel.appendChild(foot);
   panel.addEventListener("click", (e) => {
     if (e.target.closest("[data-mcp-undo]")) { mcpUndo().then(redrawMcpViews); return; }
@@ -768,6 +767,9 @@ function inline(s) {
   s = esc(s)
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>")
+    // `_emphasis_` too, with the same guards: an underscore inside a word (strata_mcp_tools, a_b_c) is part of
+    // the identifier, not markup.  Code spans are stashed away before this runs, so `x_y` is already safe.
+    .replace(/(^|[^_\w])_([^_\n]+)_(?![_\w])/g, "$1<em>$2</em>")
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
@@ -1435,7 +1437,6 @@ function showChat(c) {
   c.unread = false;           // opening it is how a reply stops being unread
   writeChat(chat);            // renderChat renders the list, so the write here does not render it again
   loadDraft();                // and the box takes on the text that belongs to the chat you are entering
-  mcpCost = null;             // a token count belongs to the conversation it was measured on
   renderChat();
   renderMcp();                // the MCP card's "use the current tools" button is about THIS chat: its label and
                               // whether it is greyed out follow whichever conversation is on screen (no fetch)

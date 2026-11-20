@@ -215,7 +215,7 @@ function run(hooks, stored, seed) {
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get chats() { return chats; }, get chat() { return chat; }, " +
-    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, " +
+    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, inline, " +
     "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
@@ -2979,12 +2979,11 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
 
   // 91. auto-apply with a way back (todo #mcp-chat-picker): a switch writes at once, and Undo puts everything
   //     back as it was when this view was opened.  Both views show the same thing and redraw together.
-  const toolsWith = (twoOn) => ({servers: [{name: "a", transport: "stdio", status: "ready", error: null, info: {},
-      tools: [{name: "a__one", tool: "one", enabled: true, description: ""},
-              {name: "a__two", tool: "two", enabled: twoOn, description: ""}]}],
-      tools: twoOn ? 2 : 1, configured: {a: {disabled: false, disabled_tools: twoOn ? [] : ["two"]}}});
   let onU = new Set(["one", "two"]);
-  const asU = () => toolsWith(onU.has("two"));
+  // the fixture mirrors what the endpoint does: the enabled flag follows the set of tools that are on
+  const asU = () => ({servers: [{name: "a", transport: "stdio", status: "ready", error: null, info: {},
+      tools: ["one", "two"].map((x) => ({name: `a__${x}`, tool: x, enabled: onU.has(x), description: ""}))}],
+      tools: onU.size, configured: {a: {disabled: false, disabled_tools: ["one", "two"].filter(x => !onU.has(x))}}});
   let mcpU = asU();
   const postsU = [];
   const sU = run({fetch: async (url, opts) => {
@@ -3025,31 +3024,49 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
             "the note is empty until you do something - no narration: " + wroteU().slice(-200));
   pick("a__two");
   await wait();
-  assert.deepStrictEqual(postsU, [[{server: "a", tool: "two", enabled: false}]], "a switch writes at once");  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
-            "and the Monitor card moved with it, unprompted: " + wroteU().slice(0, 320));
-  openPanel();
+  assert.deepStrictEqual(postsU, [[{server: "a", tool: "two", enabled: false}]], "a switch writes at once");
+  assert.ok(/data-mcp-tool="two"[^>]*aria-pressed="false"/.test(wroteU()),
+            "the Monitor card moved with it, unprompted: " + wroteU().slice(0, 320));
+  assert.ok(sU.s.chatMenu, "the panel is still open after the write");
+  assert.strictEqual(findU(sU.s.chatMenu, "data-mcp-pick").find((x) => x.attrs["data-mcp-pick"] === "a__two")
+                     .attrs["aria-checked"], "false", "and the page rebuilt it to show the new state");
   assert.strictEqual(undoBtn().disabled, false, "Undo woke up: one server changed since this panel opened");
-  assert.ok(/data-mcp-undo[ >]/.test(wroteU()) && !/data-mcp-undo disabled/.test(wroteU()),
-            "the card offers Undo too - one state, both views");
   assert.ok(/This re-reads 328,811 tokens in this conversation\./.test(wroteU()),
-            "the only text is the cost of the change just made: " + wroteU().slice(-260));
+            "and the note says one measured thing: " + wroteU().slice(-240));
+  // click it back: the live list equals what this view started with, so the note and Undo go quiet by themselves
+  pick("a__two");
+  await wait();
+  assert.strictEqual(postsU.length, 2, "the second click wrote too");
+  assert.strictEqual(undoBtn().disabled, true, "back where this view started, so Undo is greyed again");
+  assert.ok(/<span class="mcp-note-text muted small"><\/span>/.test(wroteU()),
+            "and the note went quiet on its own: " + wroteU().slice(-200));
+  // and it comes back when something really is owed
   pick("a__one");
   await wait();
-  assert.strictEqual(postsU.length, 2, "the second switch wrote as well");
-
-  assert.ok(/This re-reads 328,811 tokens in this conversation\./.test(wroteU()),
-            "the second click says the cost once more, and nothing else: " + wroteU().slice(-260));
+  assert.strictEqual(undoBtn().disabled, false, "Undo live again");
+  assert.ok(/This re-reads 328,811 tokens/.test(wroteU()), "note live again: " + wroteU().slice(-200));
   sU.s.chatMenu._l.click({target: undoBtn()});
   await wait();
-  assert.deepStrictEqual(postsU[2], [{server: "a", tools: ["one", "two"]}],
-                         "Undo sends the whole baseline back in one request, not two inverse clicks");
+  assert.deepStrictEqual(postsU[3], [{server: "a", tools: ["one", "two"]}],
+                         "Undo sends the whole baseline back in one request, not inverse clicks");
   assert.ok(onU.has("one") && onU.has("two"), "and both tools are on again");
-
   assert.strictEqual(undoBtn().disabled, true, "the window closes after it is used, in the panel that stayed open");
-  assert.ok(!/re-reads/.test(wroteU()), "Undo clears the cost too: it takes back the change that owed it");
+  assert.ok(/<span class="mcp-note-text muted small"><\/span>/.test(wroteU()), "Undo clears the cost too");
 
   done.push("mcp-auto-apply: switches write at once, both views show it, and Undo sends the whole baseline back " +
             "in one request");
+
+  // 92. `_emphasis_` in the page's own markdown renderer: the human typed _Never_ and it came out literal.
+  const mdT = (s) => run({}, {}).s.markdown(s);
+  assert.ok(mdT("_Never_").includes("<em>Never</em>"), mdT("_Never_"));
+  assert.strictEqual(mdT("strata_mcp_tools"), "<p>strata_mcp_tools</p>", "underscores inside a word are the word");
+  assert.strictEqual(mdT("a_b_c"), "<p>a_b_c</p>", "and a_b_c is not emphasis");
+  assert.ok(mdT("**bold** and *it*").includes("<strong>bold</strong>"), mdT("**bold** and *it*"));
+  assert.ok(mdT("`_Never_`").includes('<code class="inline">_Never_</code>'),
+            "inside a code span it stays exactly as typed: " + mdT("`_Never_`"));
+  assert.ok(mdT("user_name_here and _real_").includes("<em>real</em>"), mdT("user_name_here and _real_"));
+
+  done.push("markdown: _emphasis_ works, and underscores inside an identifier (strata_mcp_tools, a_b_c) stay literal");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
