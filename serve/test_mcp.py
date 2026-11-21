@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp as mcp_mod  # noqa: E402
+from serve import server as serve_mod  # for patching serve.server's module attributes in tests
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.mcp import McpCancelled, McpHub, hub_from_config  # noqa: E402
@@ -668,6 +669,32 @@ class ToolLoop(LoopFixture):
         self.assertIn("fake__echo", said, "and it names what went away")
         counts = [h.get("tools") for h in self.svc.history]
         self.assertEqual(counts[-2:], [7, 0], "and the per-request record shows the round where it broke")
+
+
+    def test_a_picture_a_tool_returned_reaches_the_page(self):
+        # item ai-image-visible: the model has always seen the picture; the page got a count and nothing else, so
+        # the user could not see what the tool saw - and the round could not be replayed the way the loop built it
+        self.start(call_script("fake__image", n=2), "</think>\n\nI see both.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        res = [c["strata_mcp"] for c in self.chunks(text)
+               if "strata_mcp" in c and c["strata_mcp"]["event"] == "result"][0]
+        self.assertEqual(res["images"], 2, "the count, as before")
+        self.assertEqual([p["type"] for p in res["image_parts"]], ["image", "image"])
+        self.assertTrue(res["image_parts"][0]["source"].startswith("data:image/png;base64,"),
+                        "a data URL the page can show and keep")
+
+    def test_an_over_sized_picture_is_counted_but_not_pushed_into_the_browser(self):
+        # the cap is a byte budget on the stream and on this browser's record, not on what the model sees: the
+        # loop still hands the full picture to the engine (serve/mcp.py caps it at MAX_IMAGE_BYTES)
+        self.start(call_script("fake__image", n=1), "</think>\n\nI see it.")
+        with mock.patch.object(serve_mod, "MCP_IMAGE_INLINE_MAX", 4):
+            code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        res = [c["strata_mcp"] for c in self.chunks(text)
+               if "strata_mcp" in c and c["strata_mcp"]["event"] == "result"][0]
+        self.assertEqual(res["images"], 1, "still counted")
+        self.assertNotIn("image_parts", res, "but not sent inline")
 
 
 class UnknownCall(LoopFixture):

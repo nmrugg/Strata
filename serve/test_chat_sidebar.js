@@ -216,7 +216,7 @@ function run(hooks, stored, seed) {
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, inline, placePopover, " +
-    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, " +
+    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, toolBodyHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
@@ -3315,6 +3315,36 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
 
   done.push("mcp-cost-note: the re-read warning goes quiet once this conversation has paid, and returns when " +
             "something else moves");
+
+  // 97. a picture a tool returned (item ai-image-visible): the page keeps it, shows it in the block, and sends it
+  //     back as the same parts run_with_mcp put into the prompt - the token-level agreement is pinned in
+  //     serve/test_mcp_round_history.py, this pins the page's half of it.
+  const s97 = run({}, {});
+  await wait();
+  const shot = {role: "assistant", text: "", reasoning: "", tools: [], time: Date.now()};
+  s97.s.onTool(shot, {event: "start", id: "c1", name: "easy__shot"});
+  s97.s.onTool(shot, {event: "call", id: "c1", name: "easy__shot", server: "easy", tool: "shot", arguments: {}, round: 1});
+  s97.s.onTool(shot, {event: "result", id: "c1", ok: true, text: "a screenshot", chars: 12, truncated: false, ms: 5,
+                      images: 1, image_parts: [{type: "image", source: "data:image/png;base64,AAAA"}]});
+  assert.strictEqual((shot.tools[0].images || []).length, 1, "the page keeps the picture with the call");
+  const body97 = s97.s.toolBodyHtml(shot.tools[0]);
+  assert.ok(/class="tool-call__img" data-tool-img/.test(body97), "the block renders it: " + body97.slice(0, 200));
+  assert.ok(!/Picture/.test(body97), "with no caption - the reader can see it is a picture: " + body97.slice(0, 200));
+  assert.ok(/data-tool-name="easy__shot"/.test(body97), "and the viewer header names the tool, not the obvious");
+  const toolMsg97 = s97.s.assistantMessages({...shot, text: "here"}, false).find((x) => x.role === "tool");
+  assert.deepStrictEqual(toolMsg97.content, [{type: "text", text: "a screenshot"},
+                                             {type: "image", source: "data:image/png;base64,AAAA"}],
+                         "and replays it as parts, in the order the server built them");
+  // the default path, untouched: a round with no picture is still a plain string
+  const plain = {role: "assistant", text: "", reasoning: "", tools: [], time: Date.now()};
+  s97.s.onTool(plain, {event: "call", id: "c2", name: "easy__noop", server: "easy", tool: "noop", arguments: {}, round: 1});
+  s97.s.onTool(plain, {event: "result", id: "c2", ok: true, text: "7", chars: 1, truncated: false, ms: 1});
+  const toolMsg98 = s97.s.assistantMessages({...plain, text: "x"}, false).find((x) => x.role === "tool");
+  assert.strictEqual(toolMsg98.content, "7", "no picture, no parts: byte-identical to before");
+  assert.strictEqual(s97.s.toolBodyHtml(plain.tools[0]).includes("tool-call__img"), false, "and no image markup");
+
+  done.push("ai-image-visible: a picture a tool returned is kept, shown in its block, and replayed as the same " +
+            "parts the server put in the prompt - a round without one is unchanged");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

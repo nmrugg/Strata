@@ -57,23 +57,29 @@ class FakeSvc:
 class FakeHub:
     settings = {"max_rounds": 4}
 
+    def __init__(self, images=None):
+        self.images = images or []          # what McpHub.call hands back for a tool that returned a picture
+
     def routes(self):
         return {TOOL: (None, "noop")}
 
     def call(self, name, arguments, cancel, include_disabled=False):
         # the same signature as McpHub.call (serve/mcp.py): a request that carries its own tool list asks for
         # include_disabled (todo #mcp-live-toggles), and a double that drifts from the real one hides that.
-        return {"ok": True, "text": "7", "chars": 1, "truncated": False, "ms": 0, "images": []}
+        return {"ok": True, "text": "7", "chars": 1, "truncated": False, "ms": 0, "images": self.images}
 
 
 class RoundHistory(unittest.TestCase):
     """Both modes are checked, and so is the mix: the two rebuilds must agree, whichever way the switch sits."""
 
-    def loop(self, keep):
+    PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmM"
+           "IQAAAABJRU5ErkJggg==")
+
+    def loop(self, keep, images=None):
         svc = FakeSvc()
         msgs = [{"role": "user", "content": "Call the noop tool with value 7."}]
-        list(run_with_mcp(svc, FakeHub(), msgs, [{"name": TOOL}], {}, [], True, 100, 100,
-                          {}, threading.Event(), {TOOL}, keep))
+        list(run_with_mcp(svc, FakeHub(images and [{"type": "image", "source": self.PNG}]), msgs, [{"name": TOOL}],
+                          {}, [], True, 100, 100, {}, threading.Event(), {TOOL}, keep))
         return svc.prepared[-1]
 
     def client(self, server_msgs, keep):
@@ -113,6 +119,25 @@ class RoundHistory(unittest.TestCase):
                 rebuilt = self.loop(keep_server)
                 self.assertFalse(render(self.client(rebuilt, keep_client)).startswith(render(rebuilt)),
                                  "a mismatched pair re-reads everything past the first tool round")
+
+
+    def test_a_picture_in_a_tool_message_must_ride_back_or_the_prefix_breaks(self):
+        """item ai-image-visible.  run_with_mcp gives the model the tool's text AND the picture as parts; the page
+        has never received the picture (the result event carries only a count) and replays the round as the text
+        alone.  The engine then stops matching at that message and re-reads everything after it, on every later
+        turn - and the model forgets what it saw.  This pins the divergence before it is fixed."""
+        rebuilt = self.loop(False, [{"type": "image", "source": self.PNG}])
+        tool_msgs = [m for m in rebuilt if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertIsInstance(tool_msgs[0]["content"], list, "the server sent parts: text plus the picture")
+        self.assertIn("image", render(rebuilt), "and the picture is in the engine's prompt")
+        as_page = [dict(m, content=m["content"][0]["text"])
+                   if m.get("role") == "tool" and isinstance(m["content"], list) else m for m in rebuilt]
+        self.assertFalse(render(as_page).startswith(render(rebuilt)),
+                         "the page's rebuild is not a continuation of what the engine holds: re-read from here")
+        # what assistantMessages does now (serve/web/app.js): the same parts, in the same order, back out again
+        self.assertTrue(render(self.client(rebuilt, False)).startswith(render(rebuilt)),
+                        "with the picture riding back, the next request continues the tokens the engine holds")
 
 
 if __name__ == "__main__":

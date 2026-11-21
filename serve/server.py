@@ -4521,6 +4521,12 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
+# how much of a tool's picture is sent to the page inline, as the total length of the data URLs.  serve/mcp.py
+# lets one image be as large as 32 MiB (MAX_IMAGE_BYTES); a screenshot is normally a few hundred KB, and the page
+# keeps what it is given in this browser's record for the conversation (item ai-image-visible).
+MCP_IMAGE_INLINE_MAX = 8 << 20
+
+
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names, keep_thinking=False, stream_args=False, frozen=False):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
@@ -4641,8 +4647,14 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             print(f"[strata] tool {c.name}: {'ok' if r['ok'] else 'error'}, {r['chars']:,} characters{pics} in "
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
             results.append(r)
+            # the picture goes to the page as well as to the model (item ai-image-visible): the user should see
+            # what the tool saw, and - the reason this is not merely cosmetic - the page has to replay the round
+            # the same way the loop built it, or the prompt prefix breaks at that message and the chat re-reads
+            # everything after it.  Capped: one screenshot is megabytes, and the record keeps it in this browser.
+            parts = r["images"] if sum(len(p.get("source", "")) for p in r["images"]) <= MCP_IMAGE_INLINE_MAX else []
             yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")},
-                          **({"images": len(r["images"])} if r["images"] else {})}
+                          **({"images": len(r["images"])} if r["images"] else {}),
+                          **({"image_parts": parts} if parts else {})}
         if cancel.is_set() or len(results) < len(calls):
             done = {**done, "finish": "cancel"}
             break

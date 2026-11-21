@@ -1145,7 +1145,8 @@ const chatSize = (c) => (c.messages || []).reduce((s, m) => s
   + (m.text || "").length + (m.reasoning || "").length
   + (m.images || []).reduce((a, i) => a + (i.url || "").length, 0)
   + (m.files || []).reduce((a, f) => a + (f.text || "").length, 0)
-  + (m.tools || []).reduce((a, t) => a + (t.result || "").length, 0), 0);
+  + (m.tools || []).reduce((a, t) => a + (t.result || "").length
+      + (t.images || []).reduce((b, p) => b + (p.source || "").length, 0), 0), 0);
 const chatAttCount = (c) => (c.messages || []).reduce((s, m) => s + (m.images || []).length + (m.files || []).length, 0);
 function downloadBlob(name, blob) {
   const a = document.createElement("a");
@@ -2181,6 +2182,14 @@ const toolPreview = (t) => (t.result != null ? t.result : toolArgsText(t)).repla
 const toolMs = (t) => (t.ms != null && t.state !== "skipped" ? `${fmt(t.ms / 1000, 1)} s` : "");
 const toolResultLabel = (t) => (t.result == null ? "" : `${t.ok ? "Result" : "Error"}` +
                                `${t.chars ? ` · ${fmt(t.chars)} characters` : ""}${t.truncated ? ", cut for the model" : ""}`);
+function toolImagesHtml(t) {
+  return (t.images || []).map((p) => `<img class="tool-call__img" data-tool-img alt="Image returned by the tool" ` +
+                                     `data-tool-name="${esc(t.name || t.tool || "")}" title="Enlarge" ` +
+                                     `src="${esc(p.source)}">`).join("");
+}
+// no caption: an image inside a tool's result needs no announcement (AGENTS.md - never tell the reader what
+// they can already see).  The title only says what a click does, which is not visible.
+const toolImagesBlock = (t) => `<div class="tool-call__images">${toolImagesHtml(t)}</div>`;
 function toolBodyHtml(t) {
   let body = `<div class="tool-call__label">Arguments</div>` +
              `<pre class="tool-call__pre tool-call__pre-args">${esc(toolArgs(t))}</pre>`;
@@ -2188,6 +2197,7 @@ function toolBodyHtml(t) {
     body += `<div class="tool-call__label tool-call__label-result">${esc(toolResultLabel(t))}</div>` +
             `<pre class="tool-call__pre tool-call__pre-result">${esc(t.result)}</pre>`;
   }
+  if ((t.images || []).length) body += toolImagesBlock(t);
   return body;
 }
 function toolHtml(t, k, m, streaming) {
@@ -2204,7 +2214,8 @@ function toolHtml(t, k, m, streaming) {
 // the body of an open tool block: built once, then its text is replaced.  Re-parsing a 20,000-character result
 // every frame is what made an open block the most expensive part of a paint.
 function syncToolBody(box, t) {
-  if (!box._built) { box.innerHTML = toolBodyHtml(t); box._built = true; box._hasResult = t.result != null; return; }
+  if (!box._built) { box.innerHTML = toolBodyHtml(t); box._built = true; box._hasResult = t.result != null;
+                     box._hasImages = (t.images || []).length > 0; return; }
   const args = box.querySelector(".tool-call__pre-args");
   const wantArgs = toolArgs(t);
   // a call being written streams its JSON: follow it the way the thinking follows, only if the reader is at the
@@ -2223,6 +2234,10 @@ function syncToolBody(box, t) {
   const lab = box.querySelector(".tool-call__label-result"), pre = box.querySelector(".tool-call__pre-result");
   if (lab.textContent !== toolResultLabel(t)) lab.textContent = toolResultLabel(t);
   if (pre.textContent !== t.result) pre.textContent = t.result;
+  if ((t.images || []).length && !box._hasImages) {       // the picture arrives with the result, after the open
+    box.insertAdjacentHTML("beforeend", toolImagesBlock(t));
+    box._hasImages = true;
+  }
 }
 // a tool block already in the page: update only the text that changed.  Its two sprite icons, its summary and
 // its pre elements stay the same elements, which is the whole point - they were being remade 60 times a second.
@@ -2474,6 +2489,9 @@ function onTool(m, x) {
   } else if (x.event === "result") {
     Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
+    // what the tool saw.  Shown in the block, kept with the conversation, and sent back on every later request
+    // exactly as the loop put it into the prompt (item ai-image-visible).
+    if (x.image_parts) t.images = x.image_parts;
   }
 }
 // the context fill for a finished turn (todo #context-percent): the stream's usage chunk (prompt + completion)
@@ -2606,6 +2624,9 @@ $("chat-scroll").addEventListener("scroll", () => {
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  const ti = e.target.closest("[data-tool-img]");        // a picture the tool returned (item ai-image-visible)
+  if (ti) { openViewer({kind: "image", name: ti.getAttribute("data-tool-name") || "image",
+                        url: ti.getAttribute("src")}); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) {
     const m = messages[+mc.closest(".st-msg").dataset.i];
@@ -2759,7 +2780,14 @@ function assistantMessages(m, keepThinking) {
       rpos = rat;
     }
     out.push(msg);
-    for (const t of calls) out.push({role: "tool", tool_call_id: t.id, content: t.result});
+    // The picture rides back exactly as run_with_mcp put it into the prompt (serve/server.py): the text part, then
+    // the image parts.  Sending only the text makes the next request stop matching the tokens the engine already
+    // holds at this message, and the chat re-reads everything after it - and the model forgets what it saw
+    // (item ai-image-visible; pinned in serve/test_mcp_round_history.py).
+    for (const t of calls) {
+      out.push({role: "tool", tool_call_id: t.id,
+                content: (t.images || []).length ? [{type: "text", text: t.result}, ...t.images] : t.result});
+    }
     pos = at;
   }
   // The thinking after the LAST call is the run that led to the answer, and the engine decoded that too. Leaving it

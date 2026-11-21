@@ -386,10 +386,35 @@ all: fold-control replaced them, and the four overlapping switches became one co
     still passes.  Control: folding on toolLive(t) alone fails the first assertion.
 
 
-`ai-image-visible`  When the AI loads an image (e.g. an image/get-image tool), show it to the user and keep it in history. [ui] [py]
+`ai-image-visible`  When the AI loads an image (e.g. an image/get-image tool), show it to the user and keep it in history. [ui] [py] DONE 2026-11-20
     A tool that returns an image should render it inline in the answer (like an embedded attachment) and include it
     in the conversation history so later turns can reference it.  Decide how the image travels back (a content part
     vs a reference) and how it round-trips in the replay without bloating the prompt.
+    DONE, and the decision the item asked for turned out to be forced rather than open.  Measured first, with the
+    real template in serve/test_mcp_round_history.py: run_with_mcp already gives the MODEL the tool's picture as a
+    content part, while the page replayed that round as the result TEXT only (it never received the picture - the
+    result event carried a count).  The two rebuilds therefore differ at that message, so any tool that returned a
+    picture already cost the conversation a re-read of everything after it on every later turn, and the model
+    forgot what it saw.  So "how does it travel back" has one right answer: the same content parts, in the same
+    order.  A reference (fetch by id) would need storage and eviction on the server for no gain here.
+      - serve/server.py: the result event now carries `image_parts` (the data URLs) beside the existing `images`
+        count, capped at MCP_IMAGE_INLINE_MAX = 8 MiB of total source - one screenshot is a few hundred KB, and
+        the page keeps what it is given in this browser's record; over the cap it is counted but not pushed into
+        the browser.  The model still gets the full picture regardless (serve/mcp.py caps at MAX_IMAGE_BYTES).
+      - serve/web/app.js: onTool keeps t.images, the tool block renders it with NO caption (the human: "never add
+        obvious text like that" - a picture needs no announcement), the enlarged viewer is headed by the tool's own
+        name, a click opens it in the existing attachment viewer (and openImageTab for a new tab), assistantMessages
+        replays the round as [{type:text},{type:image}...], cleanMessages already spreads the tool object so the
+        record keeps it, and chatSize counts the bytes so the picker's sizes stay honest.
+      - serve/web/app.css: .tool-call__images / .tool-call__img, bounded to the block, no layout surprise.
+    Tests: serve/test_mcp_round_history.py (the divergence, and that the parts replay makes the next request a
+    continuation of the engine's tokens); serve/test_mcp.py (the parts reach the page; an over-sized picture is
+    counted but not sent inline); harness case 97 (kept, rendered, replayed as parts - and a round WITHOUT a
+    picture still sends the plain string, the default path unchanged).  Four controls bite.
+    Honest limit: the python round-history test MODELS the page's rebuild rather than running app.js; case 97 pins
+    app.js's actual output.  If someone changes one side and not the other, case 97 goes red, but the token-level
+    test would not notice until the model is updated by hand.
+    Needs a restart for the server half; the page half is a reload.
 
 
 `chat-title-auto`  Set the chat's title to match the conversation. [ui]

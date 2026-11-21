@@ -161,6 +161,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call[data-state="error"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
 .tool-call[data-state="running"] .st-badge::before, .tool-call[data-state="writing"] .st-badge::before { animation: blink 1s steps(2) infinite; }
 .tool-call__label { font-size: var(--st-fs-xs); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin: var(--st-s-2) 0 var(--st-s-1); }
+/* a picture the tool returned (item ai-image-visible): bounded to the block's width, and it opens on a click the
+   way an attachment does.  The block itself is already capped and scrolls, so a tall image cannot stretch it. */
+.tool-call__images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); margin-top: var(--st-s-1); }
+.tool-call__img { max-width: min(100%, 420px); max-height: 320px; border-radius: var(--st-r-md); cursor: pointer; }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
