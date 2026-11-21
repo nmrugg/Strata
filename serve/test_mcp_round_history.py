@@ -33,18 +33,20 @@ def render(msgs):
 class FakeSvc:
     """Two rounds: the model thinks and calls, then answers.  prepare() records what the loop rebuilt."""
 
-    def __init__(self):
+    def __init__(self, call_name=TOOL):
         self.round, self.prepared = 0, []
+        self.call_name = call_name          # an unknown name exercises the answered-error round
         # run_with_mcp reports the call it is running through these (todo #waiting-state), so the stand-in has to carry
-        # what a real Service carries
+        # what a real Service carries - and the unknown-call notice counts into totals, so that too
         self.status_lock = threading.Lock()
         self.mcp_running = {}
+        self.totals = {}
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel):
         self.round += 1
         if self.round == 1:
             yield "event", Event("reasoning", THINKING)
-            yield "event", Event("tool_call", call=ToolCall(TOOL, {"value": 7}, "call_x"))
+            yield "event", Event("tool_call", call=ToolCall(self.call_name, {"value": 7}, "call_x"))
         else:
             yield "event", Event("content", "done")
         yield "done", {"completion_tokens": 10, "finish": "stop"}
@@ -66,6 +68,12 @@ class FakeHub:
     def call(self, name, arguments, cancel, include_disabled=False):
         # the same signature as McpHub.call (serve/mcp.py): a request that carries its own tool list asks for
         # include_disabled (todo #mcp-live-toggles), and a double that drifts from the real one hides that.
+        if name not in self.routes():
+            # what the real hub answers for a name it has no server for (serve/mcp.py, McpHub.call).  The loop now
+            # sends that back to the model instead of ending the turn (item unread-call-recovery), which adds a
+            # tool round the page has to rebuild exactly - that is what the test below checks.
+            return {"ok": False, "text": f"error: there is no tool named {name!r}", "chars": 30,
+                    "truncated": False, "ms": 0, "images": []}
         return {"ok": True, "text": "7", "chars": 1, "truncated": False, "ms": 0, "images": self.images}
 
 
@@ -138,6 +146,27 @@ class RoundHistory(unittest.TestCase):
         # what assistantMessages does now (serve/web/app.js): the same parts, in the same order, back out again
         self.assertTrue(render(self.client(rebuilt, False)).startswith(render(rebuilt)),
                         "with the picture riding back, the next request continues the tokens the engine holds")
+
+
+    UNKNOWN = "easy__nothere"
+
+    def test_an_answered_error_round_replays_identically(self):
+        """The unknown-tool fix (item unread-call-recovery): the loop answers a call nobody can serve with the hub's
+        own error and lets the model go on.  That puts an extra tool round into the history, and the page rebuilds
+        tool rounds by itself - so "the chat's cache survives" was a claim until this compares both rebuilds
+        through the real template."""
+        svc = FakeSvc(self.UNKNOWN)
+        msgs = [{"role": "user", "content": "Call a tool that does not exist."}]
+        list(run_with_mcp(svc, FakeHub(), msgs, [{"name": TOOL}], {}, [], True, 100, 100,
+                          {}, threading.Event(), {TOOL}, False))
+        rebuilt = svc.prepared[-1]
+        rounds = [m for m in rebuilt if m.get("tool_calls")]
+        self.assertEqual(len(rounds), 1, "the answered error is a tool round in the history")
+        self.assertEqual(rounds[0]["tool_calls"][0]["function"]["name"], self.UNKNOWN)
+        self.assertIn("there is no tool named", [m for m in rebuilt if m.get("role") == "tool"][0]["content"])
+        self.assertEqual(svc.round, 2, "and the model was given a second turn to correct itself")
+        self.assertTrue(render(self.client(rebuilt, False)).startswith(render(rebuilt)),
+                        "the page's rebuild continues the tokens the engine already holds: no re-read")
 
 
 if __name__ == "__main__":
