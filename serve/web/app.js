@@ -923,7 +923,11 @@ function inline(s) {
   const codes = [];
   s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = esc(s)
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    // ***both*** first, so the two-star rule below cannot eat half of it
+    .replace(/\*\*\*([^*\n]+)\*\*\*/g, "<strong><em>$1</em></strong>")
+    // bold, allowing single stars inside: `**3. Pictures the model *types*, ...**` used to fail the whole rule
+    // (the content class excluded every asterisk), so the reader saw literal ** around bold-that-contained-italics
+    .replace(/\*\*((?:[^*\n]|\*(?!\*))+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>")
     // `__bold__` is the pair of the `_emphasis_` rule below, with the same guards: an underscore inside a word
     // (strata__mcp__tools, a__b) is part of the identifier, not markup.  Runs before the single-underscore rule;

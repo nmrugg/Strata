@@ -3075,6 +3075,14 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(mdT("strata_mcp_tools"), "<p>strata_mcp_tools</p>", "underscores inside a word are the word");
   assert.strictEqual(mdT("a_b_c"), "<p>a_b_c</p>", "and a_b_c is not emphasis");
   assert.ok(mdT("**bold** and *it*").includes("<strong>bold</strong>"), mdT("**bold** and *it*"));
+  // bold containing italics.  The old content class excluded every asterisk, so the whole rule gave up and the
+  // reader saw literal ** - which happened in this session's own message about markdown
+  assert.strictEqual(mdT("**a *b* c**"), "<p><strong>a <em>b</em> c</strong></p>", mdT("**a *b* c**"));
+  assert.strictEqual(mdT("**3. Pictures the model *types*, as opposed to ones a tool returns.**"),
+                     "<p><strong>3. Pictures the model <em>types</em>, as opposed to ones a tool returns.</strong></p>",
+                     mdT("**3. Pictures the model *types*, as opposed to ones a tool returns.**"));
+  assert.strictEqual(mdT("***both***"), "<p><strong><em>both</em></strong></p>", mdT("***both***"));
+  assert.strictEqual(mdT("a ** b"), "<p>a ** b</p>", "a stray pair is still literal");
   assert.ok(mdT("`_Never_`").includes('<code class="inline">_Never_</code>'),
             "inside a code span it stays exactly as typed: " + mdT("`_Never_`"));
   assert.ok(mdT("user_name_here and _real_").includes("<em>real</em>"), mdT("user_name_here and _real_"));

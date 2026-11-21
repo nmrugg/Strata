@@ -1610,6 +1610,15 @@ pointing at history, not at something to do. They are listed so `todo #name` res
 ## 10. Done and shelved - kept by name, because serve/web/app.js, serve/web/app.css, serve/server.py,
     serve/test_* and LESSONS.md cite them in comments
 
+`markdown-external-content-button`  A "Load external content" button for images and URLs the model typed. [ui] SHELVED 2026-11-20
+    Asked for by the human, after Thunderbird's model: remote content is not loaded by default, and one button lets
+    the reader allow it.  Shelved as low priority, with the reason kept so it is not re-argued later.  Today the
+    renderer turns an image written in markdown into a plain link and fetches nothing, and the pictures that matter
+    arrive through a tool and are displayed (item ai-image-visible).  What is at stake: text in a conversation may
+    have come from a web page or a file the tools read, and a browser that fetches a URL that text names can call
+    home or reach the local network.  A per-message opt-in is the right shape if it is ever built - the button keeps
+    the default closed, which is exactly why the default is closed now.
+
 `auto-scroll-big-block`  Auto-scroll stops following when a big block lands (a tool call, a table). [ui] DONE 2026-10-24
     The human's diagnosis is correct, and the code shows why. `paint()` at
     serve/web/app.js:1491 does `updateAssistant(el, m, true); scrollDown();` - so
