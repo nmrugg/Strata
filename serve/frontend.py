@@ -168,6 +168,11 @@ def _image_source(part: dict) -> str:
     "media_type": ..., "data": ...}} or {"source": {"type": "url", "url": ...}}."""
     if part.get("type") == "image":
         src = part.get("source") or {}
+        if isinstance(src, str):
+            # the shape this server uses internally (serve/mcp.py builds it for a tool's picture, and the web app
+            # replays one in a tool message): source is already the URL, not an Anthropic object.  Accepting it
+            # here means a client that echoes our own shape back gets a picture, not a 400.
+            return src
         if src.get("type") == "base64":
             return f"data:{src.get('media_type', 'image/png')};base64,{src.get('data', '')}"
         return src.get("url") or src.get("path") or ""

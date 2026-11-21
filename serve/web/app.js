@@ -2784,13 +2784,16 @@ function assistantMessages(m, keepThinking) {
       rpos = rat;
     }
     out.push(msg);
-    // The picture rides back exactly as run_with_mcp put it into the prompt (serve/server.py): the text part, then
-    // the image parts.  Sending only the text makes the next request stop matching the tokens the engine already
-    // holds at this message, and the chat re-reads everything after it - and the model forgets what it saw
-    // (item ai-image-visible; pinned in serve/test_mcp_round_history.py).
+    // The picture rides back in the shape a CLIENT sends (image_url), which openai_to_messages turns into the same
+    // internal part run_with_mcp built for the model.  Sending the internal shape back gets a 400, and sending only
+    // the text makes the next request stop matching the tokens the engine already holds at this message, so the
+    // chat re-reads everything after it and the model forgets what it saw (item ai-image-visible).
     for (const t of calls) {
       out.push({role: "tool", tool_call_id: t.id,
-                content: (t.images || []).length ? [{type: "text", text: t.result}, ...t.images] : t.result});
+                content: (t.images || []).length
+                         ? [{type: "text", text: t.result},
+                            ...t.images.map((p) => ({type: "image_url", image_url: {url: p.source}}))]
+                         : t.result});
     }
     pos = at;
   }

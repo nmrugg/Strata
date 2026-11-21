@@ -3341,8 +3341,9 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.ok(/data-tool-name="easy__shot"/.test(body97), "and the viewer header names the tool, not the obvious");
   const toolMsg97 = s97.s.assistantMessages({...shot, text: "here"}, false).find((x) => x.role === "tool");
   assert.deepStrictEqual(toolMsg97.content, [{type: "text", text: "a screenshot"},
-                                             {type: "image", source: "data:image/png;base64,AAAA"}],
-                         "and replays it as parts, in the order the server built them");
+                                             {type: "image_url", image_url: {url: "data:image/png;base64,AAAA"}}],
+                         "replayed in the shape a client sends (image_url); the server converts it to the same " +
+                         "internal part the loop built - the internal shape back is a 400");
   // the default path, untouched: a round with no picture is still a plain string
   const plain = {role: "assistant", text: "", reasoning: "", tools: [], time: Date.now()};
   s97.s.onTool(plain, {event: "call", id: "c2", name: "easy__noop", server: "easy", tool: "noop", arguments: {}, round: 1});

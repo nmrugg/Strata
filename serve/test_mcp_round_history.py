@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.frontend import ChatTemplate, Event, ToolCall  # noqa: E402
+from serve.frontend import ChatTemplate, Event, ToolCall, openai_to_messages  # noqa: E402
 from serve.server import run_with_mcp  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,23 +130,31 @@ class RoundHistory(unittest.TestCase):
 
 
     def test_a_picture_in_a_tool_message_must_ride_back_or_the_prefix_breaks(self):
-        """item ai-image-visible.  run_with_mcp gives the model the tool's text AND the picture as parts; the page
-        has never received the picture (the result event carries only a count) and replays the round as the text
-        alone.  The engine then stops matching at that message and re-reads everything after it, on every later
-        turn - and the model forgets what it saw.  This pins the divergence before it is fixed."""
+        """item ai-image-visible.  run_with_mcp gives the model the tool's text AND the picture as parts; if the
+        page replays that round as the text alone, the next request stops matching the engine's tokens at this
+        message and the chat re-reads everything after it - and the model forgets what it saw."""
         rebuilt = self.loop(False, [{"type": "image", "source": self.PNG}])
         tool_msgs = [m for m in rebuilt if m.get("role") == "tool"]
         self.assertEqual(len(tool_msgs), 1)
         self.assertIsInstance(tool_msgs[0]["content"], list, "the server sent parts: text plus the picture")
         self.assertIn("image", render(rebuilt), "and the picture is in the engine's prompt")
-        as_page = [dict(m, content=m["content"][0]["text"])
-                   if m.get("role") == "tool" and isinstance(m["content"], list) else m for m in rebuilt]
-        self.assertFalse(render(as_page).startswith(render(rebuilt)),
-                         "the page's rebuild is not a continuation of what the engine holds: re-read from here")
-        # what assistantMessages does now (serve/web/app.js): the same parts, in the same order, back out again
-        self.assertTrue(render(self.client(rebuilt, False)).startswith(render(rebuilt)),
-                        "with the picture riding back, the next request continues the tokens the engine holds")
-
+        # what the page sends back is the CLIENT's shape (serve/web/app.js, assistantMessages) - run it through the
+        # real conversion, the only way to know the two rebuilds agree
+        as_client = [dict(m, content=[p if p["type"] == "text" else
+                                      {"type": "image_url", "image_url": {"url": p["source"]}} for p in m["content"]])
+                     if m.get("role") == "tool" and isinstance(m["content"], list) else m for m in rebuilt]
+        msgs, _, _ = openai_to_messages({"messages": as_client})
+        self.assertTrue(render(msgs).startswith(render(rebuilt)),
+                        "the client's rebuild continues the tokens the engine already holds")
+        # echoing the server's INTERNAL part shape back must work too: it did not, and that was a 400 on every
+        # later message of any chat that had a tool picture (the bug this commit fixes)
+        msgs2, _, _ = openai_to_messages({"messages": rebuilt})
+        self.assertTrue(render(msgs2).startswith(render(rebuilt)), "the internal part shape is accepted as well")
+        # and the failure all of this exists to prevent: the round replayed as text only
+        text_only = [dict(m, content=m["content"][0]["text"])
+                     if m.get("role") == "tool" and isinstance(m["content"], list) else m for m in rebuilt]
+        self.assertFalse(render(self.client(text_only, False)).startswith(render(rebuilt)),
+                         "text only re-reads from this message onwards")
 
     UNKNOWN = "easy__nothere"
 
