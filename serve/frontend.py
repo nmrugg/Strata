@@ -635,16 +635,27 @@ def marks_outside_code(text: str) -> list[str]:
     return out
 
 
-def param_end(text: str, final: bool = False) -> int:
+def element_open(text: str, names):
+    """(name, index just past the opener) when `text` opens `<NAME>` for one of the tool's DECLARED parameters
+    (upstream #6032 R2/R4, item unread-call-recovery).  Declared-and-only, because an undeclared tag is either
+    prose or a different tool, and guessing from it is how one call's end runs into the next one's.  None when
+    `names` is empty, so a parser that has not resolved the tool yet behaves exactly as before."""
+    if not names:
+        return None
+    m = re.match(TAG_OPEN + r"([A-Za-z_][A-Za-z0-9_-]*)[ \t]*>", text)
+    return (m.group(1), m.end()) if m and m.group(1) in names else None
+
+
+def param_end(text: str, final: bool = False, names=None) -> int:
     """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by the next
-    parameter opener (either form) or `</function>` - the same text inside a value (a file that documents the
-    call format, #210) is part of the value.  -1: none yet; -2: a candidate whose follower has not arrived
-    (streaming; `final` accepts it)."""
+    parameter opener - the template's, the named form, or a declared parameter written as an XML element - or by
+    `</function>`.  The same text inside a value (a file that documents the call format, #210) is part of the
+    value.  -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
     at = text.find(PARAM_END)
     while at >= 0:
         after = text[at + len(PARAM_END):].lstrip()
         op = param_opener(after)
-        if (op and op[1] >= 0) or after.startswith(FUNC_END):
+        if (op and op[1] >= 0) or element_open(after, names) or after.startswith(FUNC_END):
             return at                                  # the next parameter, or the call's own end
         if not after or PARAM_START.startswith(after) or FUNC_END.startswith(after) or (op and op[1] < 0):
             return at if final else -2                 # the follower has not arrived yet: hold
@@ -652,10 +663,12 @@ def param_end(text: str, final: bool = False) -> int:
     return -1
 
 
-def call_end(text: str) -> int:
+def call_end(text: str, names=None) -> int:
     """Where a tool call's body ends (#210): the `</tool_call>` after the call's own `</function>`, found by walking
-    its parameters with param_end, so a value may contain either tag.  -1: not complete yet.  A body that is not in
-    the call format ends at the first `</tool_call>`, as before."""
+    its parameters with param_end, so a value may contain either tag.  `names` are the tool's declared parameter
+    names, which let a parameter written as an XML element be walked as a parameter instead of ending the walk
+    (item unread-call-recovery).  -1: not complete yet.  A body that is not in the call format ends at the first
+    `</tool_call>`, as before."""
     s = text.lstrip()
     pos = len(text) - len(s)
     if not s.startswith("<function="):
@@ -671,10 +684,17 @@ def call_end(text: str) -> int:
         op = param_opener(s)
         if op and op[1] >= 0:                       # a parameter opener, either form
             past = pos + op[1]
-            end = param_end(text[past:])
+            end = param_end(text[past:], names=names)
             if end < 0:
                 return -1
             pos = past + end + len(PARAM_END)
+        elif element_open(s, names):                # a declared parameter written as an element
+            el = element_open(s, names)
+            close = TAG_OPEN + "/" + el[0] + ">"
+            j = text.find(close, pos + el[1])
+            if j < 0:
+                return -1
+            pos = j + len(close)
         elif s.startswith(FUNC_END):
             rest = text[pos + len(FUNC_END):]
             s = rest.lstrip()
@@ -773,9 +793,10 @@ def next_param_opener(text: str):
 
 
 
-def function_end(text: str) -> int:
+def function_end(text: str, names=None) -> int:
     """Where a `<function=NAME>...</function>` at the start of `text` ends (just past `</function>`), walking its
-    parameters with param_end like call_end does; -1: not complete (or not in the call format)."""
+    parameters with param_end like call_end does; -1: not complete (or not in the call format).  `names` lets a
+    declared parameter written as an XML element be walked as a parameter (item unread-call-recovery)."""
     s = text.lstrip()
     pos = len(text) - len(s)
     if not s.startswith(FUNC_START):
@@ -788,14 +809,20 @@ def function_end(text: str) -> int:
         rest = text[pos:]
         s = rest.lstrip()
         pos += len(rest) - len(s)
-        if s.startswith(PARAM_START):
-            gt = text.find(">", pos)
-            if gt < 0:
-                return -1
-            end = param_end(text[gt + 1:])
+        op = param_opener(s)
+        if op and op[1] >= 0:
+            past = pos + op[1]
+            end = param_end(text[past:], names=names)
             if end < 0:
                 return -1
-            pos = gt + 1 + end + len(PARAM_END)
+            pos = past + end + len(PARAM_END)
+        elif element_open(s, names):
+            el = element_open(s, names)
+            close = TAG_OPEN + "/" + el[0] + ">"
+            j = text.find(close, pos + el[1])
+            if j < 0:
+                return -1
+            pos = j + len(close)
         elif s.startswith(FUNC_END):
             return pos + len(FUNC_END)
         else:
@@ -863,7 +890,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         if nxt is None:
             break
         pname, rest = nxt[1], rest[nxt[2]:]
-        end = param_end(rest, final=True)
+        end = param_end(rest, final=True, names=set(props))
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
         args[pname] = _param_value(value, props.get(pname))
@@ -1138,6 +1165,13 @@ class OutputParser:
         self.pending = []
         return out
 
+    def _declared(self, body: str):
+        """The declared parameter names of the tool this call body opens (item unread-call-recovery).  The walkers
+        need them to read a parameter written as an XML element, and to refuse to guess from a tag that is not one
+        of them.  None while the tool's name has not arrived yet, which keeps the old behaviour for that body."""
+        props = ((self.schemas.get(call_name(body)) or {}).get("parameters") or {}).get("properties")
+        return set(props) if props else None
+
     def _unread(self, raw: str) -> None:
         """Count a whole call envelope that came back as text instead of a call (todo #unread-call-instrument).
         Only the forms that read as an act are counted: an envelope whose follower is the function opener, or a
@@ -1317,7 +1351,7 @@ class OutputParser:
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body), body.find(THINK_END)
+                end, think = call_end(body, self._declared(body)), body.find(THINK_END)
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
@@ -1500,7 +1534,8 @@ class OutputParser:
             else:
                 drop = None
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
-                    i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
+                    i = function_end(self.buf, self._declared(self.buf))   # the wrapper's closer, if
+                                                           # one follows, is dropped
                     if i >= 0:
                         after = self.buf[i:].lstrip()
                         if after.startswith(CALL_END):
@@ -1508,11 +1543,11 @@ class OutputParser:
                         elif after and not CALL_END.startswith(after):
                             drop = 0
                 else:
-                    i = call_end(self.buf)
+                    i = call_end(self.buf, self._declared(self.buf))
                     if i >= 0:
                         drop = len(CALL_END)
                     if self.recover:                # a batch in one wrapper: the next call follows this one's
-                        f = function_end(self.buf)  # </function> (or opens as <parameter=NAME>)
+                        f = function_end(self.buf, self._declared(self.buf))  # </function> (or opens as <parameter=NAME>)
                         nxt = self.buf[f:].lstrip() if f >= 0 else ""
                         if nxt.startswith(PARAM_START) and self._follower(nxt) == "param":
                             at = len(self.buf) - len(nxt)
@@ -1564,8 +1599,8 @@ class OutputParser:
             self.abandoned += 1      # a call opened INSIDE the reasoning and never closed: nothing is delivered
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
-        if self.state == "call" and self.bare and function_end(self.buf) >= 0:
-            i = function_end(self.buf)          # recover: a bare call is whole at its </function>
+        if self.state == "call" and self.bare and function_end(self.buf, self._declared(self.buf)) >= 0:
+            i = function_end(self.buf, self._declared(self.buf))   # recover: a bare call is whole at its </function>
             body, rest = self.buf[:i], self.buf[i:].strip()
             self.buf = ""
             out += self._finish_call(body)

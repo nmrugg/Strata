@@ -622,6 +622,33 @@ class XmlElementParameter(unittest.TestCase):
         self.assertEqual(self.args_of(body), ({"cmd": "  ls -a  \nsecond line"}, 0))
         self.assertEqual(self.args_of(self.env(self.LT + "cmd>  x  " + self.LT + "/cmd>\n")), ({"cmd": "  x  "}, 0))
 
+    def test_a_template_parameter_followed_by_an_element_is_both_of_them(self):
+        # the case the declared-name threading exists for.  Before: the first parameter's closer was never
+        # believed, because its follower was an element the walker did not know was a parameter - so the call
+        # never completed and there was no call at all.
+        body = self.env(PARAM_START + "cmd>\nls\n" + PARAM_END + "\n" + self.LT + "n>3" + self.LT + "/n>\n")
+        self.assertEqual(self.args_of(body), ({"cmd": "ls", "n": 3}, 0))
+        for width in (1, 7, 0):
+            with self.subTest(width=width):
+                self.assertEqual(self.args_of(body, width), ({"cmd": "ls", "n": 3}, 0))
+
+    def test_an_element_that_is_not_a_declared_parameter_is_not_walked_as_one(self):
+        # declared-and-only, which is the point of threading the names: guessing from a tag the tool does not
+        # declare is how one call's end runs into the next call (upstream found exactly that).  The outcome here is
+        # the conservative one and it is deliberate: the call never completes, so it is counted as abandoned
+        # rather than run with a value that swallowed the stray tag.
+        p = OutputParser(thinking=False, tools=self.SCHEMA, recover=True, stream_tools=True)
+        body = self.env(PARAM_START + "cmd>\nls\n" + PARAM_END + "\n" + self.LT + "zz>1" + self.LT + "/zz>\n")
+        evs = p.feed(body) + p.finish()
+        self.assertEqual([c.call.name for c in evs if c.kind == "tool_call"], [], "it did not run")
+        self.assertEqual(p.abandoned, 1, "and the turn says so instead of failing silently")
+
+    def test_an_element_whose_value_quotes_the_wrapper_closer_ends_at_its_own_closer(self):
+        # the walk has to step OVER an element parameter rather than search past it for the wrapper's closer: a
+        # value that documents the format contains that closer, and finding it early cuts the call in half
+        body = self.env(self.LT + "cmd>use " + CALL_END + " here" + self.LT + "/cmd>\n")
+        self.assertEqual(self.args_of(body), ({"cmd": "use " + CALL_END + " here"}, 0))
+
     def test_it_holds_when_the_text_arrives_one_character_at_a_time(self):
         for width in (1, 3, 7, 0):
             with self.subTest(width=width):
