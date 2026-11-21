@@ -2959,6 +2959,7 @@ class Service:
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
+        self.tool_sig = None                             # the MCP tool names the last request rendered (see below)
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
@@ -4313,6 +4314,10 @@ class Service:
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
                                 "reasoning_recoveries": recovery_count,
                                 "reasoning_repeat_coverage": round(repeat_coverage, 3),
+                                # how many tools this request rendered: the tools block is the first system turn,
+                                # so a round whose count differs from the one before it broke every chat's prefix
+                                # from that point (item unread-call-recovery, the re-read question)
+                                "tools": len(tools or []),
                                 "engine_generated": last.get("generated"),
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
@@ -5929,6 +5934,18 @@ def make_handler(svc: Service):
                 extra = svc.mcp.template_tools(exclude=own, only=only, include_disabled=only is not None)
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
+                # The tools block is the FIRST system turn, so anything that changes it re-reads every
+                # conversation that follows - measured on this box at 580,567 tokens and 228 s.  A server that
+                # merely FINISHES starting changes it too, and nothing said which round did it (todo
+                # #mcp-live-toggles).  This names the change, and who left and who arrived.
+                sig = ",".join(sorted(t["name"] for t in extra))
+                if svc.tool_sig is not None and sig != svc.tool_sig:
+                    gone = sorted(set(svc.tool_sig.split(",")) - set(sig.split(",")))
+                    new = sorted(set(sig.split(",")) - set(svc.tool_sig.split(",")))
+                    print(f"[strata] the MCP tool list changed: {len(sig.split(','))} tools "
+                          f"(gone: {', '.join(gone) or '-'}; new: {', '.join(new) or '-'}) - every conversation "
+                          "whose tools block this is now re-reads from the start", flush=True)
+                svc.tool_sig = sig
             if force and use_mcp:
                 raise ValueError("a forced tool_choice with MCP tools is not supported")
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent

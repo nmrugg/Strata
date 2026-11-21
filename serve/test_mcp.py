@@ -652,6 +652,24 @@ class ToolLoop(LoopFixture):
         self.assertIn("fake__echo", [t["name"] for t in self.hub.template_tools()])
         self.assertFalse(self.hub.set_server_disabled("nope", True))  # a name that is not there changes nothing
 
+    def test_a_change_in_the_tool_list_is_announced_and_counted(self):
+        # the tools block is the first system turn, so a round whose list differs re-reads every conversation from
+        # there.  Measured on this box: 580,567 tokens, 228 s, and nothing said which round did it.  A server that
+        # merely finishes starting is enough - this uses the same hub call a switch in the page makes.
+        self.start("</think>\n\nHello.", "</think>\n\nHello again.")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.post({"strata_mcp": True})
+            self.assertNotIn("the MCP tool list changed", out.getvalue(), "the first request has nothing to compare to")
+            self.hub.set_server_disabled("fake", True)
+            self.post({"strata_mcp": True})
+        said = out.getvalue()
+        self.assertIn("the MCP tool list changed", said)
+        self.assertIn("fake__echo", said, "and it names what went away")
+        counts = [h.get("tools") for h in self.svc.history]
+        self.assertEqual(counts[-2:], [7, 0], "and the per-request record shows the round where it broke")
+
+
 class UnknownCall(LoopFixture):
     """A call naming a tool that neither the request declared nor the hub offers.  Reproduced from a live death
     on this box: the turn returned 200 with finish_reason tool_calls, no MCP activity at all and an empty answer,

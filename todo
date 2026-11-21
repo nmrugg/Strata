@@ -695,6 +695,17 @@ all: fold-control replaced them, and the four overlapping switches became one co
         one engine turn) so it goes red the day the loop is fixed and must be rewritten, not deleted; and a
         client-declared tool is not counted.  Three controls bite (stop counting, drop the notice, loosen the
         gate).  Needs a restart.
+      - THE RE-READ the owner noticed right after, asked about: not the fix, and the numbers say so.  That
+        request re-used only 20,543 of 601,110 prompt tokens (3.4%) and read 580,567 - the break is at the
+        system turn, where the tools block lives.  An errored tool round sits deep in a conversation, and a
+        divergence there looks like the opposite: three other re-reads in the same window kept 79.9%, 65.2% and
+        68.4% of the prefix and re-read the tail.  So something changed the tools block at that moment - a
+        server added/removed/toggled (the note warns about exactly this), a server FINISHING its start, or the
+        hub re-listing.  What was missing is the attribution, so it is now instrumented: the handler compares
+        the tool names it rendered against the previous request and prints one line naming the count and who
+        went and who arrived, and every /metrics request record carries `tools`.  Test:
+        serve/test_mcp.py test_a_change_in_the_tool_list_is_announced_and_counted (a hub switch mid-conversation
+        -> the notice, and the record going 7 -> 0); two controls bite.  Needs a restart.
       - THE FIX, done 2026-11-20 (asked: "make any fix you can").  A call naming neither the request's tools nor
         the hub's tools is now ANSWERED instead of ending the turn: it goes through the same call/result channel,
         and `hub.call` already produces exactly the right result for a name it has no server for - "error: there
