@@ -175,6 +175,15 @@ all: fold-control replaced them, and the four overlapping switches became one co
     code (conversation-cache eviction, idle-unload timer, --conversation-cache-min-free-mib) and document it.
     Feeds item pin-conversation (the configurable disk cache they want).
 
+`flaky-sampler-test`  serve.test_responses' NoLeakedSampler fails once in a while under load. [py] TRIVIAL
+    `test_server_close_ends_the_sampler` counts threads named `*(_loop)` before and after a serve()/close and
+    gives the sampler 50 x 0.1 s = 5 s to be seen stopping. 2026-11-22: it failed once (3 != 4) while other
+    suites were running in the same window, then passed 4/4 alone and 3/3 at an earlier commit - the leak check
+    is real, the window is too tight on a busy box.  Fix: poll with a longer bound, or better, have
+    `telemetry.close()` return once the loop has actually exited instead of waiting for the thread to notice -
+    a test that sleeps waiting for a thread is a test that will flake again.  Not caused by the turn-lock work:
+    the same file passes alone at the commit before it.
+
 `chat-date-on-send`  A chat's date in the list changes only when the answer finishes. [ui] TRIVIAL
     `c.time = Date.now()` runs on write (serve/web/app.js, saveChat/putChat), so a chat you have just sent
     into still shows its old timestamp in the sidebar while the model works - and a turn that never finishes
