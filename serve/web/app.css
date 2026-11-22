@@ -206,15 +206,15 @@ main { flex: 1; min-height: 0; display: flex; }
      new   - a reply that landed while you were somewhere else           (info blue)
    A draft is not in the gutter: it is an asterisk on the name, because it belongs to the text rather than to
    what is happening to the conversation.  Green means happening, blue means happened, go read it. */
-.chat-item__state { position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; }
+.chat-item__state { position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; }
+                                    /* 3px in, not inset smaller: at left 0 the ring touched the row's 10px
+                                       corner radius and looked like it was leaving the highlight (the owner,
+                                       2026-11-22). The size it had is the size it keeps. */
 .chat-item__title.draft::before { content: "*"; margin-right: 4px; }   /* the row's own ink, never a colour */
 .chat-item__state.new::before { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--st-info); }
-.chat-item__state.run::before { content: ""; position: absolute; inset: 2px; border-radius: 50%;
+.chat-item__state.run::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
                                  border: 2px solid var(--st-line); border-top-color: var(--st-accent);
                                  animation: st-spin 0.9s linear infinite; }
-/* inset 2px, the same as the unread dot: at inset 0 the ring filled the whole 12px gutter and ran into the
-   row's rounded corner, so on the highlighted (.on) row it looked like it was climbing out of the
-   highlight.  One size for both marks, both clear of the corner. */
 /* the gutter mark carries the engine's phase, in the colours the pill and the Monitor already use for the
    same states (LESSONS.md, "one colour per state"): reading the prompt is blue, answering is green, waiting
    on something outside the engine is grey, waiting behind another request is amber and does not spin. */

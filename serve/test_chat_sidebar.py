@@ -56,7 +56,10 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn("color", draft_rule)             # the row's own ink; colour means something else here
         # run/new live in a 12px gutter on the row, absolutely placed: they cost no title width on any row
         self.assertIn("position: relative; padding-left: 12px;", css)
-        self.assertIn(".chat-item__state { position: absolute; left: 0;", css)
+        self.assertIn(".chat-item__state { position: absolute; left: 3px;", css)
+        # 3px in rather than a smaller ring: at left 0 the 12px ring touched the row's 10px corner radius and
+        # looked like it was leaving the highlighted row (the owner, 2026-11-22). Size unchanged.
+        self.assertIn(".chat-item__state.run::before { content: \"\"; position: absolute; inset: 0;", css)
         self.assertIn(".chat-item__state.run::before", css)
         # the slot is only emitted when there is a marker, so an ordinary row keeps its full title width
         self.assertIn('(state ? `<span class="chat-item__state ${state}"', self.body("chatItem"))
