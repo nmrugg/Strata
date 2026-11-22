@@ -64,10 +64,17 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("animation: st-spin 0.9s linear infinite", css)     # happening now: accent, spinning
         self.assertIn(".chat-item__state.new::before", css)
         self.assertIn("background: var(--st-info)", css)                  # happened: blue, go read it
-        self.assertIn("@media (prefers-reduced-motion: reduce)", css)     # the spinner does not have to spin
         item = self.body("chatItem")
-        self.assertIn("busy.chatId === c.id && c.id !== chatId", item)  # never on the chat you are looking at
-        self.assertIn('running ? "run" : c.unread ? "new" : ""', item)   # a draft is on the name, not the gutter
+        # the gutter mark carries the engine's phase, in the colours the pill and the Monitor already use
+        # (todo #sidebar-spinner-states); the behaviour itself is driven in the node harness, case 108
+        self.assertIn("busy.chatId === c.id && (c.id !== chatId || showSpin)", item)
+        self.assertIn('phase ? `run ${phase}` : c.unread ? "new" : ""', item)
+        for phase, colour in (("read", "--st-info"), ("wait", "--st-ink-muted"), ("queue", "--st-warn")):
+            self.assertIn(f".chat-item__state.run.{phase} {{ --spin: var({colour}); }}", css)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", css)     # the spinner does not have to spin
+        self.assertIn("refreshSpinners();", self.body("poll"))            # the mark follows the phase, per poll
+        self.assertIn("if (renaming) return;", self.body("refreshSpinners"))   # and never over a rename
+        self.assertIn("$(" + '"spin-toggle").onclick', self.js)           # the always-show switch
         self.assertIn("renderSidebar();", self.body("setBusy"))          # the list follows turn start/end
         self.assertIn("turn.chat.unread = true;", self.body("send"))
         self.assertIn("c.unread = false;", self.body("showChat"))

@@ -20,6 +20,28 @@ const store = {
   set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
 };
 
+// ------------------------------------------------------------------ the chat-list spinner (todo #sidebar-spinner-states)
+// Off by default: in the chat you are looking at, the streaming answer is the indicator.  Some people want the
+// gutter mark anyway, and it is the only place a queued or tool-waiting turn shows up at all.
+let showSpin = store.get("showspin", false) === true;
+function setSpinAlways(on) {
+  showSpin = !!on;
+  store.set("showspin", showSpin);
+  $("spin-toggle").setAttribute("aria-checked", String(showSpin));
+  renderSidebar();
+}
+$("spin-toggle").onclick = () => setSpinAlways(!showSpin);
+$("spin-toggle").setAttribute("aria-checked", String(showSpin));
+// The engine's phase moves between polls, and the sidebar is not rebuilt on a poll (a rename in progress
+// would be wiped).  So: remember what the rows were painted for, and re-render only when that changed.
+let spinSig = "";
+function refreshSpinners() {
+  if (renaming) return;
+  const sig = `${busy ? busy.chatId : ""}|${busy ? turnPhase() : ""}|${showSpin}`;
+  if (sig === spinSig) return;
+  spinSig = sig;
+  renderSidebar();
+}
 // ------------------------------------------------------------------ toasts
 function toast(kind, title, text = "", ms = 3500, action = null) {
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
@@ -250,6 +272,7 @@ async function poll() {
       // into the last full answer so a switch to the Monitor paints at once
       if (m.lite) { lastMetrics = {...(lastMetrics || {}), ...m}; renderLite(m); }
       else { lastMetrics = m; render(m); }
+      refreshSpinners();                             // the gutter mark follows the engine's phase
       schedulePoll(pollDelay(m));
       if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();   // server states change rarely: every 10 s
       return;
@@ -1761,17 +1784,35 @@ function groupName(t) {
   // the quarters come out most-recent-first with no extra work.
   return `${d.getFullYear()} Q${Math.floor(d.getMonth() / 3) + 1}`;
 }
+// Which phase this row's turn is in (todo #sidebar-spinner-states), in the colours the pill and the Monitor
+// already use for the same states: blue while the engine reads the prompt, green once tokens are arriving,
+// grey while it waits on something outside the engine (an MCP call), amber while it waits behind another
+// request.  live.state describes the engine, and this page runs one turn at a time, so it belongs to the chat
+// that owns busy - unless the engine says it is idle under us, which means our request has not reached it.
+const PHASE_OF = {reading: "read", generating: "gen", "running-tool": "wait", queued: "queue"};
+const PHASE_TIP = {read: "reading the prompt", gen: "answering", wait: "waiting on a tool",
+                   queue: "waiting behind another request"};
+function turnPhase() {
+  const live = (lastMetrics && lastMetrics.live) || null;
+  if (!live) return "gen";                       // nothing polled yet: the plain green spinner, as it was
+  const p = PHASE_OF[live.state];
+  if (p) return p;
+  // the engine says idle under us.  That is amber only when something really is queued: between the rounds of
+  // one MCP turn the engine also reports idle, and calling that "queued" would be a lie.
+  return live.queued > 0 ? "queue" : "gen";
+}
 function chatItem(c) {
   const t = chatTitle(c);
   // a turn answering in a conversation you are NOT looking at.  On the one you are in, the streaming answer is
-  // itself the indicator, so a spinner there would be noise (the human's ask)
-  const running = !!busy && busy.chatId === c.id && c.id !== chatId;
+  // itself the indicator, so a spinner there is noise - unless you ask for it (the switch in Settings).
+  const running = !!busy && busy.chatId === c.id && (c.id !== chatId || showSpin);
   const drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
   // run and new sit in the row's left gutter, absolutely placed, so they cost no title width at all; a draft is
   // an asterisk on the name itself, because it belongs to the text rather than to what is happening to the
   // conversation.  A reply you have not read outranks a draft in the gutter: go read beats go type.
-  const state = running ? "run" : c.unread ? "new" : "";
-  const tip = running ? "answering" : c.unread ? "unread reply" : "";
+  const phase = running ? turnPhase() : "";
+  const state = phase ? `run ${phase}` : c.unread ? "new" : "";
+  const tip = phase ? PHASE_TIP[phase] : c.unread ? "unread reply" : "";
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
   row.innerHTML = `<button class="chat-item__title${drafted ? " draft" : ""}" data-open-chat` +
@@ -1996,7 +2037,9 @@ function openImageTab(a) {
   } catch (e) { toast("warn", "Can't open image", String((e && e.message) || e)); }
 }
 // rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
+let renaming = false;   // a poll must not wipe a field someone is typing in (see refreshSpinners)
 function renameChat(row, c) {
+  renaming = true;
   const title = row.querySelector(".chat-item__title");
   const input = node("input", "st-input chat-item__input");
   input.value = chatTitle(c);
@@ -2007,6 +2050,7 @@ function renameChat(row, c) {
   const finish = (keep) => {
     if (done) return;
     done = true;
+    renaming = false;
     if (keep) { c.title = input.value.trim(); putChat(c); } else renderSidebar();
   };
   input.addEventListener("keydown", (e) => {

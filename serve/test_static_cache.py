@@ -134,7 +134,11 @@ class SpriteInlined(Server):
         self.assertNotIn("c2pa:manifest", html)
         self.assertNotIn("<metadata", html)
         self.assertEqual(html.count("<symbol "), 33)
-        self.assertLess(len(html.encode()), 42000, "the page stayed a sane size")
+        # a size ceiling is a stand-in for "only the symbols were inlined, no blob" - the manifest is the blob
+        # that would do it.  It is not a cap on real markup: the System prompt and prompt-inspector cards took
+        # the page to 42,028 bytes on 2026-11-22, so the ceiling moved with the reason stated rather than the
+        # markup being squeezed to fit a number nobody re-measured.
+        self.assertLess(len(html.encode()), 43000, "the page stayed a sane size")
 
     def test_the_symbols_come_before_the_first_use(self):
         code, _, body = get(self.conn, "/")

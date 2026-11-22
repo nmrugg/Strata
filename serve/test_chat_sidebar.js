@@ -1272,8 +1272,8 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   ctl39.flush = mk39.flush;
   const stateOf = (id) => {
     const html = mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
-    const m = /class="chat-item__state ?([\w-]*)"/.exec(html);
-    return m ? m[1] : "";
+    const m = /class="chat-item__state ?([\w -]*)"/.exec(html);   // the class carries the phase too now
+    return m ? m[1].trim() : "";
   };
   assert.strictEqual(stateOf("A"), "", "nothing running, nothing unread: no gutter marker");
   assert.ok(!mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === "A")._html.includes("chat-item__state"),
@@ -1286,7 +1286,9 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   assert.strictEqual(stateOf("A"), "", "no spinner on the conversation you are already looking at");
   assert.strictEqual(stateOf("B"), "", "and none on the other one either");
   mk39.s.openChat("B"); await wait();
-  assert.strictEqual(stateOf("A"), "run", "leaving it makes the spinner appear in A's gutter");
+  // the class carries the engine's phase now (todo #sidebar-spinner-states, pinned in case 108); with nothing
+  // but an idle engine under a running turn it is the plain green answer
+  assert.strictEqual(stateOf("A"), "run gen", "leaving it makes the spinner appear in A's gutter");
   assert.strictEqual(stateOf("B"), "", "the conversation now on screen stays unmarked");
   ctl39.step(); await wait();                          // "half" lands while B is on screen
   ctl39.step(); await wait();                          // "the rest"
@@ -3669,6 +3671,53 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                            "and wrote the config, so the next chat starts from the same choice");
     diff.s.closePopover();
     done.push("prompt-inspector: a chat pins its tools, the wrench shows and edits that list, and marks the difference");
+  }
+
+  // 108. sidebar-spinner-states: the gutter mark carries the engine's phase, in the colours the pill and the
+  // Monitor already use for those states, and a switch makes it show in the chat you are looking at too.
+  {
+    let liveState = "reading", release = null, reads = 0;
+    const enc = (s) => new TextEncoder().encode(s);
+    const sp = run({fetch: async (u) => {
+        if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: liveState, queued: 0, tok_s: 12}})};
+        if (u === "health") return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
+        if (u === "v1/chat/completions") return {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
+          release = () => res(reads++ === 0 ? {value: enc('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'), done: false}
+                                                   : {value: undefined, done: true}); })})}};
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("ca")},
+      {ca: {id: "ca", title: "chat A", time: Date.now(),
+            messages: [{id: "m1", role: "user", text: "hi", time: Date.now()}]},
+       cb: {id: "cb", title: "chat B", time: Date.now(),
+            messages: [{id: "m2", role: "user", text: "yo", time: Date.now()}]}});
+    await wait();
+    sp.s.el("input").value = "another question";
+    sp.s.send();                                     // not awaited: the stream is held open below
+    await wait();
+    sp.s.openChat("cb");                             // look away: A's turn is now the gutter mark
+    await wait();
+    const rowHtml = (id) => {
+      const r = sp.s.el("sidebar-list").children.find((c) => c.dataset && c.dataset.id === id);
+      return (r && r._html) || "";
+    };
+    const phases = {reading: "run read", generating: "run gen", "running-tool": "run wait", queued: "run queue"};
+    for (const [state, want] of Object.entries(phases)) {
+      liveState = state;
+      sp.s.poll(); await wait();
+      assert.ok(rowHtml("ca").includes(`chat-item__state ${want}`), `${state} -> ${want}: ${rowHtml("ca").slice(0, 150)}`);
+    }
+    assert.ok(/title="(reading the prompt|answering|waiting on a tool|waiting behind another request)"/.test(rowHtml("ca")),
+              "the title says which phase it is, not just that something is happening: " + rowHtml("ca").slice(0, 200));
+    sp.s.openChat("ca"); await wait();               // back to the chat that owns the turn
+    assert.strictEqual(rowHtml("ca").includes("chat-item__state"), false,
+                       "no mark on the chat you are already looking at, by default");
+    sp.s.el("spin-toggle").onclick();                // the switch: always show it
+    assert.ok(rowHtml("ca").includes("chat-item__state run"), "with the switch on, it shows there too");
+    sp.s.el("spin-toggle").onclick();
+    assert.strictEqual(rowHtml("ca").includes("chat-item__state"), false, "and it goes away when the switch is off again");
+    if (release) release();
+    await wait(); await wait();
+    done.push("sidebar-spinner-states: the mark carries the phase - reading, answering, waiting on a tool, queued - and a switch shows it in the open chat");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));

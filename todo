@@ -579,7 +579,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     whether the tool calls that ran are replayed or shown as spent.
 
 `sidebar-spinner-states`  The chat-list spinner: prefill blue, generating green, queued amber, waiting grey -
-    and an option to show it on the open chat too. [ui] SMALL
+    and an option to show it on the open chat too. [ui] DONE 2026-11-22 (the colours need an eye on a real page)
     Today the dot is hidden for the chat you are looking at, and one colour covers the whole turn. The states
     are already known to the page (live.state: reading / generating / running-tool / queued, plus this tab's
     own busy), and the palette already encodes them: --st-accent green = the engine is producing tokens,
@@ -589,6 +589,27 @@ all: fold-control replaced them, and the four overlapping switches became one co
     waiting behind another, grey when it is waiting on something outside the engine (a tool call, an MCP
     server). Add a Settings switch to always show it, off by default - it is hidden now because the open chat
     already shows the pill.
+    DONE 2026-11-22.  The phase comes from live.state, mapped to the same colours the pill and the Monitor
+    badges already use, through one CSS custom property (--spin) so the reduced-motion rule follows the phase
+    instead of hardcoding green.  Queued does not spin: a ring that turns says "work is happening", and a
+    request waiting behind another is not that.  The switch is "Chat spinner, always" in the This browser card,
+    kept in strata.showspin (its own key, applied at once, like the theme - not part of the Sampling drawer,
+    where Apply is what writes).  The sidebar is not rebuilt on every poll: refreshSpinners() compares a
+    signature (which chat owns the turn, what phase, the switch) and re-renders only when it moved, and it
+    skips entirely while a row is being renamed - a poll wiping a field someone is typing in was the trap
+    waiting here.
+    Two things worth knowing about the existing tests: case 39 asserted the gutter class exactly, so it moved
+    with the phase (and its regex only captured one token, which is why it read as empty rather than wrong);
+    and the page-size ceiling in serve/test_static_cache.py caught the two new cards at 42,028 bytes.  That
+    ceiling is a stand-in for "no blob reached every page" - the sprite's provenance manifest is the blob it
+    was written for - not a cap on real markup, so it moved to 43,000 with the reason and the measurement in a
+    comment rather than the markup being squeezed to fit a number nobody re-measured.  Control: a 2 KB blob in
+    the page still fails it.
+    Tests: harness case 108 (98 ok lines) - each phase paints its class, the title says which phase it is, the
+    open chat shows nothing by default and shows it with the switch, and the switch off hides it again.
+    Controls bite: the phase dropped out of the class, the switch ignored, and no refresh on poll.
+    Unverified: the four colours side by side, and whether grey reads as "waiting" rather than "stuck" - needs
+    the owner's eye.
 
 `unpark-chat`  Un-park a parked conversation by hand. [py] SMALL
     Ask for by the owner 2026-11-21 as a future item, independent of pin-conversation. Parking a conversation
