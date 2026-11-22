@@ -2208,7 +2208,9 @@ async function openHistory(fromScreen) {
 }
 
 function saveChat(c = chat) {
-  c.time = Date.now();
+  // No timestamp here. saveChat runs at every milestone of a turn (todo #crash-recovers-last-turn), and the
+  // sidebar sorts on time - so stamping here made two running chats leapfrog over each other several times a
+  // turn. The stamp belongs to the moment you send (startTurn), not to the moment the model answers.
   putChat(c);                                       // the chat that owns the turn, which may not be the open one
 }
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
@@ -3848,6 +3850,8 @@ function queueTake(c) {                              // the next message this ch
 // that used to read the module-level chat/messages now reads the chat the turn belongs to.
 async function startTurn(c, item) {
   const msgs = c.messages;
+  c.time = Date.now();                              // the chat moves to the top when YOU send, and stays there
+                                                    // while the answer arrives (the owner, 2026-11-22)
   if (item) msgs.push({id: mid(), role: "user", text: item.text, images: item.images, files: item.files,
                        time: Date.now()});
   const m = {id: mid(), role: "assistant", text: "", reasoning: "", time: Date.now(), turnStart: Date.now()};

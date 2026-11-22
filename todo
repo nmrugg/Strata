@@ -725,6 +725,24 @@ all: fold-control replaced them, and the four overlapping switches became one co
     html-preview-demo.html at the repo root, generated from the live files by /tmp/make_demo.js - untracked,
     delete it when done looking.
 
+`sidebar-order-on-send`  Two running chats leapfrog over each other in the list. [ui] DONE 2026-11-22
+    The owner, 2026-11-22: "when running two chats, they keep leapfrogging which is on top in the right side
+    bar. It should only update the side bar data when I hit send, not when the llm responds."  Cause: saveChat
+    stamped c.time = Date.now() on EVERY write, and crash-recovers-last-turn made it write at every milestone
+    (question, first token, end of thinking, each tool call and result), while the list sorts on that field
+    (.sort((a, b) => b.time - a.time)).  So a turn re-claimed the top of the list several times a turn, and two
+    concurrent turns traded places.
+    Fixed: the stamp moved to startTurn - the moment you send, including an edit and a queued post firing on its
+    own - and saveChat writes content without touching time.  A side benefit is the one the chat-date-on-send
+    item wanted: the time shown on a row is now the time you sent, not the time the answer happened to finish.
+    Edit, delete and the md switch no longer reorder the list either; that is the literal rule asked for, and it
+    is worth revisiting if it turns out to be surprising.
+    serve/test_chat_sidebar.js case 118: B starts on top, sending in A moves A up, two milestone saves change
+    nothing, the list order is unchanged through the whole turn, and the answer arriving does not move it.  The
+    Date.now clock is moved forward deliberately for the milestone check - comparing two real stamps can land in
+    the same millisecond, and that exact weakness made the first control pass when it should have failed.
+    Harness 107 -> 108 ok lines; both controls bit after that fix.
+
 `crash-recovers-last-turn`  A browser crash mid-turn loses the whole last exchange. [ui] DONE 2026-11-22
     The chat record is written once, at the end of send() (saveChat after the stream closes). If the tab dies -
     crash, OOM, the machine sleeping - the user's own message, the thinking, and every tool call that already

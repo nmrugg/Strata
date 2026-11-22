@@ -268,7 +268,7 @@ function run(hooks, stored, seed, shared) {
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, markdownBlocks, inline, highlight, esc, codeBlock, HL, HL_LANG, HL_MAX, hlSplit, hlRun, hlToks, tokHtml, codeSrc, placePopover, " +
-    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, toolBodyHtml, " +
+    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, writeChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, toolBodyHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "loadHealth, healthPill, get health() { return health; }, " +
@@ -4503,6 +4503,53 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     done.push("code-grow: a growing code block keeps its settled tokens on screen and rewrites only the tail " +
               "(one <code> assignment for five frames, and the settled span never reassigned), keep+tail is " +
               "byte-identical to one pass over the block, and the head is copy / Code / Split / Max-Min");
+  }
+
+  // 118. the sidebar order belongs to the moment you send, not to the moment the model answers. saveChat ran
+  //      at every milestone of a turn and stamped c.time each time, so two running chats leapfrogged over each
+  //      other several times a turn (the owner, 2026-11-22).
+  {
+    const rel = [];
+    const s118 = run({fetch: async (u, opt) => {
+        if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "generating", queued: 0, tok_s: 9}})};
+        if (u === "health") return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
+        if (u === "v1/chat/completions")
+          return {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
+            rel.push(() => res({value: undefined, done: true})); })})}};
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("qa"), "strata.history": "true"},
+      {qa: {id: "qa", title: "chat A", time: Date.now() - 100000, messages: []},
+       qb: {id: "qb", title: "chat B", time: Date.now(), messages: []}});
+    await wait();
+    const order = () => s118.s.el("sidebar-list").children
+      .filter((c) => (c.className || "").split(/\s+/).includes("chat-item")).map((c) => c.dataset.id);
+    const chats = () => ({a: s118.s.chats.find((c) => c.id === "qa"), b: s118.s.chats.find((c) => c.id === "qb")});
+    assert.deepStrictEqual(order(), ["qb", "qa"], "B is on top: it was the last one sent to");
+
+    s118.s.el("input").value = "a question in A";
+    const p = s118.s.send();
+    await wait(); await wait();
+    const t = chats().a.time;
+    assert.ok(t > chats().b.time, "sending in A moved A to the top");
+    assert.deepStrictEqual(order(), ["qa", "qb"], "and the list shows it there");
+
+    // a milestone write during the turn must not stamp, and must not reorder anything.  Date.now is moved
+    // forward deliberately: comparing two real stamps could pass inside the same millisecond, and that is
+    // exactly the control that failed to bite when this was written.
+    const real = Date.now;
+    Date.now = () => t + 5000;
+    s118.s.saveChat(chats().a);
+    s118.s.saveChat(chats().a);
+    Date.now = real;
+    assert.strictEqual(chats().a.time, t, "saveChat no longer stamps the time");
+    assert.deepStrictEqual(order(), ["qa", "qb"], "so two chats cannot leapfrog mid-turn");
+    // and the end of the turn does not move it either
+    rel.forEach((f) => f());
+    await p; for (let i = 0; i < 4; i++) await wait();
+    assert.strictEqual(chats().a.time, t, "the answer arriving changed nothing in the list");
+    assert.deepStrictEqual(order(), ["qa", "qb"], "A stays on top until you send somewhere else");
+    done.push("sidebar-order-on-send: the chat's time is stamped when you send, not at the milestones, so two " +
+              "running chats stop leapfrogging over each other in the list");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
