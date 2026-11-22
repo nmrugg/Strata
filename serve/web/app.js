@@ -952,7 +952,7 @@ function renderSysCard() {
   if ($("sys-default").value !== t) $("sys-default").value = t;
   const box = $("sys-vars");
   box.innerHTML = "";
-  for (const v of SYS_VARS) {
+  for (const v of SYS_VARS.filter((x) => !x.hidden)) {
     const b = node("button", "sys-vars__b", `{{${v.name}}}`);
     b.type = "button";
     b.title = `Filled in when the chat starts. Now: ${v.get() || "unknown"}`;
@@ -1106,16 +1106,19 @@ const node = (tag, cls, text) => { const n = document.createElement(tag); if (cl
 // reuses a prompt only while it starts with exactly the tokens it already holds - so a date that changes
 // mid-conversation, or a GPU name that goes missing on a poll, would make the chat read its whole history
 // again without anyone asking. A chat with no system prompt sends nothing extra: the default path is untouched.
+// {{host}} was dropped 2026-11-22 at the owner's call: it was location.hostname of the PAGE, which is
+// "localhost" or "192.168.1.20" for the same PC and says nothing about the machine the model acts on.
+// {{context}} stays resolvable - a prompt saved with it must not start leaking braces into the request - but it
+// is no longer offered: a window size is a number the model cannot verify and rarely acts on.
 const SYS_VARS = [
   {name: "date", get: () => new Date().toLocaleDateString([], {year: "numeric", month: "long", day: "numeric"})},
   {name: "time", get: () => new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})},
   {name: "model", get: () => health.model || ""},
-  {name: "context", get: () => (health.max_context ? fmt(health.max_context) : "")},
+  {name: "context", get: () => (health.max_context ? fmt(health.max_context) : ""), hidden: true},
   {name: "gpu", get: () => (lastMetrics && lastMetrics.hardware_static || {}).gpu_name || ""},
   {name: "vram", get: () => gib((lastMetrics && lastMetrics.hardware || {}).gpu_mem_total)},
   {name: "ram", get: () => gib((lastMetrics && lastMetrics.hardware || {}).ram_total)},
   {name: "cpu", get: () => (lastMetrics && lastMetrics.hardware_static || {}).cpu_name || ""},
-  {name: "host", get: () => location.hostname},
 ];
 const gib = (n) => n ? `${Math.round(n / 2**30)} GB` : "";
 const sysMissing = (t) => (String(t).match(/\{\{\s*([a-z_]+)\s*\}\}/g) || [])
