@@ -56,9 +56,10 @@ class ChatSidebar(unittest.TestCase):
         self.assertNotIn("color", draft_rule)             # the row's own ink; colour means something else here
         # run/new live in a 12px gutter on the row, absolutely placed: they cost no title width on any row
         self.assertIn("position: relative; padding-left: 12px;", css)
-        self.assertIn(".chat-item__state { position: absolute; left: 3px;", css)
-        # 3px in rather than a smaller ring: at left 0 the 12px ring touched the row's 10px corner radius and
-        # looked like it was leaving the highlighted row (the owner, 2026-11-22). Size unchanged.
+        self.assertIn(".chat-item__state { position: absolute; left: 4px;", css)
+        # 4px in rather than a smaller ring: at left 0 the 12px ring touched the row's 10px corner radius and
+        # looked like it was leaving the highlighted row; one more pixel of clearance reads better (the owner,
+        # 2026-11-22). Size unchanged.
         self.assertIn(".chat-item__state.run::before { content: \"\"; position: absolute; inset: 0;", css)
         self.assertIn(".chat-item__state.run::before", css)
         # the slot is only emitted when there is a marker, so an ordinary row keeps its full title width
@@ -72,8 +73,11 @@ class ChatSidebar(unittest.TestCase):
         # (todo #sidebar-spinner-states); the behaviour itself is driven in the node harness, case 108
         self.assertIn("own && (c.id !== chatId || showSpin)", item)   # own = turnIn(c.id): a turn per chat
         self.assertIn('phase ? `run ${phase}` : c.unread ? "new" : ""', item)
-        for phase, colour in (("read", "--st-info"), ("wait", "--st-ink-muted"), ("queue", "--st-warn")):
+        for phase, colour in (("read", "--st-info"), ("wait", "--st-ink-muted"),
+                              ("queue", "--st-warn-text")):     # the badge's colour, not the pill's
             self.assertIn(f".chat-item__state.run.{phase} {{ --spin: var({colour}); }}", css)
+        # every phase spins, including queued - only reduced motion stops it (the owner, 2026-11-22)
+        self.assertNotIn(".chat-item__state.run.queue::before { animation: none", css)
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)     # the spinner does not have to spin
         self.assertIn("refreshSpinners();", self.body("poll"))            # the mark follows the phase, per poll
         self.assertIn("if (renaming) return;", self.body("refreshSpinners"))   # and never over a rename

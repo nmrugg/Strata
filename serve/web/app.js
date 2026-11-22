@@ -33,14 +33,31 @@ function setSpinAlways(on) {
 $("spin-toggle").onclick = () => setSpinAlways(!showSpin);
 $("spin-toggle").setAttribute("aria-checked", String(showSpin));
 // The engine's phase moves between polls, and the sidebar is not rebuilt on a poll (a rename in progress
-// would be wiped).  So: remember what the rows were painted for, and re-render only when that changed.
-let spinSig = "";
+// would be wiped).  Two changes are told apart on purpose: a mark appearing or going away needs a rebuild, but
+// a mark only changing colour must NOT rebuild the row - a replaced node starts its spin from 0deg, which reads
+// as the turn restarting when it merely changed phase (the owner, 2026-11-22).
+let spinKey = null, spinPhases = "";
 function refreshSpinners() {
   if (renaming) return;
-  const sig = `${turns.map((t) => t.chatId).join(",")}|${turns.length ? turnPhase() : ""}|${showSpin}`;
-  if (sig === spinSig) return;
-  spinSig = sig;
-  renderSidebar();
+  const marked = turns.filter((t) => t.chatId !== chatId || showSpin);
+  const phaseOf = (t) => (turns[0] === t ? turnPhase() : "queue");
+  const key = marked.map((t) => t.chatId).join(",");
+  const phases = marked.map((t) => `${t.chatId}:${phaseOf(t)}`).join(",");
+  if (key !== spinKey) {                        // a mark appeared or went away: rebuild, let it start spinning
+    spinKey = key;
+    spinPhases = phases;
+    renderSidebar();
+    return;
+  }
+  if (phases === spinPhases) return;
+  spinPhases = phases;                          // same rows, new phase: recolour where they stand
+  for (const t of marked) {
+    const row = Array.from($("sidebar-list").children).find((r) => r.dataset && r.dataset.id === t.chatId);
+    const mark = row && row.querySelector(".chat-item__state");
+    if (!mark) continue;
+    mark.className = `chat-item__state run ${phaseOf(t)}`;
+    mark.setAttribute("title", PHASE_TIP[phaseOf(t)]);
+  }
 }
 // ------------------------------------------------------------------ toasts
 function toast(kind, title, text = "", ms = 3500, action = null) {

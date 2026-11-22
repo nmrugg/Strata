@@ -3716,10 +3716,20 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
       return (r && r._html) || "";
     };
     const phases = {reading: "run read", generating: "run gen", "running-tool": "run wait", queued: "run queue"};
+    const rowOf = (id) => sp.s.el("sidebar-list").children.find((c) => c.dataset && c.dataset.id === id);
+    const markOf = (row) => (row.children || []).find((c) => (c.className || "").includes("chat-item__state"));
+    sp.s.poll(); await wait();          // prime: the first poll after a chat switch may rebuild, and that is fine
+    let seen = rowOf("ca"), seenMark = markOf(seen);
     for (const [state, want] of Object.entries(phases)) {
       liveState = state;
       sp.s.poll(); await wait();
-      assert.ok(rowHtml("ca").includes(`chat-item__state ${want}`), `${state} -> ${want}: ${rowHtml("ca").slice(0, 150)}`);
+      const row = rowOf("ca"), mark = markOf(row);
+      assert.ok((mark && mark.className || "").includes(want) || rowHtml("ca").includes(`chat-item__state ${want}`),
+                `${state} -> ${want}: ${rowHtml("ca").slice(0, 150)}`);
+      assert.strictEqual(row, seen,
+        `${state}: a phase change recolours in place - rebuilding the row restarts the spin (owner, 2026-11-22)`);
+      if (seenMark && mark) assert.strictEqual(mark, seenMark, `${state}: and the mark itself is the same node`);
+      seen = row; seenMark = mark || seenMark;
     }
     assert.ok(/title="(reading the prompt|answering|waiting on a tool|waiting behind another request)"/.test(rowHtml("ca")),
               "the title says which phase it is, not just that something is happening: " + rowHtml("ca").slice(0, 200));

@@ -206,10 +206,11 @@ main { flex: 1; min-height: 0; display: flex; }
      new   - a reply that landed while you were somewhere else           (info blue)
    A draft is not in the gutter: it is an asterisk on the name, because it belongs to the text rather than to
    what is happening to the conversation.  Green means happening, blue means happened, go read it. */
-.chat-item__state { position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; }
-                                    /* 3px in, not inset smaller: at left 0 the ring touched the row's 10px
-                                       corner radius and looked like it was leaving the highlight (the owner,
-                                       2026-11-22). The size it had is the size it keeps. */
+.chat-item__state { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; }
+                                    /* 4px in, not a smaller ring: at left 0 the ring touched the row's 10px
+                                       corner radius and looked like it was leaving the highlight, and one more
+                                       pixel of clearance reads better still (the owner, 2026-11-22). The size
+                                       it had is the size it keeps. */
 .chat-item__title.draft::before { content: "*"; margin-right: 4px; }   /* the row's own ink, never a colour */
 .chat-item__state.new::before { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--st-info); }
 .chat-item__state.run::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
@@ -221,9 +222,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-item__state.run { --spin: var(--st-accent); }
 .chat-item__state.run.read { --spin: var(--st-info); }
 .chat-item__state.run.wait { --spin: var(--st-ink-muted); }
-.chat-item__state.run.queue { --spin: var(--st-warn); }
+/* the queued mark takes the colour the Monitor's "Queued" badge is drawn in (--st-warn-text; the badge's
+   background is the pale tint) rather than --st-warn, which is the header pill's dot (the owner, 2026-11-22).
+   And it spins like the others: "queued" is a state of the turn, not a stopped one. */
+.chat-item__state.run.queue { --spin: var(--st-warn-text); }
 .chat-item__state.run::before { border-top-color: var(--spin); }
-.chat-item__state.run.queue::before { animation: none; border-color: var(--spin); }
 @keyframes st-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {        /* a static ring still reads as "in progress" */
   .chat-item__state.run::before { animation: none; border-color: var(--spin); }
