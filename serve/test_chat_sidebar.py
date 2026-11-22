@@ -70,7 +70,7 @@ class ChatSidebar(unittest.TestCase):
         item = self.body("chatItem")
         # the gutter mark carries the engine's phase, in the colours the pill and the Monitor already use
         # (todo #sidebar-spinner-states); the behaviour itself is driven in the node harness, case 108
-        self.assertIn("busy.chatId === c.id && (c.id !== chatId || showSpin)", item)
+        self.assertIn("own && (c.id !== chatId || showSpin)", item)   # own = turnIn(c.id): a turn per chat
         self.assertIn('phase ? `run ${phase}` : c.unread ? "new" : ""', item)
         for phase, colour in (("read", "--st-info"), ("wait", "--st-ink-muted"), ("queue", "--st-warn")):
             self.assertIn(f".chat-item__state.run.{phase} {{ --spin: var({colour}); }}", css)
@@ -119,13 +119,17 @@ class ChatSidebar(unittest.TestCase):
         # The turn now belongs to a chat, and the row is looked up each frame.
         self.assertIn("function rowOf(m)", self.js)
         self.assertIn("const el = rowOf(m); if (el)", self.body("send"))
-        self.assertIn("busy = {controller, msg: m, chat, chatId};", self.js)
+        # the turn records which conversation it belongs to, and joins the list the server's FIFO works through
+        self.assertIn("const turn = {controller, msg: m, chat, chatId};", self.js)
+        self.assertIn("turns.push(turn);", self.body("send"))
+        self.assertIn("const turnIn = (id) => turns.find((t) => t.chatId === id) || null;", self.js)
         self.assertIn("saveChat(turn.chat);", self.body("send"))
         self.assertNotIn("$(\"chat\").lastElementChild", self.js)          # the capture that made this unsafe is gone
         self.assertIn("function saveChat(c = chat)", self.js)
         oc = self.body("openChat")
         self.assertNotIn("Still writing", oc)                             # reading another chat is allowed now
-        self.assertIn("if (busy && c.id === busy.chatId)", self.body("deleteChat"))  # deleting the live one is not
+        # deleting a chat that owns a turn is not allowed - and with a turn per chat, "owns a turn" is per chat
+        self.assertIn("if (turnIn(c.id))", self.body("deleteChat"))
 
     def test_the_composer_keeps_its_text_per_conversation(self):
         # the box keeps what you typed: per chat across a switch, and across a reload.  A chat with no messages

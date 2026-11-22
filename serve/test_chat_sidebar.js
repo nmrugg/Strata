@@ -243,7 +243,8 @@ function run(hooks, stored, seed) {
     "runInspector, renderInspect, renderSysCard, openMcpPicker, closePopover, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
-    "get busy() { return busy; }, get chatId() { return chatId; }, " +
+    "get busy() { return busy; }, get chatId() { return chatId; }, get turns() { return turns; }, " +
+    "turnIn, rebindBusy, setBusy, " +
     "get sidebarW() { return sidebarW; }, setSidebarW, storedSidebarW, setSidebar, " +
     "get SIDEBAR_W_DEFAULT() { return SIDEBAR_W_DEFAULT; }, get SIDEBAR_MIN() { return SIDEBAR_MIN; }, " +
     "get SIDEBAR_MAX() { return SIDEBAR_MAX; }, " +
@@ -1970,24 +1971,38 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                      "a re-render shows it again from the stored usage (the reload path)");
   done.push("context percent: (NN% context) on a finished answer; the hover title breaks it into prompt / reused / output");
 
-  // 54. pressing Enter polls at once (todo #poll-on-enter).  Idle polling is POLL_IDLE_MS = 15 s, so before the fix
-  // the pill could read "Idle" for up to 15 s into a turn - the next poll was whatever the previous idle cycle had
-  // already scheduled.  setBusy(true), which send() calls, must call pollNow(); pollNow goes through the ONE
-  // scheduler (schedulePoll clears the pending timer before arming), so it cannot fork a second chain.  The stub
-  // records setTimeout calls rather than running them, so what is asserted is the scheduled delay and the count of
-  // live timers.
-  const pe = run({}, {});
+  // 54. pressing Enter polls at once (todo #poll-on-enter).  Idle polling is POLL_IDLE_MS = 15 s, so before the
+  // fix the pill could read "Idle" for up to 15 s into a turn - the next poll was whatever the previous idle
+  // cycle had already scheduled.  send() arms the poll itself (it used to ride inside setBusy(true)); pollNow
+  // goes through the ONE scheduler (schedulePoll clears the pending timer before arming), so a second turn in
+  // another chat cannot fork a second chain.  The stub records setTimeout calls rather than running them, so
+  // what is asserted is the scheduled delay and the count of live timers.
+  let peRelease = null;
+  const pe = run({fetch: async (u) => (u === "v1/chat/completions"
+      ? {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
+          peRelease = () => res({value: undefined, done: true}); })})}}
+      : {ok: true, json: async () => ({})})},
+    {},
+    {pa: {id: "pa", title: "A", time: Date.now(), messages: [{id: "x1", role: "user", text: "hi", time: Date.now()}]},
+     pb: {id: "pb", title: "B", time: Date.now(), messages: [{id: "x2", role: "user", text: "yo", time: Date.now()}]}});
   await wait();
   pe.timers.length = 0;                              // drop any timer the page armed at start-up
-  pe.s.setBusy(true);
+  pe.s.el("input").value = "go";
+  pe.s.send();                                       // the real path, not setBusy(true)
   assert.strictEqual(pe.timers.filter((t) => t.f && t.ms === 0).length, 1,
-                     "setBusy(true) arms exactly one poll at 0 ms - the pill updates now, not up to 15 s away");
-  pe.s.setBusy(true);                                // a second send: the scheduler cancels the pending poll, it does not stack
+                     "send() arms exactly one poll at 0 ms - the pill updates now, not up to 15 s away");
+  pe.s.openChat("pb"); await wait();
+  pe.s.el("input").value = "in another chat";
+  pe.s.send();                                       // a second turn, in another chat (todo #queue-other-chats)
+  assert.strictEqual(pe.s.turns.length, 2, "two chats can have a turn running at once");
   assert.strictEqual(pe.timers.filter((t) => t.f).length, 1,
-                     "still exactly one live timer - the second pollNow replaced the first, it did not fork a second chain");
+                     "the scheduler cancels the pending poll, it does not stack - one chain per page");
+  if (peRelease) peRelease();
+  await wait(); await wait();
   pe.timers.length = 0;
-  pe.s.setBusy(false);                               // ending must not arm a fresh poll: the chain is already running at 1 s while busy
-  assert.strictEqual(pe.timers.filter((t) => t.f).length, 0, "setBusy(false) schedules nothing new");
+  pe.s.setBusy();                                    // ending a turn must not arm a fresh poll: the chain is
+  assert.strictEqual(pe.timers.filter((t) => t.f).length, 0,     // already running at 1 s while a turn lives
+                     "a turn ending schedules nothing new");
   done.push("poll-on-enter: Enter polls immediately; the one scheduler means it cannot fork a second chain");
 
   // 55. the row's three-dot menu (todo #chat-row-menu): one overflow button opens a fixed popover with Rename /
@@ -3718,6 +3733,46 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     if (release) release();
     await wait(); await wait();
     done.push("sidebar-spinner-states: the mark carries the phase - reading, answering, waiting on a tool, queued - and a switch shows it in the open chat");
+  }
+
+  // 109. queue-other-chats, slice 1: a turn belongs to a chat, not to the page.  One chat refuses a second
+  // message while its turn runs; another chat sends freely; the server's FIFO puts the first-sent turn at the
+  // engine and the rest wait behind it, which is what the gutter marks show.
+  {
+    const rel = [];
+    const q = run({fetch: async (u) => {
+        if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "generating", queued: 1, tok_s: 9}})};
+        if (u === "health") return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
+        if (u === "v1/chat/completions") return {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
+          rel.push(() => res({value: undefined, done: true})); })})}};
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("qa")},
+      {qa: {id: "qa", title: "chat A", time: Date.now(), messages: [{id: "a1", role: "user", text: "hi", time: Date.now()}]},
+       qb: {id: "qb", title: "chat B", time: Date.now(), messages: [{id: "b1", role: "user", text: "yo", time: Date.now()}]}});
+    await wait();
+    q.s.el("input").value = "first"; q.s.send(); await wait();
+    assert.strictEqual(q.s.turns.length, 1, "A has a turn");
+    assert.strictEqual(q.s.el("send-btn").disabled, true, "its Send is disabled while it runs");
+    q.s.el("input").value = "second"; q.s.send(); await wait();
+    assert.strictEqual(q.s.turns.length, 1, "the same chat is not handed a second turn while it runs");
+    q.s.openChat("qb"); await wait();
+    assert.strictEqual(q.s.el("send-btn").disabled, false, "another chat can send while A is answering");
+    q.s.el("input").value = "in B"; q.s.send(); await wait();
+    assert.strictEqual(q.s.turns.length, 2, "two chats, two turns");
+    assert.strictEqual(q.s.el("send-btn").disabled, true, "and B's own Send is disabled now");
+    q.s.el("spin-toggle").onclick();                 // show the mark on the open chat too, to see both at once
+    const rowHtml = (id) => {
+      const r = q.s.el("sidebar-list").children.find((c) => c.dataset && c.dataset.id === id);
+      return (r && r._html) || "";
+    };
+    assert.ok(rowHtml("qa").includes("chat-item__state run gen"), "A is the turn at the engine: " + rowHtml("qa").slice(0, 140));
+    assert.ok(rowHtml("qb").includes("chat-item__state run queue"), "B waits behind it: " + rowHtml("qb").slice(0, 140));
+    q.s.el("spin-toggle").onclick();
+    rel.forEach((f) => f());
+    await wait(); await wait();
+    assert.strictEqual(q.s.turns.length, 0, "both turns finished");
+    assert.strictEqual(q.s.el("send-btn").disabled, false, "and the composer is free again");
+    done.push("queue-other-chats: a turn belongs to its chat - another chat sends while one answers, and the marks show which is at the engine and which is queued");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));

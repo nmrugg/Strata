@@ -37,7 +37,7 @@ $("spin-toggle").setAttribute("aria-checked", String(showSpin));
 let spinSig = "";
 function refreshSpinners() {
   if (renaming) return;
-  const sig = `${busy ? busy.chatId : ""}|${busy ? turnPhase() : ""}|${showSpin}`;
+  const sig = `${turns.map((t) => t.chatId).join(",")}|${turns.length ? turnPhase() : ""}|${showSpin}`;
   if (sig === spinSig) return;
   spinSig = sig;
   renderSidebar();
@@ -221,7 +221,7 @@ function pollUrl() {
 function pollDelay(m) {
   if (document.hidden) return POLL_HIDDEN_MS;                    // another window: nothing here is being seen
   if (tab === "monitor") return POLL_FULL_MS;                    // the cards and sparklines need their own cadence
-  if (busy || (m && ACTIVE_STATES.includes(m.live && m.live.state))) return POLL_LIVE_MS;
+  if (turns.length || (m && ACTIVE_STATES.includes(m.live && m.live.state))) return POLL_LIVE_MS;
   return POLL_IDLE_MS;                                           // idle: the pill has nothing new to say
 }
 // one scheduler, so a fresh poll can always cancel the pending one: storing the handle is what makes
@@ -1199,7 +1199,14 @@ function migrateShow(s) {
 }
 let settings = {...DEFAULTS, ...migrateShow(store.get("sampling", {}))};
 let attachments = [];                 // {name, url}
-let busy = null;                      // {controller, msg}
+// One turn per chat (todo #queue-other-chats): the server has always queued extra requests behind the running
+// one, but the page had a single busy flag, so a turn in one chat stopped you sending in any other.  `turns`
+// is the list - the server's FIFO takes them in that order - and `busy` is the one in the chat on screen,
+// which is what the composer, the Stop button and the paint path care about.
+let turns = [];
+let busy = null;                      // turns.find(t => t.chatId === chatId): the open chat's own turn
+const turnIn = (id) => turns.find((t) => t.chatId === id) || null;
+function rebindBusy() { busy = turnIn(chatId); }
 
 // ------------------------------------------------------------------ the chat list (this browser only, opt-in)
 // "strata.history" is the switch and it is off by default: with it off the page keeps one chat under
@@ -1474,7 +1481,7 @@ function deleteChatsConfirmed(list) {
   if (!list.length) { toast("info", "Nothing selected"); return; }
   if (!confirm(`Delete ${list.length} conversation${list.length > 1 ? "s" : ""}? This cannot be undone.`)) return;
   for (const c of list) {
-    if (busy && c.id === busy.chatId) continue;                 // never delete the chat that owns a live turn
+    if (turnIn(c.id)) continue;                      // never delete a chat that owns a live turn
     const i = chats.indexOf(c); if (i >= 0) chats.splice(i, 1); dropRecord(c);
   }
   if (!chats.some((c) => c.id === chatId)) { const next = chats[0] || newChat(); if (!chats.includes(next)) chats.push(next); showChat(next); }
@@ -1805,12 +1812,15 @@ function chatItem(c) {
   const t = chatTitle(c);
   // a turn answering in a conversation you are NOT looking at.  On the one you are in, the streaming answer is
   // itself the indicator, so a spinner there is noise - unless you ask for it (the switch in Settings).
-  const running = !!busy && busy.chatId === c.id && (c.id !== chatId || showSpin);
+  const own = turnIn(c.id);
+  const running = !!own && (c.id !== chatId || showSpin);
   const drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
   // run and new sit in the row's left gutter, absolutely placed, so they cost no title width at all; a draft is
   // an asterisk on the name itself, because it belongs to the text rather than to what is happening to the
   // conversation.  A reply you have not read outranks a draft in the gutter: go read beats go type.
-  const phase = running ? turnPhase() : "";
+  // The engine runs one request at a time, so of the turns waiting, the first one sent is the one at the
+  // engine and the rest are queued behind it - which is what the server's FIFO does with them.
+  const phase = running ? (turns[0] === own ? turnPhase() : "queue") : "";
   const state = phase ? `run ${phase}` : c.unread ? "new" : "";
   const tip = phase ? PHASE_TIP[phase] : c.unread ? "unread reply" : "";
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
@@ -1847,6 +1857,8 @@ function renderSidebar() {
 function showChat(c) {
   if (c.id !== chatId) saveDraft();            // what you typed belongs to the chat you are leaving
   chat = c; chatId = c.id; messages = c.messages;
+  rebindBusy();                     // the chat being entered may have its own turn running (todo #queue-other-chats)
+  setBusy();                        // and the composer follows it: Send disabled only if THIS chat is answering
   store.set("chatId", chatId);
   c.unread = false;           // opening it is how a reply stops being unread
   writeChat(chat);            // renderChat renders the list, so the write here does not render it again
@@ -1884,7 +1896,7 @@ function startChat() {
         {label: "Undo", run: () => openChat(prev)});
 }
 function deleteChat(c) {
-  if (busy && c.id === busy.chatId) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (turnIn(c.id)) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (!confirm(`Delete "${chatTitle(c)}"?`)) return;   // deleting a chat is destructive; an Undo is offered for the session
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
   if (i < 0) return;                                // the list only ever passes a chat it holds
@@ -3146,15 +3158,15 @@ function assistantMessages(m, keepThinking) {
 function warnOnLeave(e) {
   e.preventDefault();
 }
-function setBusy(on) {
-  $("stop-btn").hidden = !on;
-  $("send-btn").disabled = on;
-  $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
-  if (on) {
-    window.addEventListener("beforeunload", warnOnLeave);
-    pollNow();            // todo #poll-on-enter: pressing Enter must not wait for the next idle poll (up to POLL_IDLE_MS = 15 s away, so the pill reads Idle while the engine is already working).  schedulePoll clears the pending timer first, so this cannot fork a second chain (the metrics-lite lesson).
-  } else window.removeEventListener("beforeunload", warnOnLeave);
-  renderSidebar();                   // the list shows which conversation is answering (chatItem reads busy)
+function setBusy() {
+  const mine = !!busy;                       // a turn in the chat you are looking at
+  $("stop-btn").hidden = !mine;
+  $("send-btn").disabled = mine;             // another chat answering does not stop this one
+  $("composer-hint").textContent = mine ? "" : "Shift+Enter: new line";
+  // the warning covers every turn: leaving the page loses them all, not just the visible one
+  if (turns.length) window.addEventListener("beforeunload", warnOnLeave);
+  else window.removeEventListener("beforeunload", warnOnLeave);
+  renderSidebar();                           // the list shows which conversations are answering
 }
 
 // editOf (todo #edit-posts): resend from an edited user post.  It is changed in place, everything after it is
@@ -3163,14 +3175,15 @@ function setBusy(on) {
 async function send(editOf) {
   let key;
   if (editOf) {
-    if (busy) return;
+    if (turnIn(chatId)) return;
     if (!(editOf.text || "").trim() && !(editOf.images || []).length && !(editOf.files || []).length) return;   // the box saved text/attachments onto editOf
     const idx = messages.indexOf(editOf);
     if (idx < 0) return;                             // it is no longer in this conversation
     messages.length = idx + 1;                       // drop the old answer and everything after it
   } else {
     const text = $("input").value.trim();
-    if ((!text && !attachments.length) || busy) return;
+    if ((!text && !attachments.length) || turnIn(chatId)) return;   // this chat has a turn running; another
+    // chat's does not stop this one (todo #queue-other-chats)
     key = draftKey();                                // taken before the message lands: a blank chat is keyed differently
     messages.push({id: mid(), role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                    files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
@@ -3188,10 +3201,16 @@ async function send(editOf) {
   const asstEl = rowOf(m);                            // look it up by index, not lastElementChild (that capture is unsafe - #switch-while-running)
   if (asstEl) { asstEl.classList.add("streaming"); asstEl.querySelector(".meta-text").textContent = liveMeta(m); }
   const controller = new AbortController();
-  busy = {controller, msg: m, chat, chatId};      // which conversation this turn belongs to, not which is open
-  busy.mcpSig = mcpSignature();                   // the list this turn will be read against; see mcpPaid
-  lastLive = null;                                // new turn: drop the previous turn's held live figures
-  setBusy(true);
+  const turn = {controller, msg: m, chat, chatId};   // which conversation this turn belongs to, not which is open
+  turn.mcpSig = mcpSignature();                      // the list this turn will be read against; see mcpPaid
+  turns.push(turn);                                  // the server's FIFO takes them in this order
+  busy = turn;
+  lastLive = null;                                   // new turn: drop the previous turn's held live figures
+  setBusy();
+  pollNow();               // todo #poll-on-enter: pressing Enter must not wait for the next idle poll (up to
+                           // POLL_IDLE_MS = 15 s away, so the pill reads Idle while the engine is already
+                           // working).  schedulePoll clears the pending timer first, so this cannot fork a
+                           // second chain (the metrics-lite lesson).
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
@@ -3313,12 +3332,12 @@ async function send(editOf) {
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
-  const turn = busy;                                // which conversation this turn belonged to
-  busy = null;
-  // a reply that landed in a conversation you are not looking at is worth a mark (todo #chat-state-marker); set it before
-  // setBusy(false), which is what redraws the list
+  turns = turns.filter((t) => t !== turn);           // this turn is done; another chat's may still run
+  rebindBusy();                                      // the open chat's turn, if it has one now
+  // a reply that landed in a conversation you are not looking at is worth a mark (todo #chat-state-marker); set
+  // it before setBusy(), which is what redraws the list
   if (turn.chat && turn.chatId !== chatId) turn.chat.unread = true;
-  setBusy(false);                                   // the spinner clears; elsewhere a dot appears
+  setBusy();                                         // the spinner clears; elsewhere a dot appears
   if (frame) cancelAnimationFrame(frame);
   const fin = rowOf(m);
   if (fin) { const follow = following(); updateAssistant(fin, m, false); if (follow) stickBottom(); }
