@@ -239,7 +239,7 @@ function run(hooks, stored, seed) {
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "loadHealth, healthPill, get health() { return health; }, " +
-    "runInspector, renderInspect, " +
+    "runInspector, renderInspect, renderSysCard, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
@@ -3498,7 +3498,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   // block - pinned by serve/test_frontend.py).  A chat with none sends nothing extra: the default path is
   // exactly what it was, which is what "opt-in, default byte-identical" means here.
   {
-    const tpl = "Today is {{date}}. Model: {{model}}. Window: {{context}}. Note: {{bogus}}";
+    const tpl = "Today is {{date}}. Model: {{model}}. Window: {{max_context}}. Old: {{context}}. Note: {{bogus}}";
     const sp = run({fetch: async (u) => (u === "health" ? {ok: true, json: async () => ({status: "ok",
         model: "qwen3.8-flash-next-iq3_s", max_context: 1048576, images: false, loaded: true})}
         : {ok: true, json: async () => ({})})}, {"strata.sysdefault": JSON.stringify(tpl)});
@@ -3511,6 +3511,12 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.ok(c.sys.includes((1048576).toLocaleString()), "and the context window: " + c.sys);
     assert.ok(c.sys.includes("{{bogus}}"),
               "a name we do not know stays as written - dropping it would hide a typo inside the prompt: " + c.sys);
+    sp.s.renderSysCard();                             // what showTab("settings") does; that wiring is pinned in
+    // serve/test_chat_sidebar.py by the branch's own text
+    const chips = (sp.s.el("sys-vars").children || []).map((b) => String(b.textContent || ""));
+    assert.ok(chips.includes("{{max_context}}") === false && chips.includes("{{context}}") === false,
+              "the window size is not offered as a chip: " + chips.join(" "));
+    assert.ok(chips.includes("{{date}}") && chips.includes("{{gpu}}"), "the ones worth using still are");
     const seeded = run({}, {"strata.chatId": JSON.stringify("csys")},
       {csys: {id: "csys", title: "with a prompt", time: Date.now(), sys: "You are a test.",
               messages: [{id: "m1", role: "user", text: "hello", time: Date.now()}]}});

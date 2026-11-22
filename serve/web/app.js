@@ -1153,6 +1153,9 @@ const SYS_VARS = [
   {name: "date", get: () => new Date().toLocaleDateString([], {year: "numeric", month: "long", day: "numeric"})},
   {name: "time", get: () => new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})},
   {name: "model", get: () => health.model || ""},
+  {name: "max_context", get: () => (health.max_context ? fmt(health.max_context) : ""), hidden: true},
+  // the old name, kept resolvable so a prompt saved before the rename cannot start leaking braces into the
+  // request.  It is not offered: a window size is a fact about the run config, not about the conversation.
   {name: "context", get: () => (health.max_context ? fmt(health.max_context) : ""), hidden: true},
   {name: "gpu", get: () => (lastMetrics && lastMetrics.hardware_static || {}).gpu_name || ""},
   {name: "vram", get: () => gib((lastMetrics && lastMetrics.hardware || {}).gpu_mem_total)},
