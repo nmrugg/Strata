@@ -36,35 +36,18 @@ $("spin-toggle").setAttribute("aria-checked", String(showSpin));
 // would be wiped).  Two changes are told apart on purpose: a mark appearing or going away needs a rebuild, but
 // a mark only changing colour must NOT rebuild the row - a replaced node starts its spin from 0deg, which reads
 // as the turn restarting when it merely changed phase (the owner, 2026-11-22).
-let spinKey = null, spinPhases = "";
-const markedTurns = () => {
-  const out = turns.filter((t) => t.chatId !== chatId || showSpin)
-    .map((t) => ({id: t.chatId, phase: turns[0] === t ? turnPhase() : "queue"}));
-  for (const c of chats)
-    if (!turnIn(c.id) && (c.queue || []).some((q) => !q.held) && (c.id !== chatId || showSpin))
-      out.push({id: c.id, phase: "queue"});
-  return out;
-};
+// The engine's phase moves between polls.  renderSidebar now reuses the row and mark nodes when the list has
+// the same shape, so calling it again recolours in place instead of remaking nodes - which is what makes the
+// spin keep turning through a phase change and through a click on another conversation.
+let spinPhases = "";
 function refreshSpinners() {
-  if (renaming) return;
-  const marked = markedTurns();
-  const key = marked.map((m) => m.id).join(",");
-  const phases = marked.map((m) => `${m.id}:${m.phase}`).join(",");
-  if (key !== spinKey) {                        // a mark appeared or went away: rebuild, let it start spinning
-    spinKey = key;
-    spinPhases = phases;
-    renderSidebar();
-    return;
-  }
+  if (renaming) return;                       // a poll must not wipe a field someone is typing in
+  const phases = turns.map((t) => `${t.chatId}:${atEngine(t) ? turnPhase() : "queue"}`).join(",") +
+                 "|" + chats.map((c) => (c.queue || []).some((q) => !q.held && !turnIn(c.id) ? "q" : "")).join(",") +
+                 "|" + showSpin + "|" + chatId;
   if (phases === spinPhases) return;
-  spinPhases = phases;                          // same rows, new phase: recolour where they stand
-  for (const m of marked) {
-    const row = Array.from($("sidebar-list").children).find((r) => r.dataset && r.dataset.id === m.id);
-    const mark = row && row.querySelector(".chat-item__state");
-    if (!mark) continue;
-    mark.className = `chat-item__state run ${m.phase}`;
-    mark.setAttribute("title", PHASE_TIP[m.phase]);
-  }
+  spinPhases = phases;
+  renderSidebar();
 }
 // ------------------------------------------------------------------ toasts
 function toast(kind, title, text = "", ms = 3500, action = null) {
@@ -326,10 +309,10 @@ function renderPill(m) {
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
   } else if (live.state === "running-tool") {
-    // "reading", not "generating": the palette makes colour one decision per state - the engine produces no
-    // tokens while a tool runs, exactly as while a prompt is being read, so both are --st-info blue
-    // (components.css:20-21). The Monitor's badge and state card already said blue; the pill was the outlier.
-    setPill("reading", `Waiting · ${live.tool || "a tool"}`);   // todo #waiting-state: an MCP call running is not idle
+    // grey, the Idle colour: the engine is producing nothing, and that is the same fact the Monitor's idle
+    // badge and the chat-list mark already show in grey.  It was blue for a while, which made one state
+    // ("nothing being generated") two colours across three components (the owner, 2026-11-22).
+    setPill("idle", `Waiting · ${live.tool || "a tool"}`);   // todo #waiting-state: an MCP call running is not idle
   } else {
     setPill("idle", "Idle");
   }
@@ -1067,11 +1050,8 @@ $("sys-save").onclick = () => {
   const bad = sysMissing(t);                          // a brace word we do not know stays in the prompt as typed
   $("sys-msg").textContent = bad.length ? `Not filled in: ${bad.join(", ")}` : "";
   if (String(t).trim() && sysNeedHw(t)) sysFetchHw(); // the hardware words need one answer we do not poll for
-  // the only part of this that is not obvious: a chat already under way keeps the words it began with, and
-  // saying it costs nothing to change them.  Nothing at all when there is no such chat.
-  toast("success", "System prompt saved",
-        String(t).trim() && chats.some((c) => c.messages.length)
-          ? "Chats you already started keep the words they began with." : "");
+  toast("success", "System prompt saved", "");        // no body: what a saved prompt does is not something to
+  // narrate back to the reader (AGENTS.md), and "chats keep the words they began with" was exactly that
 };
 
 // ------------------------------------------------------------------ the prompt inspector (todo #prompt-inspector)
@@ -1826,6 +1806,15 @@ function groupName(t) {
 const PHASE_OF = {reading: "read", generating: "gen", "running-tool": "wait", queued: "queue"};
 const PHASE_TIP = {read: "reading the prompt", gen: "answering", wait: "waiting on a tool",
                    queue: "waiting behind another request"};
+// Which of the page's turns the engine actually holds.  The server says, through live.conv (from the
+// strata_conv each request carries): the FIFO is released between MCP rounds, so a second chat really can be
+// running while the first is in a tool call - and "the first one sent" painted a running chat amber for the
+// whole turn (the owner, 2026-11-22).  An older server sends no conv: fall back to the FIFO order, which is
+// right until a tool opens the gap.
+const atEngine = (t) => {
+  const c = (lastMetrics && lastMetrics.live && lastMetrics.live.conv) || null;
+  return c ? c === t.chatId : turns[0] === t;
+};
 function turnPhase() {
   const live = (lastMetrics && lastMetrics.live) || null;
   if (!live) return "gen";                       // nothing polled yet: the plain green spinner, as it was
@@ -1835,31 +1824,69 @@ function turnPhase() {
   // one MCP turn the engine also reports idle, and calling that "queued" would be a lie.
   return live.queued > 0 ? "queue" : "gen";
 }
+// What the gutter mark should say for this chat: a phase for a turn or a waiting queue, the unread dot, or
+// nothing.  Extracted so a row can be updated in place - the mark is a real child node, not part of the row's
+// innerHTML string, because a node that is thrown away and made again starts its spin from 0deg, and clicking
+// a conversation was recreating every mark on the list (the owner, 2026-11-22).
+function markFor(c) {
+  const own = turnIn(c.id);
+  const waiting = !own && (c.queue || []).some((q) => !q.held);   // work pending behind a turn that ended
+  const running = (own || waiting) && (c.id !== chatId || showSpin);
+  const phase = running ? (own ? (atEngine(own) ? turnPhase() : "queue") : "queue") : "";
+  if (phase) return {cls: `run ${phase}`, tip: PHASE_TIP[phase]};
+  if (c.unread) return {cls: "new", tip: "unread reply"};
+  return {cls: "", tip: ""};
+}
+function paintMark(row, c) {
+  const want = markFor(c);
+  const mark = (row.children || []).find((x) => (x.className || "").split(/\s+/).includes("chat-item__state"));
+  if (!want.cls) { if (mark) mark.remove(); return; }
+  if (!mark) {
+    const n = node("span", `chat-item__state ${want.cls}`);
+    n.setAttribute("title", want.tip);
+    n.setAttribute("aria-hidden", "true");
+    row.appendChild(n);
+    return;
+  }
+  mark.className = `chat-item__state ${want.cls}`;   // the same node: the spin does not restart
+  mark.setAttribute("title", want.tip);
+}
+function paintRow(row, c) {
+  const t = chatTitle(c), drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
+  const want = markFor(c);
+  row.className = `chat-item${c.id === chatId ? " on" : ""}`;
+  const btn = (row.children || []).find((x) => (x.className || "").split(/\s+/).includes("chat-item__title"));
+  if (btn) {
+    btn.className = `chat-item__title${drafted ? " draft" : ""}`;
+    btn.textContent = t;
+    btn.setAttribute("title", `${t}${want.tip ? ` (${want.tip})` : ""}${drafted ? " (has draft)" : ""}`);
+  }
+  paintMark(row, c);
+}
 function chatItem(c) {
   const t = chatTitle(c);
-  // a turn answering in a conversation you are NOT looking at.  On the one you are in, the streaming answer is
-  // itself the indicator, so a spinner there is noise - unless you ask for it (the switch in Settings).
-  const own = turnIn(c.id);
-  // a chat with nothing running but something waiting behind a turn that already ended still has work pending
-  const waiting = !own && (c.queue || []).some((q) => !q.held);
-  const running = (own || waiting) && (c.id !== chatId || showSpin);
   const drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
+  // Every part of the row is a node in its own right, not one innerHTML string: the list reuses rows between
+  // renders so a mark's spin survives a re-render, and a string would have to be thrown away and re-parsed to
+  // change anything (the owner: clicking a conversation restarted every spinner).
   // run and new sit in the row's left gutter, absolutely placed, so they cost no title width at all; a draft is
   // an asterisk on the name itself, because it belongs to the text rather than to what is happening to the
   // conversation.  A reply you have not read outranks a draft in the gutter: go read beats go type.
-  // The engine runs one request at a time, so of the turns waiting, the first one sent is the one at the
-  // engine and the rest are queued behind it - which is what the server's FIFO does with them.
-  const phase = running ? (own ? (turns[0] === own ? turnPhase() : "queue") : "queue") : "";
-  const state = phase ? `run ${phase}` : c.unread ? "new" : "";
-  const tip = phase ? PHASE_TIP[phase] : c.unread ? "unread reply" : "";
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
-  row.innerHTML = `<button class="chat-item__title${drafted ? " draft" : ""}" data-open-chat` +
-    ` title="${esc(t)}${tip ? ` (${esc(tip)})` : ""}${drafted ? " (has draft)" : ""}">${esc(t)}</button>` +
-    (state ? `<span class="chat-item__state ${state}" title="${esc(tip)}" aria-hidden="true"></span>` : "") +
-    `<span class="chat-item__actions">` +
-    `<button class="st-btn st-btn--icon chat-item__more" data-chat-menu aria-haspopup="menu" aria-label="Chat actions" title="Chat actions">⋮</button>` +
-    `</span>`;
+  const btn = node("button", `chat-item__title${drafted ? " draft" : ""}`);
+  btn.setAttribute("data-open-chat", "");
+  btn.textContent = t;
+  const more = node("button", "st-btn st-btn--icon chat-item__more", "⋮");
+  more.setAttribute("data-chat-menu", "");
+  more.setAttribute("aria-haspopup", "menu");
+  more.setAttribute("aria-label", "Chat actions");
+  more.setAttribute("title", "Chat actions");
+  const acts = node("span", "chat-item__actions");
+  acts.appendChild(more);
+  row.append(btn, acts);
+  paintMark(row, c);                                   // a node of its own, so it can be recoloured in place
+  paintRow(row, c);                                    // and the title's tip carries the phase
   return row;
 }
 function renderSidebar() {
@@ -1869,16 +1896,28 @@ function renderSidebar() {
                                    c.messages.some((m) => (m.text || "").toLowerCase().includes(q)))
                      .sort((a, b) => b.time - a.time);
   const box = $("sidebar-list");
-  box.innerHTML = "";
-  if (!list.length) {
-    box.appendChild(node("p", "muted small sidebar-empty", q ? "No chat matches" : "No chats yet"));
+  // the plan of nodes this render wants: a group heading when the bucket changes, then its rows
+  const plan = [];
+  let group = "";
+  for (const c of list) {
+    const g = groupName(c.time);
+    if (g !== group) { group = g; plan.push({head: g}); }
+    plan.push({chat: c});
+  }
+  const kids = box.children;
+  // a row is reusable only while it is still the shape chatItem made: renameChat swaps the title button for a
+  // field, and that row has to be built again (the owner's rename must show, not linger as a field)
+  const hasTitle = (r) => (r.children || []).some((c) => (c.className || "").split(/\s+/).includes("chat-item__title"));
+  const sameShape = plan.length === kids.length && plan.every((p, i) =>
+    p.head ? (kids[i].textContent || "") === p.head
+           : (kids[i].dataset || {}).id === p.chat.id && hasTitle(kids[i]));
+  if (sameShape) {                                     // same rows in the same places: update, do not remake
+    plan.forEach((p, i) => { if (p.chat) paintRow(kids[i], p.chat); });
   } else {
-    let group = "";
-    for (const c of list) {
-      const g = groupName(c.time);
-      if (g !== group) { group = g; box.appendChild(node("p", "sidebar-group", g)); }
-      box.appendChild(chatItem(c));
-    }
+    box.innerHTML = "";
+    if (!plan.length) box.appendChild(node("p", "muted small sidebar-empty", q ? "No chat matches" : "No chats yet"));
+    else for (const p of plan)
+      box.appendChild(p.head ? node("p", "sidebar-group", p.head) : chatItem(p.chat));
   }
   $("sidebar-foot").textContent = `${fmt(chats.length)} chat${chats.length === 1 ? "" : "s"} · kept in this browser`;
 }

@@ -62,8 +62,12 @@ class ChatSidebar(unittest.TestCase):
         # 2026-11-22). Size unchanged.
         self.assertIn(".chat-item__state.run::before { content: \"\"; position: absolute; inset: 0;", css)
         self.assertIn(".chat-item__state.run::before", css)
-        # the slot is only emitted when there is a marker, so an ordinary row keeps its full title width
-        self.assertIn('(state ? `<span class="chat-item__state ${state}"', self.body("chatItem"))
+        # the slot is only emitted when there is a marker, so an ordinary row keeps its full title width; and it
+        # is a node of its own, because a node thrown away and made again restarts its spin
+        self.assertIn("paintMark(row, c);", self.body("chatItem"))
+        self.assertIn('node("span", `chat-item__state ${want.cls}`)', self.body("paintMark"))
+        self.assertIn("mark.className =", self.body("paintMark"))          # recoloured in place, not remade
+        self.assertIn("const sameShape = plan.length === kids.length", self.body("renderSidebar"))
         self.assertNotIn("margin-left: 8px", css)                     # no fixed left slot costing every row width
         self.assertIn("animation: st-spin 0.9s linear infinite", css)     # happening now: accent, spinning
         self.assertIn(".chat-item__state.new::before", css)
@@ -71,8 +75,8 @@ class ChatSidebar(unittest.TestCase):
         item = self.body("chatItem")
         # the gutter mark carries the engine's phase, in the colours the pill and the Monitor already use
         # (todo #sidebar-spinner-states); the behaviour itself is driven in the node harness, case 108
-        self.assertIn("(own || waiting) && (c.id !== chatId || showSpin)", item)   # a turn, or a queue waiting
-        self.assertIn('phase ? `run ${phase}` : c.unread ? "new" : ""', item)
+        self.assertIn("(own || waiting) && (c.id !== chatId || showSpin)", self.body("markFor"))   # a turn, or a queue waiting
+        self.assertIn('return {cls: `run ${phase}`, tip: PHASE_TIP[phase]};', self.body("markFor"))
         for phase, colour in (("read", "--st-info"), ("wait", "--st-ink-muted"),
                               ("queue", "--st-warn-text")):     # the badge's colour, not the pill's
             self.assertIn(f".chat-item__state.run.{phase} {{ --spin: var({colour}); }}", css)

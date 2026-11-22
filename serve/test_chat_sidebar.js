@@ -264,6 +264,22 @@ function run(hooks, stored, seed) {
 const wait = () => new Promise((r) => setImmediate(r));
 const rows = (s) => s.el("sidebar-list").children.filter((c) => c.className.split(" ").includes("chat-item")).length;
 const groups = (s) => s.el("sidebar-list").children.filter((c) => c.className.split(" ").includes("sidebar-group")).map((c) => c.textContent);
+// a row's parts are nodes of their own now (the list reuses them so a mark's spin survives), so the title and
+// the gutter mark are read from the row's children rather than out of an innerHTML string
+const titleCls = (s, id) => {
+  const row = s.el("sidebar-list").children.find((r) => (r.dataset || {}).id === id);
+  const b = row && (row.children || []).find((c) => (c.className || "").split(/\s+/).includes("chat-item__title"));
+  return b ? b.className : "";
+};
+const markCls = (s, id) => {
+  const row = s.el("sidebar-list").children.find((r) => (r.dataset || {}).id === id);
+  const m = row && (row.children || []).find((c) => (c.className || "").split(/\s+/).includes("chat-item__state"));
+  return m ? m.className : "";
+};
+const markNode = (s, id) => {
+  const row = s.el("sidebar-list").children.find((r) => (r.dataset || {}).id === id);
+  return (row && (row.children || []).find((c) => (c.className || "").split(/\s+/).includes("chat-item__state"))) || null;
+};
 // the warning is a promise to the user, so its kind and its title are part of what is checked here
 const warns = (s) => s.el("toasts").children.filter((t) => t.className.split(" ").includes("st-toast--warn"));
 const warnTitle = (s) => warns(s).map((t) => t.querySelector(".st-toast__title").textContent).join(" | ");
@@ -358,7 +374,13 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   memField.value = "renamed in memory";
   memField._l["keydown"]({key: "Enter", preventDefault() {}});
   await wait();
-  assert.ok(mem.s.el("sidebar-list").children.some((c) => (c.innerHTML || "").includes("renamed in memory")),
+  // the row is updated in place now (its nodes are reused so a mark's spin survives), so the new name is read
+  // from the title button rather than from a rebuilt innerHTML string
+  const titleOf = (row) => {
+    const b = (row.children || []).find((c) => (c.className || "").split(/\s+/).includes("chat-item__title"));
+    return b ? String(b.textContent || "") : "";
+  };
+  assert.ok(mem.s.el("sidebar-list").children.some((c) => titleOf(c) === "renamed in memory"),
             "the rename shows in memory-only mode too");
   done.push("memory only: a rename and a delete still update the list");
 
@@ -1008,15 +1030,19 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
                  {a: {id: "a", title: "chat a", time: Date.now(), messages: [msg("first")]},
                   b: {id: "b", title: "chat b", time: Date.now(), messages: [msg("second")]}});
   await wait();
+  const titleNode = (id) => {
+    const r = mk.s.el("sidebar-list").children.find((x) => x.dataset.id === id);
+    return (r.children || []).find((c) => (c.className || "").split(/\s+/).includes("chat-item__title")) || {};
+  };
   const rowHtml = (id) => mk.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
-  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "nothing marked yet");
+  assert.ok(!(titleNode("a").className || "").includes("draft"), "nothing marked yet");
   mk.s.el("input").value = "typing in a";
   mk.s.el("input")._l["input"]();
   mk.s.openChat("b");
   await wait();
-  assert.ok(rowHtml("a").includes('class="chat-item__title draft"'), "chat a is marked: it has unsent text");
-  assert.ok(!rowHtml("b").includes('class="chat-item__title draft"'), "chat b is not");
-  assert.ok(rowHtml("a").includes("(has draft)"), "and the tooltip says why");
+  assert.ok((titleNode("a").className || "").includes("draft"), "chat a is marked: it has unsent text");
+  assert.ok(!(titleNode("b").className || "").includes("draft"), "chat b is not");
+  assert.ok(String(titleNode("a").getAttribute("title") || "").includes("(has draft)"), "and the tooltip says why");
   mk.s.openChat("a");
   await wait();
   assert.strictEqual(mk.s.el("input").value, "typing in a", "and opening it gives the text back");
@@ -1024,7 +1050,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   mk.s.el("input")._l["input"]();
   mk.s.openChat("b");
   await wait();
-  assert.ok(!rowHtml("a").includes('class="chat-item__title draft"'), "an emptied draft clears the marker");
+  assert.ok(!(titleNode("a").className || "").includes("draft"), "an emptied draft clears the marker");
   done.push("chat list: a conversation with unsent text is marked with an asterisk");
 
   // 33. the final layout, after two tries at nesting: everything top level, in the order it happened.
@@ -1272,13 +1298,16 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   await wait();
   ctl39.flush = mk39.flush;
   const stateOf = (id) => {
-    const html = mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === id)._html || "";
-    const m = /class="chat-item__state ?([\w -]*)"/.exec(html);   // the class carries the phase too now
-    return m ? m[1].trim() : "";
+    // the mark is a child node of its own now (todo #sidebar-spinner-states: a node that is remade restarts its
+    // spin), so it is read from the row's children rather than out of the row's innerHTML string
+    const row = mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === id);
+    const mark = (row.children || []).find((c) => (c.className || "").split(/\s+/).includes("chat-item__state"));
+    return mark ? (mark.className || "").replace(/^chat-item__state\s*/, "").trim() : "";
   };
   assert.strictEqual(stateOf("A"), "", "nothing running, nothing unread: no gutter marker");
-  assert.ok(!mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === "A")._html.includes("chat-item__state"),
-            "and no span at all when there is nothing to show");
+  assert.ok(!mk39.s.el("sidebar-list").children.find((r) => r.dataset.id === "A").children
+              .some((c) => (c.className || "").split(/\s+/).includes("chat-item__state")),
+            "and no mark node at all when there is nothing to show");
   const f39 = (o) => "data: " + JSON.stringify(o) + "\n\n";
   q39.push(f39({choices: [{delta: {content: "half"}}]}), f39({choices: [{delta: {content: " the rest"}}]}));
   mk39.s.el("input").value = "go";
@@ -1342,11 +1371,11 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const pillState = {state: "running-tool", tool: "easyCMP__run_cmd", queued: 0, elapsed_s: 3.2, busy: true};
   pl.s.render({live: pillState, hardware: {}, hardware_static: {}, engine: {}, history: {}, requests: [], totals: {}});
   assert.strictEqual(pl.s.el("pill-text").textContent, "Waiting · easyCMP__run_cmd", "the pill names the tool");
-  // blue, not the generating green: the palette colours reading and generating differently because the engine
-  // produces no tokens while a prompt is being read, and that is also true while a tool runs. The Monitor's
-  // badge and state card already said blue; the pill was the outlier.
-  assert.strictEqual(pl.s.el("pill").dataset.state, "reading", "so it colours like a prompt read, not idle");
-  done.push("pill: a running MCP tool reads Waiting · <tool>, in the reading colour");
+  // grey, the Idle colour (the owner, 2026-11-22): the engine is producing nothing, which is the same fact the
+  // idle badge and the chat-list mark already show in grey.  It was blue once, to match a prompt read, and that
+  // left one state with two colours across three components.
+  assert.strictEqual(pl.s.el("pill").dataset.state, "idle", "so it colours like idle, which is what it is");
+  done.push("pill: a running MCP tool reads Waiting · <tool>, in the idle colour - one colour per state");
 
   // 41b. "Reading prompt" is the read of the NEW tokens, not of the whole prompt.  The engine's PP line is an
   // absolute position (it counts the reused prefix), so the reused part has to come out again - the server sends
@@ -1411,8 +1440,8 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   const pc = run({}, {});
   await wait();
   pc.s.renderPill({live: {state: "running-tool", tool: "easyCMP__run_cmd"}});
-  assert.strictEqual(pc.s.el("pill").dataset.state, "reading",
-                     "a tool wait colours like a prompt read: the engine is producing no tokens");
+  assert.strictEqual(pc.s.el("pill").dataset.state, "idle",
+                     "a tool wait colours like idle: the engine is producing nothing, and grey already says that");
   assert.strictEqual(pc.s.el("pill-text").textContent, "Waiting · easyCMP__run_cmd", "with the tool named");
   // a lite answer carries no cards, so the lite path paints the pill on its own
   const pl2 = run({}, {});
@@ -3731,15 +3760,17 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
       if (seenMark && mark) assert.strictEqual(mark, seenMark, `${state}: and the mark itself is the same node`);
       seen = row; seenMark = mark || seenMark;
     }
-    assert.ok(/title="(reading the prompt|answering|waiting on a tool|waiting behind another request)"/.test(rowHtml("ca")),
-              "the title says which phase it is, not just that something is happening: " + rowHtml("ca").slice(0, 200));
+    const markTitle = () => { const m = markOf(rowOf("ca")); return m ? String(m.getAttribute("title") || "") : ""; };
+    assert.ok(/reading the prompt|answering|waiting on a tool|waiting behind another request/.test(markTitle()),
+              "the title says which phase it is, not just that something is happening: " + markTitle());
     sp.s.openChat("ca"); await wait();               // back to the chat that owns the turn
-    assert.strictEqual(rowHtml("ca").includes("chat-item__state"), false,
-                       "no mark on the chat you are already looking at, by default");
+    assert.ok(!markOf(rowOf("ca")), "no mark on the chat you are already looking at, by default");
     sp.s.el("spin-toggle").onclick();                // the switch: always show it
-    assert.ok(rowHtml("ca").includes("chat-item__state run"), "with the switch on, it shows there too");
+    assert.ok((markOf(rowOf("ca")) || {}).className, "with the switch on, it shows there too");
+    const shownMark = markOf(rowOf("ca"));
     sp.s.el("spin-toggle").onclick();
-    assert.strictEqual(rowHtml("ca").includes("chat-item__state"), false, "and it goes away when the switch is off again");
+    assert.ok(!markOf(rowOf("ca")), "and it goes away when the switch is off again");
+    assert.ok(shownMark, "the mark that appeared was a node, not part of the row's string");
     if (release) release();
     await wait(); await wait();
     done.push("sidebar-spinner-states: the mark carries the phase - reading, answering, waiting on a tool, queued - and a switch shows it in the open chat");
@@ -3750,8 +3781,10 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   // engine and the rest wait behind it, which is what the gutter marks show.
   {
     const rel = [], qbodies = [];
+    let liveConv = "qa", liveState = "generating";
     const q = run({fetch: async (u, opt) => {
-        if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "generating", queued: 1, tok_s: 9}})};
+        if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true,
+            live: {state: liveState, queued: 1, tok_s: 9, conv: liveConv}})};
         if (u === "health") return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
         if (u === "v1/chat/completions") {
           qbodies.push(JSON.parse((opt || {}).body || "{}"));
@@ -3782,8 +3815,27 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
       const r = q.s.el("sidebar-list").children.find((c) => c.dataset && c.dataset.id === id);
       return (r && r._html) || "";
     };
-    assert.ok(rowHtml("qa").includes("chat-item__state run gen"), "A is the turn at the engine: " + rowHtml("qa").slice(0, 140));
-    assert.ok(rowHtml("qb").includes("chat-item__state run queue"), "B waits behind it: " + rowHtml("qb").slice(0, 140));
+    const markCls = (id) => {
+      const r = q.s.el("sidebar-list").children.find((c) => c.dataset && c.dataset.id === id);
+      const m = r && (r.children || []).find((x) => (x.className || "").split(/\s+/).includes("chat-item__state"));
+      return m ? m.className : "";
+    };
+    assert.ok(markCls("qa").includes("chat-item__state run gen"), "A is the turn at the engine: " + markCls("qa"));
+    assert.ok(markCls("qb").includes("chat-item__state run queue"), "B waits behind it: " + markCls("qb"));
+    // and when the FIFO frees up mid-tool-call, the engine says so - the running chat stops being painted amber
+    liveConv = "qb"; liveState = "running-tool";
+    q.s.poll(); await wait();
+    assert.ok(markCls("qb").includes("chat-item__state run wait"),
+              "B is at the engine now, and the mark says so: " + markCls("qb"));
+    assert.ok(markCls("qa").includes("chat-item__state run queue"),
+              "A is the one waiting now: " + markCls("qa"));
+    liveConv = "qa"; liveState = "generating";
+    // the owner's complaint: clicking a conversation recreated every mark and restarted its spin. With both
+    // marks showing, opening another chat must leave the other row's mark node exactly where it was.
+    const before = markNode(q.s, "qa");
+    q.s.openChat("qa"); await wait();
+    assert.strictEqual(markNode(q.s, "qa"), before,
+                       "clicking a chat does not remake the other chat's mark, so its spin keeps turning");
     q.s.el("spin-toggle").onclick();
     // A's queued message fires when its turn ends, so draining takes more than one pass - that is the queue
     // working, not a stuck turn
