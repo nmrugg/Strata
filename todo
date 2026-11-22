@@ -281,7 +281,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     `display: none` until hovered, and the state markers live in the left gutter) - keep that
     property, or the titles shrink again.
 
-`system-prompt`  Add and edit a system prompt, set ONCE when the conversation starts. [ui] [py] EASY
+`system-prompt`  Add and edit a system prompt, set ONCE when the conversation starts. [ui] [py] DONE 2026-11-21 (the scroll and the row's look need an eye on a real page)
     There is no system-prompt field in the web app today (no system_prompt anywhere in
     app.js), and the server already supports one: a leading system/developer message is
     merged into the template's system turn (chat_template.jinja). So this is a per-chat
@@ -315,6 +315,18 @@ all: fold-control replaced them, and the four overlapping switches became one co
     For whoever implements: a leading system message already survives the API boundary (openai_to_messages
     downgrades system messages only after the first user turn, serve/frontend.py:347), so the server may need
     nothing at all.  Check before writing server code.
+    SHIPPED 2026-11-21, two commits (098f5ff93 the data path, cf35774df the row and the edit), and the check came
+    first: the server needed NOTHING.  The template already merges a leading system message after the tools
+    block, and serve/test_frontend.py now pins that the tools block stays byte-identical and that a
+    mid-conversation system message still arrives as user.  What shipped: a Settings card with the template and
+    chips for {{date}} {{time}} {{model}} {{context}} {{gpu}} {{vram}} {{ram}} {{cpu}} {{host}}; the words
+    resolved once at chat start and stored on the chat record; a brace word the page does not know left exactly
+    as written, with Save naming the ones it did not fill; the hardware words fetched once, and only when the
+    saved template names them; a row above the first message with an Edit box that states the re-read in tokens;
+    and no field, no row, and a byte-identical request for anyone who never sets it.
+    Unverified: the scroll (the harness has no layout) and the row's visual weight - both need the owner's eyes.
+    Left out on purpose: giving a prompt to a chat that never had one.  That re-reads that chat, so it should be
+    an explicit act with the number beside it, not a side effect of the default changing.
 
 
 `store-full-attachments`  Keep the original bytes of attached files/pictures in IndexedDB. [ui] DONE 2026-10-24
