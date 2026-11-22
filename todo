@@ -766,7 +766,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     it, like the composer draft already does per chat.  Decide whether one edit per chat is enough or several.
 
 
-`queue-another-chat`  Queue another conversation while one is going (llama.cpp style). [ui] MEDIUM, not engine work
+`queue-another-chat`  Queue another conversation while one is going (llama.cpp style). [ui] DONE 2026-11-22 - see queue-other-chats
     The SERVER ALREADY DOES THIS: docs/BATCHING.md - "By default Strata serves one request
     at a time: the others wait in the server's queue." Nothing engine-side is missing, and
     --batch N would run them at once instead of queued.
@@ -1744,11 +1744,29 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Extends item edit-posts (which is blocked while busy today).
 
 
-`queue-other-chats`  Queue messages in OTHER chat sessions while one is generating. [ui]
+`queue-other-chats`  Queue messages in OTHER chat sessions while one is generating. [ui] DONE 2026-11-22 (two slices; see the still-open notes below)
     You can only send in the open chat, and only one turn runs at a time.  Let the user type/queue a message in a
     background chat; it sends when that chat's turn is next.  Builds on item queue-another-chat (per-request state:
     controller, target message, chat id) and multi-tab-sync's per-chat busy tracking.  The FIFO already queues
     server-side (docs/BATCHING.md) - this is the front-end half.
+    BUILT 2026-11-22 in two commits - 75eb89beb (a turn belongs to its chat) and 624a25487 (the queue inside one
+    chat).  Slice 1: `turns` replaces the single busy flag, `busy` is now the open chat's turn, Send is disabled
+    per chat, deleting a chat is blocked by that chat's own turn, the beforeunload warning covers every turn, and
+    switching chats rebinds busy and refreshes the composer (invisible with one flag - that was the bug the tests
+    caught).  Slice 2: a message sent while a chat is answering goes onto the chat record as a queued post -
+    shown in the chat, dimmed, with Cancel - and fires on its own when the turn ahead ends.  A queued post that
+    came back from the record waits for a Send click instead (a reload is not a request to continue), and Cancel
+    returns the text to the composer.  Pending messages never enter `messages`, so they cannot move the engine's
+    prefix.  A chat with nothing running but something waiting shows the amber gutter mark.
+    The refactor that made it honest: send() is the composer path and startTurn(c, item) runs the turn for
+    whichever chat asked, so apiMessages(c), rowOf(m, c) and the per-chat tool pin all follow the chat that owns
+    the turn rather than the one on screen.
+    STILL OPEN: queue-another-chat's "several streams at once" is not the same thing - the engine still runs one
+    request at a time and this only lets more than one be in flight from the page; multi-tab-sync's per-chat busy
+    (two tabs each with their own turns) is untouched and now matters more; and crash-recovers-last-turn overlaps
+    directly - the queue persists, the running turn's partial answer still does not.
+    Tests: harness cases 109 and 110 (100 ok lines).  Controls bite: no rebind on chat switch, no turns list, no
+    auto-send at turn end, no held marking on load, refusing instead of queueing.
 
 `prompt-inspector`  See - and edit - the other things sent to the model: the tool list, and the rendered prompt. [ui] [py] PARTLY DONE 2026-11-22
     Asked for 2026-11-21 next to item system-prompt: "a way to see/edit any other data sent to the llm, like
