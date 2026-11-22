@@ -577,7 +577,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     writes - worth a rule (attachments already render pictures the user put there); titles, reference links and
     footnotes look like docs features a chat does not owe.
 
-`crash-recovers-last-turn`  A browser crash mid-turn loses the whole last exchange. [ui] SMALL
+`crash-recovers-last-turn`  A browser crash mid-turn loses the whole last exchange. [ui] DONE 2026-11-22
     The chat record is written once, at the end of send() (saveChat after the stream closes). If the tab dies -
     crash, OOM, the machine sleeping - the user's own message, the thinking, and every tool call that already
     ran are gone. Write the record as each part finishes: when the message is sent, when the first token
@@ -586,6 +586,20 @@ all: fold-control replaced them, and the four overlapping switches became one co
     per token (the composer draft already stays out of the record for that reason - store/localStorage).
     Decide what a reloaded half-turn looks like: the answer so far with a note that the page was closed, and
     whether the tool calls that ran are replayed or shown as spent.
+    DONE 2026-11-22.  startTurn now writes the chat at the milestones: when the question lands (forced, before
+    the answer starts), at the first token, when the thinking ends, and at every MCP call and result (forced,
+    past the floor).  Token-level writes are floored at 1 s because a chat record is megabytes and a write per
+    token would be ruinous - the same reason the composer draft lives in localStorage.  A tool result is written
+    through the floor: it is the one thing that cannot be undone by re-asking, and it is naturally spaced by the
+    tool's own duration.
+    Still open, and deliberately not decided here: what a reloaded half-turn should SHOW. The data is there -
+    the streaming assistant message with its partial text and its tool blocks - but the page has no marker for
+    "this turn was cut short by the page closing, not by the model". That is a display decision (a note on the
+    bubble? the tool blocks shown as spent?), and it should not be invented in a commit that is about not losing
+    data.
+    Test: harness case 111 (101 ok lines) reads the record back MID-turn - the stream still open - and finds the
+    question, the thinking, and a tool result that had already run. Control: remove the three milestone writes
+    and the thinking assertion fails.
 
 `sidebar-spinner-states`  The chat-list spinner: prefill blue, generating green, queued amber, waiting grey -
     and an option to show it on the open chat too. [ui] DONE 2026-11-22 (the colours need an eye on a real page)

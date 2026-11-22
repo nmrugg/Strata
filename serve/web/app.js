@@ -3387,6 +3387,18 @@ async function startTurn(c, item) {
   }
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
+  // Persist at the milestones, not only at the end (todo #crash-recovers-last-turn): a browser crash, an OOM
+  // kill, or the machine sleeping used to lose the user's own message, the thinking, and every tool call that
+  // had already run.  Milestones only, with a floor between writes - a chat record is megabytes and a write per
+  // token would be ruinous (the composer draft stays in localStorage for the same reason).
+  let lastSave = 0;
+  const persist = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastSave < 1000) return;
+    lastSave = now;
+    saveChat(c);
+  };
+  persist(true);                                     // the question is on disk before the answer starts
   // the row is looked up every frame: switching chats rebuilds them, and a captured node would keep painting a
   // detached element.  No row means another chat is on screen - the turn keeps running, it just does not paint.
   // follow is measured BEFORE the DOM grows (LESSONS.md, "Four traps", trap 4): a big block - a tool call, a
@@ -3420,11 +3432,16 @@ async function startTurn(c, item) {
         try { j = JSON.parse(data); } catch (e) { continue; }
         if (j.error) throw new Error(j.error.message || "the engine reported an error");
         if (j.usage) usage = j.usage;
-        if (j.strata_mcp) onTool(m, j.strata_mcp);
+        if (j.strata_mcp) {
+          onTool(m, j.strata_mcp);
+          // a tool that ran and answered is the expensive thing to lose - it cannot be undone by re-asking -
+          // so it is written through the floor.  Token milestones stay throttled: a chat record is megabytes.
+          if (j.strata_mcp.event === "result" || j.strata_mcp.event === "call") persist(true);
+        }
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
-          if (!firstAt) firstAt = performance.now();
+          if (!firstAt) { firstAt = performance.now(); persist(); }   // the first token is a milestone
           if (!m._firstTok) m._firstTok = Date.now();   // tok/s clock starts at the first token, not at send (excludes the prompt read)
           if (!thinkStart) thinkStart = performance.now();
           const newRun = !m.reasoning || (lastTool && lastTool.rat === m.reasoning.length);
@@ -3443,9 +3460,9 @@ async function startTurn(c, item) {
           m.reasoning += d.reasoning_content;
         }
         if (d.content) {
-          if (!firstAt) firstAt = performance.now();
+          if (!firstAt) { firstAt = performance.now(); persist(); }
           if (!m._firstTok) m._firstTok = Date.now();
-          if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
+          if (thinkStart && m.thinkSecs == null) { m.thinkSecs = (performance.now() - thinkStart) / 1000; persist(); }
           if (lastTool && m.text && lastTool.at === m.text.length) m.text += "\n\n";
           m.text += d.content;
         }

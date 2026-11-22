@@ -3932,5 +3932,48 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     done.push("queue-other-chats: a message sent mid-turn waits on the record, shows as a queued post, fires when its turn is next, and survives a reload waiting for Send");
   }
 
+  // 111. crash-recovers-last-turn: the record is written at the milestones, not only when the answer ends, so
+  // a crash, an OOM kill or the machine sleeping does not lose the question, the thinking, or a tool call that
+  // already ran.  What is asserted is what a reload would find mid-turn.
+  {
+    let crRelease = null, reads = 0;
+    const frames = [];
+    const enc = (s) => new TextEncoder().encode(s);
+    const f = (o) => "data: " + JSON.stringify(o) + "\n\n";
+    const cr = run({fetch: async (u) => {
+        if (u === "v1/chat/completions") {
+          const reader = {read: async () => {
+            await Promise.resolve();
+            if (reads < frames.length) return {value: enc(frames[reads++]), done: false};
+            return new Promise((res) => { crRelease = () => res({value: undefined, done: true}); });
+          }};
+          return {ok: true, body: {getReader: () => reader}};
+        }
+        return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
+      }}, {"strata.chatId": JSON.stringify("cc")},
+      {cc: {id: "cc", title: "crash", time: Date.now(), messages: []}});
+    await wait();
+    // the frames are queued first: the reader blocks on the read after them, which is what keeps the turn open
+    // while the record is read back - the whole point is what a reload would find mid-turn
+    frames.push(f({choices: [{delta: {reasoning_content: "thinking about it"}}]}),
+                f({choices: [{delta: {}}], strata_mcp: {event: "call", id: "t1", name: "easy__noop", tool: "noop",
+                                                       server: "easy", arguments: {v: 7}, round: 1}}),
+                f({choices: [{delta: {}}], strata_mcp: {event: "result", id: "t1", ok: true, text: "seven",
+                                                        chars: 5, truncated: false, ms: 5}}));
+    cr.s.el("input").value = "run a tool";
+    cr.s.send();
+    for (let i = 0; i < 8; i++) await wait();
+    const rec = cr.records.cc;
+    const dump = JSON.stringify(rec || {});
+    assert.ok(dump.includes("run a tool"), "the question is on disk before the answer ends: " + dump.slice(0, 200));
+    assert.ok(dump.includes("thinking about it"), "the thinking made it to the record mid-turn: " + dump.slice(0, 240));
+    assert.ok(dump.includes("seven"), "and so did a tool call that already ran - it cannot be undone by re-asking");
+    if (crRelease) crRelease();
+    for (let i = 0; i < 4; i++) await wait();
+    const last = cr.records.cc;
+    assert.strictEqual(last.messages.length, 2, "the turn still ends with one assistant message, not two records");
+    done.push("crash-recovers-last-turn: the record is written when the question is sent and again at each milestone, so a crash mid-turn keeps what happened");
+  }
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
