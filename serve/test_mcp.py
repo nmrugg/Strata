@@ -867,6 +867,84 @@ class CutCall(LoopFixture):
         self.assertEqual(results[0]["chars"], len(results[0]["text"]), "the note is the whole result")
 
 
+class ConversationLock(LoopFixture):
+    """item turn-lock-per-conversation.  The engine's FIFO is released between the rounds of an MCP turn - on
+    purpose, so a slow tool is not dead time for every other conversation.  That gap is where a second request
+    for the SAME conversation does damage: its prompt lacks the tool round that has not been fed back yet, and
+    the running turn's next pass stops matching the prefix the engine holds.  The page cannot do this (a chat
+    has one turn at a time); two tabs or an API client can."""
+
+    def post_thread(self, token, out, i):
+        body = {"model": "m", "messages": [{"role": "user", "content": "check it"}], "stream": True,
+                "strata_mcp": True}
+        if token:
+            body["strata_conv"] = token
+        def go():
+            t0 = time.time()
+            try:
+                code, _ = self.post(body)
+            except Exception as e:                                   # noqa: BLE001 - reported by the assertion
+                code = repr(e)
+            out[i] = (code, t0, time.time())
+        th = threading.Thread(target=go, daemon=True)
+        th.start()
+        return th
+
+    def test_a_second_request_for_the_same_conversation_waits_for_the_turn(self):
+        self.hub.settings["max_rounds"] = 4
+        self.start(call_script("fake__sleep", seconds=1.5), PLAIN_ANSWER, PLAIN_ANSWER)
+        out, threads = {}, []
+        threads.append(self.post_thread("convA", out, "first"))
+        time.sleep(0.4)                                    # mid-tool-call: the FIFO is free right now
+        threads.append(self.post_thread("convA", out, "second"))
+        for th in threads:
+            th.join(30)
+        self.assertEqual((out["first"][0], out["second"][0]), (200, 200), out)
+        self.assertGreater(out["second"][2], out["first"][2],
+                           "the second turn of one conversation finished after the first, not inside its tool call")
+        self.assertGreaterEqual(out["second"][1], out["first"][1], "and it was the later one to start")
+
+    def test_another_conversation_still_uses_the_dead_time(self):
+        self.hub.settings["max_rounds"] = 4
+        self.start(call_script("fake__sleep", seconds=1.5), PLAIN_ANSWER, PLAIN_ANSWER)
+        out, threads = {}, []
+        threads.append(self.post_thread("convA", out, "first"))
+        time.sleep(0.4)
+        threads.append(self.post_thread("convB", out, "other"))
+        for th in threads:
+            th.join(30)
+        self.assertEqual((out["first"][0], out["other"][0]), (200, 200), out)
+        self.assertLess(out["other"][2], out["first"][2],
+                        "a different conversation ran while the tool was still open - that is the point of "
+                        "a per-conversation lock rather than a longer FIFO")
+
+    def test_a_conversation_that_will_not_free_up_is_a_409_not_a_hung_request(self):
+        self.hub.settings["max_rounds"] = 4
+        self.start(call_script("fake__sleep", seconds=1.5), PLAIN_ANSWER, PLAIN_ANSWER)
+        self.svc.conv_wait_s = 0.3
+        out, threads = {}, []
+        threads.append(self.post_thread("convA", out, "first"))
+        time.sleep(0.4)
+        threads.append(self.post_thread("convA", out, "second"))
+        for th in threads:
+            th.join(30)
+        self.assertEqual(out["first"][0], 200, out)
+        self.assertEqual(out["second"][0], 409, "refused rather than held forever: the queue is the client's")
+        self.assertEqual(out["second"][1] >= out["first"][1], True)
+
+    def test_no_token_means_no_lock_and_the_old_behaviour(self):
+        self.hub.settings["max_rounds"] = 4
+        self.start(call_script("fake__sleep", seconds=1.0), PLAIN_ANSWER, PLAIN_ANSWER)
+        out, threads = {}, []
+        threads.append(self.post_thread(None, out, "first"))
+        time.sleep(0.3)
+        threads.append(self.post_thread(None, out, "second"))
+        for th in threads:
+            th.join(30)
+        self.assertEqual((out["first"][0], out["second"][0]), (200, 200), out)
+        self.assertEqual(self.svc.conv_locks, {}, "no token, no entry: nothing was ever locked")
+
+
 class Inspector(LoopFixture):
     """item prompt-inspector: POST /inspect renders the request's own prompt and measures its parts, running
     nothing.  The figures have to come from the same template call and the same tokenizer the chat path uses,

@@ -3739,12 +3739,15 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
   // message while its turn runs; another chat sends freely; the server's FIFO puts the first-sent turn at the
   // engine and the rest wait behind it, which is what the gutter marks show.
   {
-    const rel = [];
-    const q = run({fetch: async (u) => {
+    const rel = [], qbodies = [];
+    const q = run({fetch: async (u, opt) => {
         if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "generating", queued: 1, tok_s: 9}})};
         if (u === "health") return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
-        if (u === "v1/chat/completions") return {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
-          rel.push(() => res({value: undefined, done: true})); })})}};
+        if (u === "v1/chat/completions") {
+          qbodies.push(JSON.parse((opt || {}).body || "{}"));
+          return {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
+            rel.push(() => res({value: undefined, done: true})); })})}};
+        }
         return {ok: true, json: async () => ({})};
       }}, {"strata.chatId": JSON.stringify("qa")},
       {qa: {id: "qa", title: "chat A", time: Date.now(), messages: [{id: "a1", role: "user", text: "hi", time: Date.now()}]},
@@ -3759,6 +3762,9 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.strictEqual(q.s.el("send-btn").disabled, false, "another chat can send while A is answering");
     q.s.el("input").value = "in B"; q.s.send(); await wait();
     assert.strictEqual(q.s.turns.length, 2, "two chats, two turns");
+    assert.deepStrictEqual(qbodies.map((b) => b.strata_conv), ["qa", "qb"],
+                           "each request names the conversation it belongs to, so the server can hold one "
+                           + "turn per conversation instead of letting a second start inside a tool call");
     assert.strictEqual(q.s.el("send-btn").disabled, true, "and B's own Send is disabled now");
     q.s.el("spin-toggle").onclick();                 // show the mark on the open chat too, to see both at once
     const rowHtml = (id) => {

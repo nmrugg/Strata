@@ -842,6 +842,49 @@ all: fold-control replaced them, and the four overlapping switches became one co
     which is what a page boots with when there is nothing to ask.  Harness case 103 (93 ok lines); controls:
     delete either half and its assertion fails.
 
+`turn-lock-per-conversation`  A second request for a conversation that is mid-turn must not start during a tool call. [py] DONE 2026-11-22 (option b; needs a restart)
+    Found by the owner 2026-11-22, while building queue-other-chats: "if the queued message is in the SAME chat,
+    then that would cause problems."  They are right, and the server does not prevent it.  What the code does,
+    checked rather than remembered: Service.run takes the engine's FIFO itself (self.fifo.acquire inside _run,
+    serve/server.py ~3912+) and releases it when that pass ends, and run_with_mcp calls svc.run once per round -
+    so between rounds, while a tool is executing, the FIFO is free.  That is deliberate and good for a DIFFERENT
+    conversation (a 90 s tool call is dead time the queue should use; it is also why #waiting-state exists:
+    between rounds there is no live_reqs entry at all).  For the SAME conversation it is a hole: the second
+    request's prompt does not contain the tool round that has not been fed back yet, and when the first turn
+    continues with the tool result appended, its prompt stops matching the prefix the engine holds - a re-read at
+    best, and two turns writing into one conversation at worst.
+    Today the page cannot cause it: a chat refuses a second send while it has a turn (queue-other-chats slice 1).
+    Two tabs, or the page plus an API client, can.
+    Options, none chosen:
+      (a) hold the FIFO for the whole MCP turn, tool calls included - simple and safe, but a slow tool then
+          blocks every other conversation, which throws away the dead time on purpose.
+      (b) a per-conversation lock keyed by a client-supplied token (strata_conv, the page would send its chat
+          id): ~20 lines, keeps other conversations flowing, and gives the server the conversation identity that
+          pin-conversation and multi-tab-sync keep needing anyway.  Recommended.
+      (c) leave it to clients and say so in docs/SECURITY-adjacent notes - weakest, and the multi-tab item would
+          still be exposed.
+    Note for (b): the server has no conversation identity today - reuse is exact token-prefix matching with no
+    session id (LESSONS.md, "Conversation reuse has no identity"), and the client is the only thing that knows
+    which conversation it is in.  A token from the client is the cheap version of the identity pin-conversation
+    wants; decide them together rather than inventing two.
+    BUILT 2026-11-22, option (b) at the owner's call.  The page sends `strata_conv` (its chat id) on every chat
+    request; `conv_token` validates it (absent: no lock, exactly the old behaviour - a body field, not prompt
+    content, so it costs no tokens and cannot re-read anything); `Service.conversation(token)` holds a
+    refcounted per-conversation lock around the whole request, tool rounds included.  Refcounted on purpose:
+    popping an unlocked entry while another thread still holds a reference to it would let two requests believe
+    they own the conversation.  A client that cannot get its conversation within `conv_wait_s` (300 s) is refused
+    with 409 / model_busy rather than held forever - the queue stays the client's, because the client is the one
+    that knows the order, the cancellation and which chat it belongs to.
+    Proof the hole was real, from the control: with the lock removed, the second request for the same
+    conversation finished 1.1 s BEFORE the first - it ran entirely inside that turn's tool call, which is the
+    corruption the owner predicted.  Tests: serve/test_mcp.py class ConversationLock (4) - same conversation
+    waits, a DIFFERENT conversation still runs during the tool call (the dead time is the reason this is a
+    per-conversation lock and not a longer FIFO), the 409 path, and no token means no lock and no entry left
+    behind.  Harness case 109 pins that the page sends the token per chat.
+    STILL OPEN: queue-other-chats slice 2 - a queue of messages inside one chat.  It depends on this lock (a
+    same-chat queued message must not start during that chat's tool call) and on the page holding the queue,
+    showing each pending message in the chat with Cancel, and sending it when its turn is next.
+
 `tools-block-empty`  A request asked for MCP tools and got none: instrumented and partly repaired, 2026-11-21. [py] PARTLY DONE
     What it looks like from the chat: an agent turn just stops.  The request ends on `stop` with plausible text,
     no tool call, and EVERY counter at zero - not an empty turn (content was delivered), not abandoned, not

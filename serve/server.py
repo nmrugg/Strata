@@ -2916,6 +2916,12 @@ class Service:
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
+        # one turn at a time per conversation (item turn-lock-per-conversation).  Each entry is [lock, waiters],
+        # refcounted so an entry only disappears when nobody holds or wants it - popping an unlocked lock while
+        # another thread still holds a reference to it would let two requests believe they own the conversation.
+        self.conv_locks: dict[str, list] = {}
+        self.conv_guard = threading.Lock()
+        self.conv_wait_s = 300.0                     # how long a second request waits for the first of them
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -3649,6 +3655,45 @@ class Service:
             return self.tok.encode(prompt, parse_special=True)
         prompt, plain = unmark_think_literals(prompt, self.literals)
         return self.tok.encode(prompt, parse_special=True, plain=plain)
+
+    @contextlib.contextmanager
+    def conversation(self, token: str | None):
+        """One turn at a time for one conversation (item turn-lock-per-conversation).
+
+        The engine's FIFO already serialises everything, but it is released between the rounds of an MCP turn -
+        on purpose, so a 90-second tool call is not dead time for everyone else.  That gap is exactly where a
+        second request for the SAME conversation does damage: its prompt is missing the tool round that has not
+        been fed back, and the running turn's next pass no longer matches the prefix the engine holds.
+
+        No token: no lock, exactly the behaviour before.  A client that cannot get its conversation in time is
+        refused rather than held forever - a queued follow-up is the client's job (the page knows the order,
+        the cancellation and the chat it belongs to); the lock here is the guard, not the queue."""
+        if not token:
+            yield
+            return
+        with self.conv_guard:
+            entry = self.conv_locks.get(token)
+            if entry is None:
+                entry = self.conv_locks[token] = [threading.Lock(), 0]
+            entry[1] += 1
+        lock = entry[0]
+        got = lock.acquire(timeout=self.conv_wait_s)
+        if not got:
+            with self.conv_guard:
+                entry[1] -= 1
+                if entry[1] <= 0:
+                    self.conv_locks.pop(token, None)
+            raise ModelBusy(f"this conversation already has a turn running; it has not finished after "
+                            f"{self.conv_wait_s:g} s (strata_conv {token!r})")
+        try:
+            yield
+        finally:
+            lock.release()
+            with self.conv_guard:
+                entry[1] -= 1
+                if entry[1] <= 0:
+                    self.conv_locks.pop(token, None)
+
 
     @contextlib.contextmanager
     def _turn(self, cancel=None):
@@ -5747,8 +5792,19 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
-                if path == "/v1/responses":
-                    self._responses(req)
+                    # One turn at a time per conversation (item turn-lock-per-conversation).  The engine's FIFO
+                    # is released between MCP rounds, so a tool call leaves it free on purpose - and a second
+                    # request for the SAME conversation starting in that gap would carry a prompt without the
+                    # tool round that has not been fed back yet, while the running turn's next pass stops
+                    # matching the prefix the engine holds.  Other conversations keep using that dead time,
+                    # which is why this is a per-conversation lock and not a longer FIFO.
+                    with svc.conversation(conv_token(req)):
+                        if path == "/v1/responses":
+                            self._responses(req)
+                        elif path == "/v1/chat/completions":
+                            self._openai(req)
+                        else:
+                            self._anthropic(req)
                 elif path.startswith("/slots/"):
                     query = parse_qs(self.path.partition("?")[2])
                     try:
@@ -5758,10 +5814,6 @@ def make_handler(svc: Service):
                         code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
                                                      "the engine again", "type": "server_error"}}
                     self._json(code, body)
-                elif path == "/v1/chat/completions":
-                    self._openai(req)
-                elif path == "/v1/messages":
-                    self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
                 else:
@@ -6699,6 +6751,19 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
         return True
     name = host_name(rest)
     return bool(name) and (name in LOOPBACK_NAMES or name.endswith(".localhost") or _name_in(name, names))
+
+
+def conv_token(req: dict) -> str | None:
+    """The conversation a request belongs to, when the client says so (item turn-lock-per-conversation).  The
+    server has no conversation identity of its own - reuse is exact token-prefix matching with no session id -
+    so the client that knows which conversation it is in supplies the key.  Absent: no per-conversation lock,
+    exactly the behaviour before.  It is not a secret and grants nothing; it only serialises requests."""
+    v = req.get("strata_conv")
+    if v is None:
+        return None
+    if not isinstance(v, str) or not v.strip() or len(v) > 128:
+        raise ValueError("strata_conv: a short string naming this conversation, like the page's chat id")
+    return v.strip()
 
 
 def mcp_only(req: dict) -> list[str] | None:

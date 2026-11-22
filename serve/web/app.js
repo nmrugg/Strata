@@ -3213,7 +3213,12 @@ async function send(editOf) {
                            // second chain (the metrics-lite lesson).
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
-                reasoning_effort: settings.thinking};
+                reasoning_effort: settings.thinking,
+                // which conversation this is (item turn-lock-per-conversation): the server cannot tell two
+                // requests for one chat from two for different chats, and a second request must not start
+                // while this chat's turn is mid-tool-call.  A body field, not prompt content: it costs no
+                // tokens and cannot re-read anything.
+                strata_conv: chatId};
   if (settings.temperature > 0) {
     Object.assign(body, {temperature: +settings.temperature, top_p: +settings.top_p, top_k: +settings.top_k});
   } else {
