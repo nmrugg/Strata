@@ -535,12 +535,21 @@ firing and then the freeze. Check which one the evidence points at before propos
 which one you mean when you write "the stall".
 
 **One colour per state, and the pill is not a separate decision.** `--st-accent` green means the engine is
-producing tokens; `--st-info` blue means it is not (reading a prompt, waiting on an MCP tool); `--st-warn`
-means queued. `components.css:20-21` already encodes that for the pill's dot and `:58-60` for the badges, so
-`setPill(state, ...)` must pass the state that matches, not the one that looks "active". I introduced a
-mismatch on 2026-10-24 by setting `running-tool` to `"generating"` (green) while the Monitor's badge and state
-card already said blue for the same state - three components, one state, two colours. A test now pins the
-pill's `data-state` for `running-tool`, because colour bugs are invisible to everything except a human eye.
+producing tokens; `--st-info` blue means it is reading a prompt; grey (the idle colour) means nothing is being
+generated, which covers both Idle and waiting on an MCP tool; `--st-warn` means queued. The palette lives in
+`components.css` for the pill's dot and the badges, so `setPill(state, ...)` must pass the state that matches,
+not the one that looks "active". Two mismatches have been corrected: on 2026-10-24 `running-tool` was set to
+`"generating"` (green) while the badges said blue; on 2026-11-22 the owner moved it to **grey**, because blue
+was making "not generating" two colours across three components and the chat-list mark was already grey for the
+same state. A test pins the pill's `data-state` for `running-tool`, because colour bugs are invisible to
+everything except a human eye - and when a colour decision changes, the LESSONS entry changes with it.
+
+**A CSS animation restarts when the node is replaced, not when its colour changes.** 2026-11-22: the chat-list
+spinner restarted every time a row re-rendered, because the mark was part of the row's `innerHTML` string - any
+re-render threw the node away and made a new one, and a new node starts from 0deg. Two rules follow: anything
+that animates needs to be a node the render *reuses* (the sidebar now updates rows in place when the list has
+the same shape), and a test for "the animation did not restart" is an identity assertion - the same node object
+before and after - because no stub can measure an animation.
 
 **Strata, the engine, and the MCP tool server are three processes.** `http://localhost:8643`
 ("easyCMP") is the tool server. It has crashed twice; both times Strata was healthy and
