@@ -99,6 +99,50 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn(".st-bubble .st-code { min-width: 0; }", css)
         self.assertIn(".st-bubble .st-code pre { max-width: 100%; overflow-x: auto; }", css)
 
+    def test_a_live_html_block_is_sandboxed_and_has_three_views(self):
+        """item html-block-preview.  The behaviour is case 116 of test_chat_sidebar.js; what the node harness
+        cannot show is the frame's isolation and the CSS that makes Code / Split / Full mean anything."""
+        self.assertIn('const FRAME_SANDBOX = "allow-scripts allow-modals";', self.js)
+        self.assertIn('sandbox="${FRAME_SANDBOX}"', self.js)
+        # one sandbox string, and it never carries this page's origin: with allow-scripts AND allow-same-origin
+        # a model's page could read this browser's chat records
+        self.assertNotIn("allow-same-origin\"", self.js)
+        self.assertNotIn("allow-same-origin'", self.js)
+        self.assertIn('srcdoc="${esc(code)}"', self.js)      # the source reaches the frame escaped, once
+        css = (Path(__file__).parent / "web" / "components.css").read_text(encoding="utf-8")
+        for rule in (".st-code--run .st-code__frame{display:block}", ".st-code--run pre{display:none}",
+                     ".st-code--split{display:grid", ".st-code--full{position:fixed;inset:0;z-index:80"):
+            self.assertIn(rule, css)
+        # an iframe with no height of its own is 150 px tall, and a 1fr row in an auto-height grid gives it
+        # exactly that - so the split preview has to be told how tall it is
+        split = re.search(r"\.st-code--split \.st-code__frame\{([^}]*)\}", css).group(1)
+        self.assertRegex(split, r"height:\s*min\(")
+        rows = re.search(r"\n\.st-code--split\{[^}]*grid-template-rows:([^;}]*)", css).group(1)
+        self.assertNotIn("minmax(0,1fr)", rows)  # ordinary split: the block has no definite height, so a 1fr
+                                                 # row resolves to content - and an iframe's content is 150 px
+        full_rows = re.search(r"\n\.st-code--full\.st-code--split\{([^}]*)\}", css).group(1)
+        self.assertIn("minmax(0,1fr)", full_rows)   # full screen: the block IS definite, so 1fr is real
+        full_split = re.search(r"\.st-code--full\.st-code--split \.st-code__frame\{([^}]*)\}", css).group(1)
+        self.assertIn("height:100%", full_split)   # NOT auto: a replaced element falls back to 150 px
+        self.assertNotIn("height:auto", full_split)
+        # Escape leaves Full before it closes any panel - otherwise a full-screen block traps the key
+        self.assertIn("if (codeFull) { leaveCodeFull(codeFull); return; }", self.js)
+
+    def test_a_code_block_has_its_own_scroll_box(self):
+        """Keeping a growing block's scrollTop only means anything if the block can scroll at all.  With no
+        height limit the <pre> grows to fit whatever the model writes, so "scroll the code block" means
+        scrolling the chat - which the page is pulling back to the bottom every frame (item code-block-scroll,
+        the owner's report 2026-11-22).  The layout itself is the human's to confirm in a browser."""
+        css = (Path(__file__).parent / "web" / "components.css").read_text(encoding="utf-8")
+        rule = re.search(r"\.st-code pre\{([^}]*)\}", css).group(1)
+        self.assertIn("overflow:auto", rule)
+        self.assertIn("max-height:", rule)
+        full = re.search(r"\.st-code--full pre[^{]*\{([^}]*)\}", css).group(1)
+        self.assertIn("max-height:none", full)        # maximized, it uses the window instead of 65vh
+        # and the scroll is read before the write and put back after it, following only if you were at the end
+        self.assertIn("const at = pre.scrollTop, follow = nearEnd(pre, 48);", self.js)
+        self.assertIn("pre.scrollTop = follow ? pre.scrollHeight : at;", self.js)
+
     def test_the_copy_sizes_and_the_file_name(self):
         # todo #copy-whole-turn: plain click copies the answer, Shift adds the thinking, Ctrl/Cmd+Shift adds the tool calls.
         # The saved file is named for the conversation, not just for the day.

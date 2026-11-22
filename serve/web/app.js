@@ -1115,16 +1115,358 @@ function inline(s) {
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
-function codeBlock(lang, code) {
-  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
-    `<pre><code>${esc(code)}</code></pre></div>`;
+// ---------------------------------------------------------------- syntax colouring inside a code fence
+// A fence that NAMES a language colours its comments, strings, numbers and keywords.  A fence that names
+// nothing, or names something this table does not know, is emitted exactly as it was before: one esc(), no
+// spans (item code-syntax-highlight).  No dependency, nothing fetched, no worker - one regex per family, run
+// over the block once.  The escape-first rule does not move: every character of the code still reaches the
+// output through esc(), a token span is the only markup added here, and textContent - what the copy button
+// reads (`$("chat").addEventListener("click")`) - stays byte for byte what was typed.
+// Inside a rule every group must be NON-capturing: the compiled regex maps group N to rules[N][0], so a stray
+// ( silently shifts every class after it.  serve/test_chat_sidebar.js counts them across the whole table
+// instead of trusting whoever adds a row.
+const HL = {
+  // shell: `#` opens a comment only at a line start or after a space, so the rule carries the space - a
+  // coloured space is invisible and textContent is untouched.  A flag does the same, which is why the `-` in
+  // `smart-log` is not mistaken for one.
+  shell: [
+    ["cmt", /(?:^|[\s;&|(])#[^\n]*/],
+    ["str", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/],
+    ["flag", /(?:^|[\s;&|(])--?[A-Za-z][\w-]*/],
+    ["num", /\b\d+(?:\.\d+)?\b/],
+    ["kw", /\b(?:sudo|if|then|else|elif|fi|for|while|until|do|done|case|esac|in|function|return|exit|export|unset|local|declare|readonly|source|eval|exec|set|shift|break|continue|trap|alias|printf|echo|read|test|time)\b/],
+  ],
+  ps: [
+    ["cmt", /(?:^|[\s;&|(])#[^\n]*/],
+    ["str", /"[^"\n]*"|'[^'\n]*'/],
+    ["var", /\$[\w{}:]+/],
+    ["cmd", /\b[A-Z]\w*-[A-Za-z]\w*\b/],
+    ["flag", /(?:^|[\s;&|(])--?[A-Za-z][\w-]*/],
+    ["num", /\b\d+(?:\.\d+)?\b/],
+    ["kw", /\b(?:begin|break|catch|class|continue|do|dynamic|else|elseif|end|filter|finally|for|foreach|from|function|if|in|param|return|switch|throw|try|until|while|workflow|true|false|null)\b/],
+  ],
+  py: [
+    // the strings before the comment rule: a # inside one is part of the string, and the leftmost match wins
+    ["str", /"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/],
+    ["cmt", /#[^\n]*/],
+    ["num", /\b(?:0[xXbBoO][\da-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?j?)\b/],
+    ["kw", /\b(?:False|None|True|and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield|match|case|self|cls)\b/],
+    ["fn", /\b[A-Za-z_]\w*(?=\()/],
+  ],
+  js: [
+    // no `#` comment rule here: in JS that is a private field (this.#count), not a comment
+    ["cmt", /\/\/[^\n]*|\/\*[\s\S]*?\*\//],
+    ["str", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/],
+    ["num", /\b(?:0[xXbBoO][\da-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/],
+    ["kw", /\b(?:as|async|await|break|case|catch|class|const|continue|debugger|default|delete|do|else|enum|export|extends|finally|for|from|function|get|if|implements|import|in|instanceof|interface|keyof|let|namespace|new|of|package|private|protected|public|readonly|return|satisfies|set|static|super|switch|this|throw|try|type|typeof|undefined|null|true|false|var|void|while|with|yield)\b/],
+    ["fn", /\b[A-Za-z_$][\w$]*(?=\()/],
+  ],
+  json: [
+    // a string with a colon after it is a key, so the two rules are one lookahead apart - and the lookahead
+    // comes after the closing quote, or a key can never be one
+    ["key", /"(?:[^"\\]|\\.)*"(?=[ \t]*:)/],
+    ["str", /"(?:[^"\\]|\\.)*"/],
+    ["num", /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/],
+    ["kw", /\b(?:true|false|null)\b/],
+  ],
+  clike: [
+    // a line that opens with # is C's preprocessor or Rust's attribute, not a comment
+    ["meta", /^[ \t]*#[ \t]*[a-z_]+/],
+    ["cmt", /\/\/[^\n]*|\/\*[\s\S]*?\*\//],
+    ["str", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/],
+    ["num", /\b(?:0[xXbBoO][\da-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/],
+    ["kw", /\b(?:auto|bool|break|case|catch|char|class|const|continue|decltype|default|delete|do|double|elif|else|enum|endif|event|explicit|extern|false|finally|float|for|friend|fn|func|goto|if|i16|i32|i64|i8|impl|import|int|interface|inline|let|long|mutable|namespace|new|nil|null|nullptr|package|private|protected|pub|public|register|return|short|signed|sizeof|static|struct|switch|template|this|throw|throws|true|try|typedef|typename|union|unsigned|use|using|u16|u32|u64|u8|var|void|volatile|where|while)\b/],
+    ["fn", /\b[A-Za-z_]\w*(?=\()/],
+  ],
+  css: [
+    ["cmt", /\/\*[\s\S]*?\*\//],
+    ["str", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/],
+    ["at", /^[ \t]*@[a-z-]+/],
+    ["hex", /#[0-9a-fA-F]{3,8}\b/],
+    ["attr", /[-\w]+(?=[ \t]*:)/],
+    ["num", /\b\d+(?:\.\d+)?(?:px|em|rem|%|s|ms|vw|vh|vmin|vmax|fr|deg|ch)?\b/],
+  ],
+  html: [
+    ["cmt", /<!--[\s\S]*?(?:-->|$)/],
+    ["tag", /<\/?!?[A-Za-z][\w:-]*|\?>|\/?>/],   // the !? so <!doctype html> is one tag, not a stray ">"
+    ["attr", /[\w:@.][\w:.-]*(?=[ \t]*=)/],
+    ["str", /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/],
+  ],
+  yaml: [
+    ["cmt", /(?:^|[\s])#[^\n]*/],
+    ["key", /^[ \t]*["']?[\w.$-]+["']?(?=[ \t]*:)/],
+    ["str", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/],
+    // the ] is escaped on purpose: inside a class [\s[],] is "whitespace, [, comma" and then a LITERAL comma,
+    // because the first ] closes the class.  That is the same trap that made the old hr rule match only three
+    // characters (item markdown-cheatsheet-gaps), so it is spelled out here rather than discovered again.
+    ["num", /(?:^|[\s\[,\]])-?\d[\d_]*(?:\.\d+)?/],
+    ["kw", /\b(?:true|false|null|yes|no|on|off)\b/],
+  ],
+  sql: [
+    ["cmt", /--[^\n]*|\/\*[\s\S]*?\*\//],
+    ["str", /"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/],
+    ["num", /\b\d+(?:\.\d+)?\b/],
+    ["kw", /\b(?:all|alter|and|as|asc|avg|begin|between|by|case|cast|check|commit|count|max|min|sum|create|default|delete|desc|distinct|drop|else|end|exists|foreign|from|full|grant|group|having|if|in|index|inner|insert|int|into|is|join|key|left|like|limit|not|null|offset|on|or|order|outer|partition|primary|range|references|returning|revoke|right|row|rows|select|set|table|then|transaction|union|unique|update|using|values|view|when|where|with)\b/],
+    ["fn", /\b[A-Za-z_]\w*(?=\()/],
+  ],
+  rb: [
+    ["str", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/],
+    ["cmt", /#[^\n]*/],
+    ["num", /\b\d[\d_]*(?:\.\d+)?\b/],
+    ["kw", /\b(?:alias|and|begin|break|case|class|def|do|else|elsif|end|ensure|for|if|in|module|next|nil|not|or|redo|require|require_relative|rescue|retry|return|self|super|then|undef|unless|until|when|while|yield|true|false)\b/],
+    ["fn", /\b[A-Za-z_]\w*(?=[ \t]*\()/],
+  ],
+  docker: [
+    ["cmt", /(?:^|[\s])#[^\n]*/],
+    ["str", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/],
+    ["kw", /\b(?:from|as|run|cmd|label|maintainer|expose|env|add|copy|entrypoint|volume|user|workdir|arg|onbuild|stopsignal|healthcheck|shell)\b/],
+    ["var", /\$\{?\w+\}?/],
+  ],
+  diff: [
+    // meta before ins/del, or `--- a/file` would be painted as one long deletion
+    ["hunk", /^@@[^\n]*/],
+    ["meta", /^(?:diff|index|new file|deleted file|similarity|rename|old mode|new mode|---|\+\+\+)[^\n]*/],
+    ["ins", /^\+[^\n]*/],
+    ["del", /^-[^\n]*/],
+  ],
+};
+// The fence's info string, lower-cased and cut at the first space, comma, colon or semicolon (the reader wrote
+// ```bash , so the label keeps what they typed and the lookup takes the name), to a rule family.
+const HL_LANG = {
+  bash: "shell", sh: "shell", shell: "shell", shellscript: "shell", zsh: "shell", ksh: "shell", dash: "shell",
+  console: "shell", terminal: "shell", prompt: "shell", "shell-session": "shell", bat: "shell", batch: "shell",
+  cmd: "shell",
+  ps: "ps", ps1: "ps", powershell: "ps", pwsh: "ps",
+  python: "py", py: "py", py3: "py", python3: "py",
+  js: "js", jsx: "js", mjs: "js", cjs: "js", javascript: "js", node: "js", deno: "js", bun: "js",
+  ts: "js", tsx: "js", typescript: "js",
+  json: "json", jsonc: "json", json5: "json", jsonl: "json",
+  c: "clike", h: "clike", cpp: "clike", cxx: "clike", cc: "clike", "c++": "clike", "cpp++": "clike", hpp: "clike",
+  hxx: "clike", cu: "clike", cuda: "clike", objc: "clike", java: "clike", kt: "clike", kts: "clike",
+  kotlin: "clike", swift: "clike", rs: "clike", rust: "clike", go: "clike", golang: "clike", cs: "clike",
+  csharp: "clike", scala: "clike", dart: "clike", php: "clike", zig: "clike", glsl: "clike", hcl: "clike",
+  css: "css", scss: "css", sass: "css", less: "css",
+  html: "html", htm: "html", xml: "html", xhtml: "html", svg: "html", vue: "html", tf: "html",
+  yaml: "yaml", yml: "yaml", toml: "yaml", ini: "yaml", cfg: "yaml", conf: "yaml", properties: "yaml",
+  env: "yaml", dotenv: "yaml",
+  sql: "sql", mysql: "sql", postgres: "sql", postgresql: "sql", sqlite: "sql", tsql: "sql", plsql: "sql",
+  rb: "rb", ruby: "rb", perl: "rb", pl: "rb",
+  docker: "docker", dockerfile: "docker",
+  diff: "diff", patch: "diff", udiff: "diff", recheck: "diff",
+};
+// A streaming answer re-renders only its LAST block per frame (renderBubble / markdownBlocks), so a code fence
+// that has not closed yet is re-highlighted as it grows.  Measured on this box with the page's own table (node,
+// 20 runs of one python block): 2,000 chars costs 0.12 ms and 175 spans, 8,000 costs 0.21 ms and 713 spans,
+// 20,000 costs 0.49 ms and 1,781 spans, 40,000 costs 0.95 ms and 3,564 spans - against the 26 us for an
+// 18,000-char answer LESSONS.md records.  The spans are the part that matters, not the string: every one is an
+// element the browser builds again on the next frame.  So a block over HL_MAX goes out plain.
+const HL_MAX = 20000;
+const HL_CACHE = {};
+function hlCompiled(family) {
+  const rules = HL[family];
+  return {re: new RegExp(rules.map((r) => `(${r[1].source})`).join("|"), "gmi"), cls: rules.map((r) => r[0])};
+}
+// code -> tokens: [{c: class or "", t: text}].  Kept as data rather than as a string so a growing block can be
+// grown (growCode) instead of rebuilt - re-assigning the whole <code> every frame is what flashed.
+function hlTokens(code, family) {
+  if (!family) return code ? [{c: "", t: code}] : [];
+  const h = HL_CACHE[family] || (HL_CACHE[family] = hlCompiled(family));
+  h.re.lastIndex = 0;
+  const out = [];
+  let at = 0;
+  for (let m; (m = h.re.exec(code));) {
+    if (!m[0]) { h.re.lastIndex++; continue; }  // no rule here can match empty; a bad edit must not spin the page
+    if (at < m.index) out.push({c: "", t: code.slice(at, m.index)});
+    let g = 1; while (g < m.length && m[g] === undefined) g++;
+    out.push({c: h.cls[g - 1], t: m[0]});
+    at = m.index + m[0].length;
+  }
+  if (at < code.length) out.push({c: "", t: code.slice(at)});
+  return out;
+}
+// An HTML block carries two other languages inside it: <style> and <script> bodies are coloured with the css
+// and js rules, the tags around them with the html ones.  An unclosed <script> - a block still being written -
+// runs to the end of the block, so the script is coloured while it streams and not only after.
+const HTML_REGION = /(<style[^>]*>)([\s\S]*?)(?:<\/style>|$)|(<script[^>]*>)([\s\S]*?)(?:<\/script>|$)/gi;
+function hlToks(code, family) {
+  if (family !== "html") return hlTokens(code, family);
+  const out = [];
+  let at = 0, m;
+  HTML_REGION.lastIndex = 0;
+  while ((m = HTML_REGION.exec(code))) {
+    const open = m[1] || m[3], body = m[1] ? m[2] : m[4];
+    const bodyEnd = m.index + open.length + body.length;    // the close tag is what is left of the match, and it
+    out.push(...hlTokens(code.slice(at, m.index), "html"), ...hlTokens(open, "html"),
+             ...hlTokens(body, m[1] ? "css" : "js"), ...hlTokens(code.slice(bodyEnd, m.index + m[0].length), "html"));
+    at = m.index + m[0].length;                            // is NOT part of the body: slicing from the open tag
+  }                                                        // would emit the body twice
+  // hlTokens, not hlToks, for the pieces: a <style> tag on its own matches HTML_REGION again, and the splitter
+  // would call itself forever
+  return out.concat(hlTokens(code.slice(at), "html"));
+}
+const tokHtml = (toks) => toks.map((t) => (t.c ? `<span class="t-${t.c}">${esc(t.t)}</span>` : esc(t.t))).join("");
+// where the tokens stop being final.  A token settles only at a boundary the next character cannot join: the
+// character after it must be whitespace.  That rule is not caution for its own sake - left-to-right, the text
+// `"""a docstring` tokenizes as an EMPTY string `""` plus a stray quote, and once that settles the docstring
+// can never be coloured right.  Same for `1` in `1.5`, and for the last token of the text, which by
+// definition has nothing after it yet.
+// An HTML block's <style>/<script> bodies are a second language, and a slice that starts inside one cannot see
+// it: re-tokenizing a tail that begins mid-<script> would colour the js with the html rules.  So the cursor
+// never advances past the START of the last region, open or closed - the last region is always re-tokenized
+// whole, and every slice begins where the region scanner can see what language it is in.
+function regionCap(code) {
+  const opens = /<style[^>]*>|<script[^>]*>/gi;
+  let last = -1, m;
+  while ((m = opens.exec(code))) last = m.index;
+  return last < 0 ? code.length : last;
+}
+function hlSplit(code, family) {
+  const toks = hlToks(code, family);
+  const cap = family === "html" ? regionCap(code) : code.length;
+  let n = 0, len = 0, safe = 0;
+  for (; n < toks.length; n++) {
+    len += toks[n].t.length;
+    if (len < code.length && len <= cap && /\s/.test(code[len])) safe = len;
+  }
+  let m = 0, acc = 0;
+  while (m < toks.length && acc + toks[m].t.length <= safe) { acc += toks[m].t.length; m++; }
+  return {keep: toks.slice(0, m), tail: toks.slice(m), safe: acc};
+}
+function hlRun(code, family) { return tokHtml(hlToks(code, family)); }
+// code -> escaped HTML with one span per recognised token.  Unknown or absent language, or a block over HL_MAX:
+// exactly the old output, esc(code), no spans.
+const hlFamily = (lang) => HL_LANG[String(lang || "").toLowerCase().split(/[\s,;:=]/)[0]];
+function highlight(code, lang) {
+  const family = hlFamily(lang);
+  if (!family || code.length > HL_MAX) return esc(code);
+  return hlRun(code, family);
+}
+// the characters a code block holds, read back out of the HTML codeBlock() wrote: our own spans are the only
+// markup in there (esc() turns every < in the source into &lt;), so tags off first, then decode entities -
+// that order is what keeps a source "&amp;lt;" from becoming markup
+const codeSrc = (body) => body.replace(/<\/?span[^>]*>/g, "")
+  .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+// A fence the reader can LOOK at and not just read: ```html, or an untagged fence whose first characters are a
+// document (item html-block-preview, the owner, 2026-11-22).  Only an EMPTY info string is sniffed - a block
+// tagged ```txt that happens to contain markup stays source, because the tag is what the author asked for.
+const HTML_LANGS = new Set(["html", "htm", "xhtml"]);
+const HTML_DOC = /^\s*(?:<!doctype\s+html|<html[\s>]|<body[\s>])/i;
+const isLiveHtml = (lang, code) => {
+  const name = String(lang || "").toLowerCase().split(/[\s,;:=]/)[0];
+  return HTML_LANGS.has(name) || (!name && HTML_DOC.test(code));
+};
+// The preview is an iframe, and the sandbox is the whole security answer: scripts run (that is what a live view
+// is for), but the frame is never given this page's origin - no allow-same-origin - so it cannot read this
+// browser's localStorage or the chat records, and it is not the page that is talking to the server.  srcdoc
+// carries the escaped source; the browser hands the frame exactly what was typed.
+const FRAME_SANDBOX = "allow-scripts allow-modals";
+// The block's controls are drawn INLINE rather than referenced from the sprite: the sprite is inlined into the
+// page at request time, so a page loaded before a symbol exists renders an empty button, and that is exactly
+// what the owner kept seeing.  Same 24x24 grid and stroke as the sprite, so they match the rest of the page.
+const SVG = (body) => `<svg class="st-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none">${body}</svg>`;
+const ICON = {
+  copy: `<rect x="8.5" y="8.5" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.5"/>` +
+        `<path d="M15.5 5.5H6.5C5.4 5.5 4.5 6.4 4.5 7.5V16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>`,
+  code: `<path d="M8.5 8L4.5 12L8.5 16M15.5 8L19.5 12L15.5 16M13 6L11 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+  play: `<path d="M8.5 6L17.5 12L8.5 18Z" fill="currentColor"/>`,
+  split: `<rect x="3.5" y="6" width="7" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/>` +
+         `<rect x="13.5" y="6" width="7" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/>`,
+  expand: `<path d="M9 4.5H4.5V9M15 4.5H19.5V9M9 19.5H4.5V15M15 19.5H19.5V15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+  close: `<path d="M6.5 6.5L17.5 17.5M17.5 6.5L6.5 17.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>`,
+  reload: `<path d="M18.6 12A6.6 6.6 0 1 1 16.5 7.2M18.6 4.6V8.4H14.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+};
+// The head, left to right: the language, then copy, and for a live block the reload, the source/preview
+// toggle, the split, and maximize (an X once you are maximized).
+function codeBlock(lang, code, live) {
+  return `<div class="st-code${live ? " st-code--live st-code--run" : ""}" data-lang="${esc(lang || "")}">` +
+    `<div class="st-code__head"><span>${esc(lang || "code")}</span>` +
+    `<span class="st-code__acts">` +
+    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code" title="Copy code">${SVG(ICON.copy)}</button>` +
+    (live ? `<button class="st-btn st-btn--icon" data-code-reload aria-label="Reload the page" title="Reload the page">${SVG(ICON.reload)}</button>` +
+            `<button class="st-btn st-btn--icon" data-code-mode aria-label="Show the source" title="Show the source">${SVG(ICON.code)}</button>` +
+            `<button class="st-btn st-btn--icon" data-code-split aria-label="Source and preview side by side" title="Source and preview side by side">${SVG(ICON.split)}</button>` +
+            `<button class="st-btn st-btn--icon" data-code-full aria-label="Full screen" title="Full screen">${SVG(ICON.expand)}</button>` : "") +
+    `</span></div>` +
+    `<pre><code>${highlight(code, lang)}</code></pre>` +
+    (live ? `<iframe class="st-code__frame" tabindex="0" sandbox="${FRAME_SANDBOX}" title="HTML preview" srcdoc="${esc(code)}"></iframe>` : "") +
+    `</div>`;
+}
+// The three states a live block can be in: source (what every block that is not a finished HTML document
+// shows), preview (st-code--run), or both (st-code--split).  Full is a modifier, not a fourth state: it
+// enlarges whichever of the three is showing, and Escape leaves it.  Which block is full is held here rather
+// than looked up with querySelector: one element can be full at a time, and the variable says so.
+let codeFull = null;
+function codeMode(box, want, btn) {
+  box.classList.remove("st-code--split");
+  box.classList.toggle("st-code--run", want === "run");
+  // switching panes does NOT touch the frame: re-arming it here broke the preview (the owner, 2026-11-22),
+  // and a page that keeps running while you read its source is the useful behaviour anyway.  The reload
+  // button does it when you ask for it.
+  const b = btn || box.querySelector("[data-code-mode]");
+  if (b) codeModeIcon(b, want);
+  const sp = box.querySelector("[data-code-split]");
+  if (sp) sp.setAttribute("aria-pressed", "false");
+}
+// the button shows the view it will take you to: a code glyph while you are looking at the page, a play
+// triangle while you are looking at the source
+function codeModeIcon(b, want) {
+  const label = want === "run" ? "Show the source" : "Run the page";
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  b.innerHTML = SVG(want === "run" ? ICON.code : ICON.play);
+}
+// Reload the preview on purpose: put the block's own source back into srcdoc, which makes the browser throw
+// away the current document and load a fresh one.  The source comes from the srcdoc attribute the renderer
+// wrote, not from a round trip through the rendered spans, so it cannot drift.
+function reloadCodeFrame(box) {
+  const frame = box.querySelector(".st-code__frame");
+  if (!frame) return;
+  const src = frame.getAttribute("srcdoc");
+  if (src == null) return;
+  frame.srcdoc = src;
+}
+// A pointer click leaves the button focused, and a focused button activates on Space - so after clicking Split,
+// the reader's next Space re-toggled Split instead of flapping the game in the preview (the owner, 2026-11-22).
+// e.detail === 0 is a click the keyboard fired, and THAT one keeps focus: a keyboard reader is about to move on
+// from here, and blurring would strand them where they started.
+function codeBtnDone(btn, e) { if (e.detail) btn.blur(); }
+function enterCodeFull(box, btn) {
+  if (codeFull && codeFull !== box) leaveCodeFull(codeFull);   // one block at a time takes the window
+  codeFull = box;
+  box.classList.add("st-code--full");
+  codeFullIcon(box, true, btn);
+}
+function leaveCodeFull(box, btn) {
+  box.classList.remove("st-code--full");
+  if (codeFull === box) codeFull = null;
+  codeFullIcon(box, false, btn);
+}
+// full screen shows an X while you are inside it - the clearest way out, and Escape does the same thing.
+// The clicked button is passed in when there is one; the Escape path has no button in hand and finds it.
+function codeFullIcon(box, on, btn) {
+  const b = btn || box.querySelector("[data-code-full]");
+  if (!b) return;
+  const label = on ? "Exit full screen" : "Full screen";
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  b.innerHTML = SVG(on ? ICON.close : ICON.expand);
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
   let para = [], list = null;
   const flushPara = () => { if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; };
-  const flushList = () => { if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
+  // A list item is a LIST of parts, not one string.  A single text part is exactly what every item was before -
+  // the same inline(), the same " " join the continuation rule used - and a code fence inside the item adds a
+  // second part of already-built HTML.  Only codeBlock() makes those parts, and it escapes every character of
+  // the code itself, so the escape-first rule still holds with a block nested in a bullet.
+  const itemHtml = (parts) => {
+    let h = "", run = [];
+    const flushRun = () => { if (run.length) h += inline(run.join(" ")); run = []; };
+    for (const p of parts) { if (p.html) { flushRun(); h += p.v; } else run.push(p.v); }
+    flushRun();
+    return `<li>${h}</li>`;
+  };
+  const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map(itemHtml).join("")}</${list.tag}>`); list = null; } };
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     let m;
@@ -1145,14 +1487,36 @@ function blocks(text) {
       out.push(html + "</tbody></table>");
       continue;
     }
+    // A fence indented up to six spaces is still a fence.  markdownBlocks() only strips fences at column 0, so
+    // this is the shape a model writes when it puts a command inside a bullet - and before this the opener fell
+    // through to the continuation rule below, the backticks were joined into the item's text, and inline() ate
+    // one pair: the command came out as a single inline code span with a literal `` on each side and its line
+    // breaks gone (the owner's report, 2026-11-22).  The opener's indentation is stripped from every line, and
+    // a closer needs at least as many backticks as the opener.  An unclosed one runs to the end of the block,
+    // which is what a streaming answer looks like.
+    if ((m = l.match(/^(\s{0,6})(`{3,})[ \t]*([^\n`]*)$/))) {
+      const ind = m[1].length, ticks = m[2].length, body = [];
+      let j = i + 1;
+      for (; j < lines.length; j++) {
+        const c = lines[j].match(/^\s*(`{3,})[ \t]*$/);
+        if (c && c[1].length >= ticks) break;
+        body.push(lines[j].slice(ind));
+      }
+      const lang = m[3].trim(), bodyTxt = body.join("\n"), closed = j < lines.length;
+      const html = codeBlock(lang, bodyTxt, closed && isLiveHtml(lang, bodyTxt));
+      if (list) list.items[list.items.length - 1].push({v: html, html: true});
+      else { flushPara(); out.push(html); }        // an indented fence after a paragraph: the block is its own
+      i = j;                                        // the closer, or lines.length when it never closed
+      continue;
+    }
     if ((m = l.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/))) {
       flushPara();
       const tag = m[1] ? "ol" : "ul";
       if (!list || list.tag !== tag) { flushList(); list = {tag, items: []}; }
-      list.items.push(m[2]);
+      list.items.push([{v: m[2]}]);
       continue;
     }
-    if (list && /^\s{2,}\S/.test(l)) { list.items[list.items.length - 1] += " " + l.trim(); continue; }
+    if (list && /^\s{2,}\S/.test(l)) { list.items[list.items.length - 1].push({v: l.trim()}); continue; }
     flushList();
     para.push(l);
   }
@@ -1170,8 +1534,12 @@ function markdownBlocks(text) {
     out.push(...blocks(rest.slice(0, m.index)));
     rest = rest.slice(m.index + m[0].length);
     const end = rest.match(/(^|\n)```[ \t]*(\n|$)/);
-    if (!end) { out.push(codeBlock(m[2].trim(), rest)); break; }         // still streaming
-    out.push(codeBlock(m[2].trim(), rest.slice(0, end.index)));
+    // still streaming: there is no closer yet.  One trailing newline is dropped so an open block's HTML is byte
+    // for byte what it will be the frame the closer lands - otherwise the last block "changes" at that moment
+    // and is rebuilt, and the scroll position of anyone reading inside it goes with it
+    if (!end) { out.push(codeBlock(m[2].trim(), rest.replace(/\n$/, ""))); break; }
+    const body = rest.slice(0, end.index);              // a finished block: this one can be shown, not just read
+    out.push(codeBlock(m[2].trim(), body, isLiveHtml(m[2].trim(), body)));
     rest = rest.slice(end.index + end[0].length);
   }
   return out;
@@ -2295,7 +2663,7 @@ document.addEventListener("click", (e) => {
       !e.target.closest("[data-msg-edit]") && !e.target.closest("#mcp-btn") &&
       !e.target.closest(".att-viewer")) closePopover();
 });
-document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (settingsModal) closeSettingsModal(); else if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
+document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (codeFull) { leaveCodeFull(codeFull); return; } if (settingsModal) closeSettingsModal(); else if (msgModal) closeModal(); else if (viewerEl) closeViewer(); else if (activePopover) closePopover(); });
 
 // There used to be a "Chat history" switch under About, with off meaning the old page: one chat in
 // localStorage.  It is gone (todo #drop-single-chat); the store is always opened at start-up, and the old
@@ -2734,7 +3102,50 @@ function bubbleParts(m) {
 const dropPart = (p) => (p.els || [p.el]).forEach((e) => e && e.remove());
 function addBlocks(host, p, blks) {
   for (const b of blks) { host.insertAdjacentHTML("beforeend", b); p.els.push(host.lastElementChild); }
-  p.n = blks.length; p.last = blks[blks.length - 1] || "";
+  p.n = blks.length; p.blks = blks; p.last = blks[blks.length - 1] || "";
+}
+// A code block is the one block the reader scrolls, and the one block that must not be remade.  The update
+// below inserts a new element and removes the old one every frame the answer grows - correct for a paragraph,
+// and for a fence it threw the <pre> away with everything inside it, scrollTop included, so a block being
+// written could not be scrolled at all (the owner, 2026-11-22: "I can't scroll the code blocks when it's
+// writing").  So a code block is kept and only the code inside it is written.  The tail is followed only if
+// the reader was already at the bottom of the box - the same rule and the same 48 px of slack syncToolBody
+// uses for a call's arguments (item tool-args-stream) - and the head is left alone: the fence's language is
+// fixed the moment its opener line is complete, and the copy button keeps whatever state it had.
+const CODE_BLOCK = /^<div class="st-code"[ >][\s\S]*?<pre><code>([\s\S]*)<\/code><\/pre><\/div>$/;
+function syncCode(el, html) {
+  if (!(el.className || "").split(/\s+/).includes("st-code")) return false;
+  const body = CODE_BLOCK.exec(html);
+  if (!body) return false;                       // not the shape codeBlock() writes: fall back to replacing it
+  const pre = el.querySelector("pre"), code = el.querySelector("code");
+  if (!pre || !code) return false;
+  const at = pre.scrollTop, follow = nearEnd(pre, 48);   // geometry read BEFORE the write, as everywhere else
+  growCode(code, codeSrc(body[1]), hlFamily(el.dataset && el.dataset.lang));
+  pre.scrollTop = follow ? pre.scrollHeight : at;
+  return true;
+}
+// Grow a code block instead of rebuilding it.  The invariant is simple: the keep span holds the source up to
+// `_cut` and is only ever appended to, the tail span holds the rest and is the only thing rewritten.  `_safe`
+// is how far the tokens are final - nothing the next character can change - so `_cut` advances to it each
+// frame and the settled part is never touched again.  The old path assigned the whole <code> every frame:
+// measured on this box, 40 whole-subtree assignments and 336,545 characters of HTML rebuilt to write one
+// 6,000-character fence.  That is the flash the owner reported, and it threw away any text selected inside.
+function growCode(code, src, family) {
+  const prev = code._src !== undefined && src.startsWith(code._src) ? code._src : "";
+  if (!prev) {                                   // first grow of this element, or the text is not an extension
+    code.innerHTML = `<span class="hl-keep"></span><span class="hl-tail"></span>`;
+    code._keep = code.querySelector(".hl-keep");
+    code._tail = code.querySelector(".hl-tail");
+    code._cut = 0; code._safe = 0;
+  }
+  const cut = Math.min(code._safe, prev.length);              // final last time is still final
+  if (cut > code._cut && code._keep) {
+    code._keep.insertAdjacentHTML("beforeend", tokHtml(hlToks(src.slice(code._cut, cut), family)));
+    code._cut = cut;
+  }
+  const s = hlSplit(src.slice(code._cut), family);
+  if (code._tail) code._tail.innerHTML = tokHtml(s.keep.concat(s.tail));   // the WHOLE tail region: keep here
+  code._src = src; code._safe = code._cut + s.safe;          // is not settled yet, it moves next frame
 }
 // The answer bubble, updated in place.  A part is one element the page owns and then only edits by text:
 // a thinking block, a work container, a tool call, or a run of markdown.  Nothing here re-assigns the
@@ -2861,16 +3272,24 @@ function updatePart(host, m, p, w, streaming) {
     const last = blks[blks.length - 1];
     if (last !== p.last) {
       const old = p.els[p.els.length - 1];
+      if (syncCode(old, last)) { p.last = last; p.blks[p.n - 1] = last; return; }   // a growing fence keeps its
       old.insertAdjacentHTML("afterend", last);            // one element per block, so this is exact
       p.els[p.els.length - 1] = old.nextElementSibling;
       old.remove();
-      p.last = last;
+      p.last = last; p.blks[p.n - 1] = last;
     }
     return;
   }
-  p.els.forEach((e) => e.remove());
-  p.els = [];                                              // the block count changed: rebuild this part (the tail)
-  addBlocks(host, p, blks);
+  // The block count changed - a fence closed, or a paragraph started after one.  A block whose HTML is identical
+  // is settled and cannot change again, so it keeps its element and only the tail is added or dropped.
+  // Rebuilding the whole part used to remake a code block at the moment its fence closed, losing the scroll
+  // position of anyone reading inside it.
+  let k = 0;
+  while (k < p.els.length && k < blks.length && p.blks[k] === blks[k]) k++;
+  for (let j = p.els.length - 1; j >= k; j--) p.els[j].remove();
+  p.els.length = k;
+  for (; k < blks.length; k++) { host.insertAdjacentHTML("beforeend", blks[k]); p.els.push(host.lastElementChild); }
+  p.n = blks.length; p.blks = blks; p.last = blks[blks.length - 1] || "";
 }
 function onTool(m, x) {
   if (x.event === "limit") { m.limit = x.max_rounds; return; }
@@ -3146,7 +3565,35 @@ $("chat").addEventListener("click", (e) => {
   if (queuedClick(e)) return;                        // a queued post: Cancel gives the text back, Send fires it
   if (e.target.closest("[data-sys-edit]")) { editSysRow(); return; }   // the chat's own system prompt
   const cc = e.target.closest("[data-code-copy]");
-  if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); codeBtnDone(cc, e); return; }
+  // A live HTML block (item html-block-preview): Code/Run flips the pane, Split shows both, Full takes the
+  // window.  The state is a class on the block and nothing else - no per-message record - so a reload returns
+  // every block to its default, the same rule a tool block's open state already follows.
+  const cmo = e.target.closest("[data-code-mode]");
+  if (cmo) {
+    const box = cmo.closest(".st-code");
+    codeMode(box, box.classList.contains("st-code--run") ? "code" : "run", cmo);
+    codeBtnDone(cmo, e);
+    return;
+  }
+  const csp = e.target.closest("[data-code-split]");
+  if (csp) {
+    const box = csp.closest(".st-code"), on = box.classList.toggle("st-code--split");
+    if (on) box.classList.remove("st-code--run");      // split is source AND preview: the source stays shown
+    csp.setAttribute("aria-pressed", String(on));
+    codeBtnDone(csp, e);
+    return;
+  }
+  const crl = e.target.closest("[data-code-reload]");
+  if (crl) { reloadCodeFrame(crl.closest(".st-code")); codeBtnDone(crl, e); return; }
+  const cfl = e.target.closest("[data-code-full]");
+  if (cfl) {
+    const box = cfl.closest(".st-code");
+    if (box.classList.contains("st-code--full")) leaveCodeFull(box, cfl);
+    else enterCodeFull(box, cfl);
+    codeBtnDone(cfl, e);
+    return;
+  }
   const ti = e.target.closest("[data-tool-img]");        // a picture the tool returned (item ai-image-visible)
   if (ti) { openViewer({kind: "image", name: ti.getAttribute("data-tool-name") || "image",
                         url: ti.getAttribute("src")}); return; }

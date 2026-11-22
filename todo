@@ -577,6 +577,154 @@ all: fold-control replaced them, and the four overlapping switches became one co
     writes - worth a rule (attachments already render pictures the user put there); titles, reference links and
     footnotes look like docs features a chat does not owe.
 
+`code-syntax-highlight`  Colour the inside of a fenced code block, for the languages people actually paste. [ui] DONE 2026-11-22
+    Asked as "it can't handle markdown with language highlighting", with a fence tagged bash.  Measured first:
+    such a fence already rendered fine (codeBlock in serve/web/app.js) - a dark block labelled "bash" with a
+    copy button - but the code inside was one flat colour.  What was missing was the colouring, not the fence.
+    Now: 13 rule families (shell ps py js json clike css html yaml sql rb docker diff), 103 language names, 65
+    rules; one compiled regex per family, leftmost match wins, one span per token.  A fence that names nothing,
+    or names something the table does not know, is byte for byte what it was: esc(code), no spans.  Escape-first
+    did not move: every character still goes through esc(), a token span is the only markup added, and "strip
+    the spans and you have esc(code)" is asserted for every language - which is also what keeps the copy button,
+    reading pre.textContent, giving back exactly what was typed.
+    Cost, measured on this box with the page's own table (node, 20 runs of one python block): 2,000 chars
+    0.12 ms and 175 spans, 8,000 0.21 ms and 713, 20,000 0.49 ms and 1,781, 40,000 0.95 ms and 3,564 - against
+    the 26 us for an 18,000-char answer in LESSONS.md.  Only the LAST block of a streaming answer is re-rendered
+    per frame (renderBubble / markdownBlocks), so those are per-frame numbers while a fence grows, and the spans
+    matter more than the string: every one is an element the browser builds again.  HL_MAX = 20000 sends a
+    bigger block out plain; a fence grown 400 -> 40,000 chars over 53 paints cost 23 ms of string building.
+    serve/test_chat_sidebar.js case 113: the owner's own bash sample, twelve languages, the plain path for six
+    unknown names, the cap both ways, nothing-typed-becomes-markup, and the table's own hygiene - no unnamed
+    capturing group (the compiled regex maps group N to rules[N][0]), every class has a colour in
+    components.css and every colour is emitted by some rule, every alias names a family and every family is
+    reachable.  Eleven negative controls, all of them bit, each on the assertion that names it; the hygiene
+    check bites on its own when the output is unchanged.  Colours checked with WCAG against both code
+    backgrounds: the worst in the set is 4.9:1.
+    Not done: lua, makefile, cmake and graphql still render plain - the old behaviour, not a regression - and
+    one palette serves both themes because the code palette is dark in both (tokens.css:50,81).  Page-only: a
+    browser reload, no restart.  Fast suite 273 OK, serve.test_server 317 OK, with test_responses 357 OK,
+    harness 102 -> 103 ok lines, service worker 5.
+
+`fence-in-list`  A code fence inside a bullet renders as literal backticks. [ui] DONE 2026-11-22
+    The owner's example: a bullet ending in ":" with a two-space-indented ```bash fence under it.  Two bugs
+    stacked.  markdownBlocks() only strips fences at column 0, so an indented opener was never seen; blocks()
+    then folded those lines into the list item (the /^\s{2,}\S/ continuation rule, joined with a space), and
+    inline()'s code-span rule ate one pair of the three backticks - the command came out as one
+    <code class="inline"> with a literal `` on each side and its line breaks gone.
+    Fixed in blocks(): a fence indented up to six spaces is a fence, and a list item is now a LIST of parts
+    instead of one string - text parts joined with " " exactly as before, plus html parts that only codeBlock()
+    produces (so escape-first still holds with a block nested in a bullet).  The opener's indentation is
+    stripped from every line; a closer needs at least as many backticks as the opener, so three inside a
+    four-backtick block are code; an unclosed one runs to the end, which is what a streaming answer looks like.
+    Side effect worth keeping: the lines inside the fence are never tested against the blockquote, table or
+    bullet rules, so "> not a quote" inside a fence stays text.
+    serve/test_chat_sidebar.js case 114: the owner's sample, ul and ol, the list surviving on both sides of the
+    block, one block not three (renderBubble writes the earlier ones once), the six/seven-space bound spelled
+    with repeat() rather than counted by eye, the four-backtick case, a fence after a paragraph, nothing-typed-
+    becomes-markup, and an ordinary continuation asserted byte for byte.  Eight controls, all bit, including
+    "items go back to being one string" - which fails the older case 25 assertion "on: a list", so the old
+    shape was pinned twice.  Fast suite 273 OK, server suite with test_responses 357 OK, harness 103 -> 104.
+    Still does not: ~~~ tilde fences (unchanged, listed above), and a fence indented seven or more spaces.
+
+`code-block-scroll`  You cannot scroll a code block while it is being written. [ui] DONE 2026-11-22
+    The owner, 2026-11-22: "It keeps recreating the whole thing on every update."  True, and that is the
+    design: updatePart() grows the last block by inserting a new element and removing the old one (case 25
+    asserts exactly that, "the growing block was replaced").  For a paragraph it is free; for a fence it throws
+    away the <pre> and everything a scroll position lives on, so the reader's wheel was undone every frame.
+    Fixed: syncCode() in serve/web/app.js recognises the block by its class, keeps the element, writes only the
+    <code> inside it, and follows the tail only if the reader was already at the bottom of the box - nearEnd()
+    with the same 48 px of slack syncToolBody uses for a call's arguments (item tool-args-stream).  The head is
+    left alone, so the language label and the copy button keep their state.
+    Two more rebuilds had to go, or the fix only lasted until the fence closed: an OPEN fence kept its trailing
+    newline so its HTML differed from the closed one on that one frame (markdownBlocks now drops one trailing
+    newline while streaming), and the block-count-change path rebuilt the whole part - it now keeps every block
+    whose HTML is identical and adds or drops only the tail.
+    serve/test_chat_sidebar.js case 115 asserts element identity (identity is what a scroll position belongs
+    to), zero inserts per frame, the block's own innerHTML never reassigned, follow-at-the-bottom /
+    leave-alone-scrolled-up / 30 px still follows, the element surviving the frame the fence closes on, and
+    that a growing PARAGRAPH is still replaced - the old rule is unchanged where it was right.  Six controls,
+    all bit.  Harness 104 -> 105, fast suite 273 OK, server + responses 357 OK, service worker 5.
+    Not verified in a real browser: the stub has no layout, so the geometry numbers are set by hand as in case
+    30.  The owner's reload is the check.
+    SECOND ROUND, 2026-11-22 (the owner: "I still can't scroll code blocks while you are writing"): the
+    preserving code was right but the block could not scroll at all - `.st-code pre` had overflow:auto and NO
+    height limit, so the <pre> grew to fit the output and the only scroll was the chat, which the page pulls
+    back to the bottom every frame.  Fixed with max-height:65vh (max-height:none when maximized); pinned by
+    test_a_code_block_has_its_own_scroll_box.  The other half is untouched and needs the owner's call:
+    FOLLOW_HOLD_MS = 2500 means scrolling the CHAT up mid-answer is only held off for 2.5 s before the follow
+    resumes (item autoscroll-cooldown).
+
+`html-block-preview`  A ```html block should be viewable, not only readable. [ui] DONE 2026-11-22
+    The owner's spec: while it is being written show the highlighted source; once it is finished switch to an
+    embedded iframe; a toggle back, a fullscreen view, and a side-by-side source/live view; an UNTAGGED block
+    that opens with a doctype, <html> or <body> counts as one too; and html blocks highlight the css and js
+    inside them.
+    Built on the two fixes before it (a fence in a bullet, and a code block that keeps its element).  codeBlock()
+    takes a third argument, live, and is given one only where the fence has CLOSED - markdownBlocks knows which
+    branch it is in, so a half-written page is never previewed.  isLiveHtml(): the info string is html/htm/xhtml,
+    or it is EMPTY and the code starts with <!doctype html, <html or <body.  Only an empty info string is
+    sniffed: a block tagged ```txt that contains a document stays source, because the tag is the author's intent.
+    The preview is an iframe with sandbox="allow-scripts allow-modals" and srcdoc="${esc(code)}".  Scripts run,
+    that is the point of a live view, but the frame is never given this page's origin (no allow-same-origin), so
+    it cannot read this browser's chat records or act as the page.  State is three classes on the block -
+    st-code--run (preview), st-code--split (both), st-code--full (the window) - and nothing else: a reload
+    returns every block to its default, the rule a tool block's open state already follows.  One block can be
+    full at a time, held in `codeFull` rather than found with querySelector, and Escape leaves Full before the
+    key closes any panel.
+    hlCode(): a <style> body is coloured with the css rules and a <script> body with the js ones, the tags
+    themselves with html; an unclosed <script> runs to the end of the block, so a script is coloured while it
+    streams.  This caught a bug on the way: the region slice was taken from the end of the OPEN tag instead of
+    the end of the body, so the body was emitted twice - "alert(1)alert(1)".  The assertion that saw it is the
+    same invariant used everywhere here: strip the spans and you must have esc(code), character for character.
+    serve/test_chat_sidebar.js case 116: live/not-live for nine inputs, streaming stays source, the srcdoc
+    attribute decodes back to exactly the source, the sandbox string, css and js inside html, a live block
+    nested in a bullet, and the three controls driven by real clicks through the page's own chat handler
+    (Code, Run, Split, Full, Escape).  serve/test_chat_sidebar.py pins what the stub cannot show: the sandbox
+    never carries allow-same-origin, and the CSS that makes the three views mean anything.  Eight controls, all
+    bit.  Harness 105 -> 106, fast suite 273 -> 274, server + responses 357 OK, service worker 5.
+    NOT SAFE-VERIFIED, and the owner should know: a sandboxed frame with allow-scripts can still SEND a request
+    to this server (a simple POST), even though it cannot read the answer - and this box has no api_key and
+    listens on 0.0.0.0.  Dropping allow-modals, or serving the frame from a separate origin, is the answer if
+    that ever matters.  Also unverified in a real browser: the layout of the split and full views.
+    FOCUS FIX 2026-11-22 (the owner: "pressing space always just toggles the last button I pressed. Clicking
+    the iframe doesn't help"): a clicked button keeps DOM focus and Space re-activates it, so Space never
+    reached the preview; and the game's own preventDefault() on pointerdown suppressed the focus change, which
+    is why clicking the frame did not help either.  codeBtnDone() now blurs a control when the click came from
+    a pointer (e.detail non-zero) and leaves focus alone when it came from the keyboard (detail === 0), on all
+    five controls, and the preview iframe carries tabindex="0" so a keyboard reader can enter it on purpose.
+    Pinned in case 116 both ways, plus a check that every control blurs; three controls, all bit.
+
+`code-block-grow`  The answer flashes with every word while it is being written. [ui] DONE 2026-11-22
+    The owner, 2026-11-22: "it flashes with every word you write. I thought I told you not to update old blocks
+    when writing."  Measured before touching anything (the page's own update path, fake stream, counting
+    whole-subtree assignments): the settled blocks were already safe - the flash was inside the growing code
+    block.  updatePart() grows the last block by swapping its element, and syncCode() then assigned the whole
+    <code> innerHTML every frame: 4 assignments for an eight-line fence; for a 6,090-character fence grown in 40
+    frames, 40 assignments and **336,545 characters of HTML rebuilt**.  With syntax colouring that is ~175 spans
+    destroyed and rebuilt 60 times a second - the flash - and it also threw away any text selected inside.
+    Now growCode() keeps two spans inside <code>: hl-keep holds the source up to `_cut` and is only ever
+    APPENDED to; hl-tail holds the rest and is the only thing rewritten.  Same stream: **1 assignment on <code>,
+    38 appends, 39 tail rewrites, ~10x less work**, settled part never touched.
+    The hard part was deciding which tokens are final.  Left-to-right tokenizing a growing text is not stable: a
+    token can change identity when later characters arrive.  Three rules, each learned the hard way today:
+      - a token settles only at a boundary the next character cannot join - the character after it must be
+        whitespace.  Without that, `"""a docstring` mid-stream tokenizes as an EMPTY string `""` plus a stray
+        quote, that settles, and the docstring can never be coloured right.  Same for `1` in `1.5`.
+      - the html region cap: the cursor never advances past the start of the last <style>/<script>, open or
+        closed, or a later slice begins mid-script and colours js with the html rules.
+      - the tail span holds the WHOLE region after the cursor, not just the unfinal part - the first version
+        dropped the characters in between (a space before a quoted argument, then a whole word).
+    Pinned by case 117: keep+tail is byte-identical to one pass over the same text for six languages at four cut
+    points, and a block streamed line by line ends up IDENTICAL to a single pass - python docstring, js block
+    comment, html script.  Eight controls, all bit, including "every token settles at once" and "the html region
+    cap is gone" - exactly the two ways this goes wrong silently.
+    Also here, at the owner's request: the head is now language | copy | Code | Split | Max, and the maximize
+    button becomes minimize with an inward arrow (two new sprite symbols, i-expand and i-compress).
+    Harness 106 -> 107 ok lines.  Checked in real headless Chrome: the live block renders and its script runs    ("script ran at 4:07:59 PM"), and the sandbox blocks both directions - frame -> parent.localStorage and
+    frame -> parent.document are SecurityError, and parent -> frame document is too.  Scratch demo page:
+    html-preview-demo.html at the repo root, generated from the live files by /tmp/make_demo.js - untracked,
+    delete it when done looking.
+
 `crash-recovers-last-turn`  A browser crash mid-turn loses the whole last exchange. [ui] DONE 2026-11-22
     The chat record is written once, at the end of send() (saveChat after the stream closes). If the tab dies -
     crash, OOM, the machine sleeping - the user's own message, the thinking, and every tool call that already
@@ -1613,6 +1761,24 @@ all: fold-control replaced them, and the four overlapping switches became one co
     2335-2354). Second reason to think the engine was busy rather than stuck: ENGINE_SILENCE_S = 300.0
     (server.py:213) should have ended a genuinely silent engine with a nameable error, and no such line appears.
     No engine rebuild attempted here.
+
+    MEASURED 2026-11-22, twice, and the hypothesis is right.  The server has been up since 13:06:45 with the tee
+    line in `running-strata`, so /tmp/strata-server.log holds every pass; there were exactly 2 recoveries and
+    both re-read the conversation.  First: pass 1 "prompt 64036 cached 63313 ... prompt_read 2027 ms", thinking
+    2,560 tokens, coverage=0.289; pass 2 "reading the prompt: ... of 66,584 tokens" then "prompt 66584 cached 0
+    output 0 prompt_read 21681 ms" at 2,839 tok/s, ending "done: 2560 tokens in 43 s (cancel, cancel=True)".
+    Second, on the agent chat that is running me (live.conv cmwsb9cldaaz9): pass 1 "prompt 64043 cached 64031
+    ... prompt_read 374 ms", thinking 2,048 tokens, coverage=0.256; pass 2 "prompt 66079 cached 0 output 1
+    prompt_read 26074 ms" at 2,534 tok/s, "done: 2048 tokens in 42 s (cancel, cancel=True)".  So a recovery on a
+    64k-token prompt costs 21.7-26.1 s of prefill against the 0.37 s the SAME conversation costs with its prefix
+    intact - about 60x - and it lands on the longest turns, which is why the client hung up and the owner saw an
+    answer of zero tokens.  Both coverages (0.256, 0.289) are barely over LOOP_COVERAGE = 0.25
+    (serve/server.py:161).  The fix named above is the one to build: append the low-effort instruction as a
+    trailing turn (EFFORT_TURN in serve/server.py) instead of splicing inside the first system message, so the
+    prefix and the cache survive.  Not started: the owner asked for the markdown item first, and either way it
+    needs a restart of port 8080, which is theirs to do.  The one-line alternative meanwhile is
+    "reasoning_loop_recovery": "stop" in strata-iq3_s.json - it ends the reply at the loop as "length" and pays
+    no second pass; the box currently says "recover".
 
 `sidebar-capped-load`  Do not load the whole store on every open; load a recent window. [ui]
     The real ceiling at scale, and it is not the row count.  openHistory -> allChats -> getAll()

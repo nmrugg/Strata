@@ -85,7 +85,7 @@ function makeEl() {
     },
     setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
     removeAttribute(k) { delete this.attrs[k]; },     // the wrench clears its dot attribute
-    focus() {}, select() {},
+    focus() {}, blur() {}, select() {},
     remove() { if (this._parent) this._parent.children = this._parent.children.filter((c) => c !== this); },
     replaceWith(next) { const p = this._parent; if (p) { p.children = p.children.map((c) => (c === this ? next : c)); next._parent = p; } },
     // a browser matches a class selector on whole class tokens: "chat-item__input" is not ".chat-item", so a
@@ -117,6 +117,16 @@ function makeEl() {
   el.classList.add = (c) => { const set = new Set((el.className || "").split(/\s+/).filter(Boolean)); set.add(c);
                               el.className = [...set].join(" "); };
   el.classList.remove = (c) => { el.className = (el.className || "").split(/\s+/).filter((x) => x && x !== c).join(" "); };
+  // a real classList.toggle(c) flips and returns the new state, and toggle(c, force) SETS it and returns it.
+  // The stub's was an empty function, so a page that keeps its state in classes - the live HTML block's
+  // Code / Split / Full (item html-block-preview) - would have read as broken, or passed by accident.
+  el.classList.toggle = (c, force) => {
+    const has = (el.className || "").split(/\s+/).includes(c);
+    const want = force === undefined ? !has : !!force;
+    if (want !== has) el.className = want ? [...(el.className || "").split(/\s+/).filter(Boolean), c].join(" ")
+                                          : (el.className || "").split(/\s+/).filter((x) => x && x !== c).join(" ");
+    return want;
+  };
   return el;
 }
 
@@ -257,7 +267,7 @@ function run(hooks, stored, seed, shared) {
   const names = Object.keys(env);
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get chats() { return chats; }, get chat() { return chat; }, " +
-    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, inline, placePopover, " +
+    "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, markdownBlocks, inline, highlight, esc, codeBlock, HL, HL_LANG, HL_MAX, hlSplit, hlRun, hlToks, tokHtml, codeSrc, placePopover, " +
     "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, toolBodyHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
@@ -4060,6 +4070,439 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.ok(!shared.records[idA], "a stale tab's write did not bring the chat back");
     closeChannels();
     done.push("multi-tab-sync: a write announces itself and the other tab re-reads before writing, so neither tab deletes the other's work");
+  }
+
+  // 113. code-syntax-highlight: a fence that NAMES a language gets its comments, strings, numbers and
+  //      keywords coloured; a fence that names nothing, or names something the table does not know, is
+  //      emitted exactly as it was - one esc(), no spans.  Driven through the page's own renderer and the
+  //      page's own table, never a copy of either.
+  {
+    const s = run({}, {});
+    const pre = (code, lang) => /<pre><code>([\s\S]*)<\/code><\/pre>/.exec(s.s.codeBlock(lang, code))[1];
+    const strip = (h) => h.replace(/<span class="t-\w+">|<\/span>/g, "");   // the spans are the only markup added
+
+    // the human's own report, typed as they wrote it
+    const sh = "sudo smartctl -a /dev/nvme0n1\n# or: sudo nvme smart-log /dev/nvme0n1";
+    const hsh = pre(sh, "bash");
+    assert.ok(hsh.includes('<span class="t-kw">sudo</span>'), hsh);
+    assert.ok(hsh.includes('<span class="t-flag"> -a</span>'), "a flag after a space: " + hsh);
+    assert.ok(hsh.includes('<span class="t-cmt">'), "the # line is a comment to its end: " + hsh);
+    assert.ok(!hsh.includes('t-flag"> -log'), "smart-log is a word, not a flag: " + hsh);
+    assert.strictEqual(strip(hsh), s.s.esc(sh), "and the code itself is untouched - what the copy button reads");
+
+    for (const [lang, code, want] of [
+      ["python", "def run(a):  # go\n    return subprocess.run([\"x\"], check=True)", ["t-kw\">def", "t-cmt", "t-str", "t-fn\">run", "t-kw\">True"]],
+      ["js", "const t = `x`;  // note\nif (o.#p) f(1)", ["t-kw\">const", "t-str\">`x`", "t-cmt\">//", "t-fn\">f"]],
+      ["json", '{"a": 1, "b": "s"}', ["t-key\">&quot;a&quot;", "t-num\">1", "t-str\">&quot;s&quot;"]],
+      ["diff", "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new", ["t-meta\">--- a/x", "t-meta\">+++", "t-hunk\">@@", "t-del\">-old", "t-ins\">+new"]],
+      ["html", '<a href="u" data-x=1>hi</a>', ["t-tag\">&lt;a", "t-attr\">href", "t-str\">&quot;u&quot;", "t-tag\">&lt;/a"]],
+      ["sql", "SELECT a FROM t -- note\nWHERE b IS NULL", ["t-kw\">SELECT", "t-cmt\">--", "t-kw\">NULL"]],
+      ["css", ".k { color: #fff; margin: 4px }", ["t-attr\">color", "t-hex\">#fff", "t-num\">4px"]],
+      ["yaml", "# c\nkey: value\nn: 3", ["t-cmt", "t-key\">key", "t-num"]],
+      ["dockerfile", "FROM alpine\nRUN echo $VER", ["t-kw\">FROM", "t-kw\">RUN", "t-var\">$VER"]],
+      ["powershell", "Get-ChildItem -Path $x  # note", ["t-cmd\">Get-ChildItem", "t-flag", "t-var\">$x", "t-cmt"]],
+      ["c++", "#include <h>\nint main(){ return 0; } // end", ["t-meta\">#include", "t-kw\">int", "t-fn\">main", "t-cmt\">//"]],
+      ["shell-session", "$ ls --all\nfile.txt", ["t-flag\"> --all"]],
+    ]) {
+      const h = pre(code, lang);
+      // each want is the class, and where it matters what is inside it, the content too: `t-kw">def`
+      for (const w of want) assert.ok(h.includes(`class="${w}`), `${lang}: wanted class="${w} in ${h}`);
+      assert.strictEqual(strip(h), s.s.esc(code), `${lang}: the characters are untouched`);
+    }
+
+    // the default path: no name, or a name the table does not know, is byte for byte what it was
+    for (const lang of ["", undefined, null, "klingon", "text", "markdown"]) {
+      const h = pre('a = "1 < 2" # not coloured', lang);
+      assert.ok(!h.includes("<span"), `${lang} must add no spans: ${h}`);
+      assert.strictEqual(h, s.s.esc('a = "1 < 2" # not coloured'), `${lang}: the old esc(code)`);
+    }
+    // a block over the cap goes out plain, and the cap is a number rather than an accident
+    assert.ok(typeof s.s.HL_MAX === "number" && s.s.HL_MAX > 1000, "HL_MAX is set");
+    const huge = "x = 1  # c\n".repeat(Math.ceil(s.s.HL_MAX / 9) + 40);
+    assert.ok(!pre(huge, "python").includes("<span"), "a block over HL_MAX is plain");
+    assert.ok(pre(huge.slice(0, s.s.HL_MAX - 100), "python").includes("<span"), "and one under it is not");
+
+    // nothing typed becomes markup, coloured or not: the escape-first rule survives the tokenizer
+    const nasty = 'echo "<script>alert(1)</script>" & \'a"b\' # <b>raw</b>';
+    for (const lang of ["bash", "python", "html", "js"]) {
+      const h = pre(nasty, lang);
+      assert.ok(!/<(?!\/?span)/.test(h.replace(/<span class="t-\w+">/g, "")), `${lang}: no markup but the spans: ${h}`);
+      assert.strictEqual(strip(h), s.s.esc(nasty), `${lang}: every character escaped exactly once`);
+    }
+
+    // the table's own hygiene: a rule with an unnamed ( shifts every class after it, because the compiled
+    // regex maps group N to rules[N][0]; and a class with no colour in the CSS is an invisible token
+    const capturing = (src) => {
+      let n = 0;
+      for (let i = 0; i < src.length; i++) {
+        const c = src[i];
+        if (c === "\\") { i++; continue; }
+        if (c === "[") { while (i < src.length && src[i] !== "]") { if (src[i] === "\\") i++; i++; } continue; }
+        if (c === "(" && src[i + 1] !== "?") n++;
+      }
+      return n;
+    };
+    const css = fs.readFileSync(path.join(__dirname, "web", "components.css"), "utf8");
+    const inCss = new Set([...css.matchAll(/\.st-code \.t-([a-z]+)\{/g)].map((m) => m[1]));
+    const inTable = new Set();
+    for (const fam of Object.keys(s.s.HL)) {
+      assert.ok(Array.isArray(s.s.HL[fam]) && s.s.HL[fam].length, `${fam} has no rules`);
+      for (const [cls, re] of s.s.HL[fam]) {
+        assert.strictEqual(capturing(re.source), 0, `${fam}/${cls}: an unnamed capturing group shifts every class after it`);
+        assert.ok(/^[a-z]+$/.test(cls), `${fam}/${cls}: a class must be a plain lowercase word`);
+        inTable.add(cls);
+        assert.ok(inCss.has(cls), `components.css has no colour for .t-${cls}`);
+      }
+      assert.ok(Object.values(s.s.HL_LANG).includes(fam), `family ${fam} is unreachable: no language name maps to it`);
+    }
+    for (const cls of inCss) assert.ok(inTable.has(cls), `.t-${cls} is coloured but the table can never emit it`);
+    for (const [alias, fam] of Object.entries(s.s.HL_LANG)) {
+      assert.ok(s.s.HL[fam], `${alias} maps to no family`);
+      assert.ok(/^[a-z0-9+#.-]+$/.test(alias), `the name "${alias}" cannot survive the lookup's split`);
+    }
+    // the info string may carry more than the name; the label keeps what the reader typed
+    assert.ok(pre("# c", 'bash,title="Disk"').includes('class="t-cmt">'), "the name is read out of the info string");
+    assert.ok(s.s.codeBlock('bash,title="Disk"', "# c").includes("<span>bash,title=&quot;Disk&quot;</span>"),
+              "and the label is still what they wrote");
+    done.push("code-syntax-highlight: a named fence colours comments, strings, numbers and keywords for " +
+              "13 families, an unnamed or unknown one is byte-identical to before, spans add no characters, " +
+              "nothing typed becomes markup, and the table's groups, classes and aliases are checked");
+  }
+
+  // 114. a code fence inside a bullet (the owner's report, 2026-11-22): markdownBlocks() only strips fences at
+  //      column 0, so an indented one fell to the list-continuation rule, its backticks were joined into the
+  //      item's text, and inline() ate a pair - the command came out as one inline code span with a literal ``
+  //      on each side and its line breaks gone.
+  {
+    const md = (t) => run({}, {}).s.markdown(t);
+    const owner = "- **It boots** \u2192 you're in the BIOS, and in Ubuntu you can read what the firmware " +
+      "actually sees:\n  ```bash\n  sudo dmidecode -t memory | grep -A15 \"Locator: DIMM\"\n  ```";
+    const h = md(owner);
+    assert.ok(h.startsWith("<ul><li>") && h.endsWith("</li></ul>"), "still one bullet: " + h.slice(0, 60));
+    assert.ok(h.includes('<div class="st-code"'), "the fence became a code block, inside the li");
+    assert.ok(h.includes("<span>bash</span>"), "with its language label");
+    assert.ok(h.includes("data-code-copy"), "and the copy button");
+    assert.ok(h.includes('<span class="t-str">&quot;Locator: DIMM&quot;</span>'), "and the highlighting");
+    assert.ok(!h.includes("`"), "no backtick survives anywhere: " + h);
+    assert.ok(!h.includes('<code class="inline">'), "and none of it is inline code");
+    const code = /<pre><code>([\s\S]*)<\/code><\/pre>/.exec(h)[1];
+    assert.strictEqual(code.replace(/<span class="t-\w+">|<\/span>/g, ""),
+                       run({}, {}).s.esc('sudo dmidecode -t memory | grep -A15 "Locator: DIMM"'),
+                       "the code is what was typed, dedented, nothing added");
+
+    // the list around it survives, and the default path is byte-identical to what it was
+    const s114 = run({}, {});
+    const block = s114.s.codeBlock("bash", "ls");
+    assert.strictEqual(md("- one\n- two\n  ```bash\n  ls\n  ```\n- three"),
+                       "<ul><li>one</li><li>two" + block + "</li><li>three</li></ul>",
+                       "three items, the block inside the middle one");
+    assert.strictEqual(md("- a\n  line two of a\n- b"), "<ul><li>a line two of a</li><li>b</li></ul>",
+                       "an ordinary continuation still joins with a space");
+    const ol = md("1. first\n   ```bash\n   ls\n   ```\n2. second");
+    assert.ok(ol.startsWith(`<ol><li>first${block}</li><li>second</li></ol>`),
+              "an ordered list indents its fence by three: " + ol.slice(0, 80));
+    // one block, not three: renderBubble writes the earlier ones once and updates only the last
+    assert.strictEqual(run({}, {}).s.markdownBlocks(owner).length, 1, "the whole thing is one block while it streams");
+    const half = "- streaming:\n  ```bash\n  sudo dm";
+    const hh = md(half);
+    assert.ok(hh.includes("<span>bash</span>") && hh.includes('<span class="t-kw">sudo</span> dm') && hh.endsWith("</li></ul>"),
+              "an unclosed fence still closes the li and the ul: " + hh);
+    // what is inside the fence is code, whatever it looks like
+    const lookalike = md("- q\n  ```sh\n  > not a quote\n  ```");
+    assert.ok(!lookalike.includes("<blockquote>") && lookalike.includes("&gt; not a quote"), lookalike);
+    const nastySrc = 'echo "<script>alert(1)</script>"';
+    const nasty = md("- x\n  ```bash\n  " + nastySrc + "\n  ```");
+    const nastyCode = /<pre><code>([\s\S]*)<\/code><\/pre>/.exec(nasty)[1];
+    assert.strictEqual(nastyCode.replace(/<span class="t-\w+">|<\/span>/g, ""), s114.s.esc(nastySrc),
+                       "every character escaped exactly once, none of it markup: " + nasty);
+    assert.ok(!/<script/.test(nasty) && nasty.includes("&lt;script&gt;"), nasty);
+    // the bound: six spaces of indent is still a fence, seven is prose (spelled with repeat(), not counted by eye)
+    const fenceAt = (n) => "- x\n" + " ".repeat(n) + "```bash\n" + " ".repeat(n) + "ls\n" + " ".repeat(n) + "```";
+    assert.ok(md(fenceAt(6)).includes('<div class="st-code"'), "six spaces of indent is still a fence");
+    assert.ok(!md(fenceAt(7)).includes('<div class="st-code"'), "seven is not");
+    // a closer must be at least as long as its opener, so three backticks inside a four-backtick block are code
+    const inner = md("- x\n  ````bash\n  ```\n  ls\n  ````");
+    const innerCode = /<pre><code>([\s\S]*)<\/code><\/pre>/.exec(inner)[1];
+    assert.strictEqual(innerCode.replace(/<span class="t-\w+">|<\/span>/g, ""), s114.s.esc("```\nls"),
+                       "three backticks do not close a four-backtick fence, and the body is what was typed");
+    // an indented fence after a paragraph closes the paragraph and stands as its own block
+    assert.strictEqual(md("read this:\n  ```bash\n  ls\n  ```"), "<p>read this:</p>" + s114.s.codeBlock("bash", "ls"),
+                       "a fence after a paragraph is its own block");
+    done.push("fence-in-list: an indented ``` fence opens a real code block inside the bullet - language label, " +
+              "copy button, highlighting - the list around it survives, an ordinary continuation is unchanged, " +
+              "and nothing inside the fence is read as markup");
+  }
+
+  // 115. a code block being written keeps its <pre>, so the reader can scroll it.  The update path for a growing
+  //      answer inserts a new element and removes the old one - right for a paragraph, and for a fence it threw
+  //      away the <pre> and its scrollTop every frame, so a block could not be scrolled while it streamed (the
+  //      owner, 2026-11-22).  Identity is what is asserted, because identity is what a scroll position belongs
+  //      to; the follow rule is the one syncToolBody already uses (nearEnd, 48 px of slack).
+  {
+    const sc = run({}, {});
+    await wait();
+    const cm = {role: "assistant", text: "look:\n\n```bash\nls -la\n", reasoning: "", time: Date.now(), tools: []};
+    const cel = sc.s.msgEl(cm, 0);
+    const bub = cel.querySelector(".st-bubble");
+    const isCode = (c) => (c.className || "").split(/\s+/).includes("st-code");
+    const code0 = bub.children.find(isCode);
+    assert.ok(code0, "the fence made one st-code element: " + bub.children.map((c) => c.className).join(" | "));
+    const pre = code0.querySelector("pre"), codeEl = code0.querySelector("code");
+    pre.clientHeight = 200;
+    // at the bottom of the box: it follows the new code
+    pre.scrollHeight = 200; pre.scrollTop = 0;
+    const ins0 = bub._ins || 0;
+    cm.text += "sudo dmidecode -t memory\n";
+    sc.s.updateAssistant(cel, cm, true);
+    assert.strictEqual(bub.children.find(isCode), code0, "the same element, not a copy - the <pre> survives");
+    assert.strictEqual(bub._ins, ins0, "and the frame inserted no element at all");
+    assert.strictEqual(code0._sets, undefined, "the block's own innerHTML was never reassigned");
+    const shown = () => { const k = codeEl.querySelector(".hl-keep"), t = codeEl.querySelector(".hl-tail");
+      const built = k.children.map((c) => c._html || "").join("") + (t._html || "");
+      return built || (codeEl._html || ""); };          // wrapped once it has grown, plain on the first paint
+    assert.ok(shown().includes("dmidecode"), "the code inside it did grow: " + shown());
+    assert.strictEqual(pre.scrollTop, 200, "at the bottom: it follows the tail");
+    // scrolled up: left where the reader put it
+    pre.scrollHeight = 900; pre.scrollTop = 120;
+    cm.text += "grep -A15 \"Locator: DIMM\"\n";
+    sc.s.updateAssistant(cel, cm, true);
+    assert.strictEqual(pre.scrollTop, 120, "scrolled up: not yanked back to the bottom");
+    assert.strictEqual(bub.children.find(isCode), code0, "still the same element");
+    // 30 px off the bottom is still "at" it
+    pre.scrollTop = 900 - 200 - 30;
+    cm.text += "more\n";
+    sc.s.updateAssistant(cel, cm, true);
+    assert.strictEqual(pre.scrollTop, 900, "just off the bottom: it still follows");
+    // the fence closes: the block count changes, and the settled code block keeps its element anyway
+    pre.scrollTop = 400;
+    const kids = bub.children.length;
+    cm.text += "```\n\nThat is the disk.\n";
+    sc.s.updateAssistant(cel, cm, true);
+    assert.strictEqual(bub.children.find(isCode), code0, "closing the fence did not remake the block you were reading");
+    assert.strictEqual(pre.scrollTop, 400, "and the scroll position is where you left it");
+    assert.ok(bub.children.length > kids, "the paragraph after it arrived: " + bub.children.length + " blocks");
+    // and a paragraph still grows the way it always did - a new element per frame, this one is not scrolled
+    const pc = bub.children[bub.children.length - 1];
+    cm.text += "and one more line\n";
+    sc.s.updateAssistant(cel, cm, true);
+    assert.notStrictEqual(bub.children[bub.children.length - 1], pc, "a growing paragraph is still replaced");
+    done.push("code-scroll: a growing code block keeps its <pre> and its scrollTop, follows the tail only if " +
+              "you were at the bottom, and survives the frame its fence closes on - while a paragraph still " +
+              "updates the way it always did");
+  }
+
+  // 116. html-block-preview: a finished ```html block (and an untagged block that opens like a document) can be
+  //      looked at, not just read - source while it streams, a sandboxed iframe when it is done, and Code /
+  //      Split / Full to move between them.
+  {
+    const s116 = run({}, {});
+    const md = (t) => run({}, {}).s.markdown(t);
+    const doc = "<!doctype html>\n<html><body><p>hi</p></body></html>";
+    const live = md("```html\n" + doc + "\n```");
+    assert.ok(live.includes('class="st-code st-code--live st-code--run"'), "a finished html block is live: " + live.slice(0, 70));
+    assert.ok(live.includes('<iframe class="st-code__frame"'), "with an iframe");
+    assert.ok(live.includes('sandbox="allow-scripts allow-modals"'), "sandboxed: " + live);
+    assert.ok(!live.includes("allow-same-origin"), "never the page's own origin");
+    assert.ok(live.includes('data-code-mode') && live.includes("data-code-split") && live.includes("data-code-full"),
+              "the three controls are in the head");
+    // the srcdoc attribute carries the source, escaped so nothing can close it; decoded, it is exactly the code
+    const sd = /srcdoc="([\s\S]*)"><\/iframe>/.exec(live)[1];
+    const unesc = (t) => t.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    assert.strictEqual(unesc(sd), doc, "the frame is handed exactly what was written: " + sd);
+    // while it is still being written there is no preview of a half page - highlighted source only
+    const half = md("```html\n<html><body><p>hi");
+    assert.ok(!half.includes("<iframe") && !half.includes("st-code--live"), "streaming: source only: " + half.slice(0, 70));
+    assert.ok(half.includes('class="t-tag">&lt;html'), "and it is still coloured");
+    assert.ok(md("```html\n<!doctype html>\n```").includes('class="t-tag">&lt;!doctype'), "a doctype is one tag");
+    // an untagged block that opens like a document is the same thing; a fragment, or a tagged block, is not
+    for (const start of ["<!doctype html>", "<html>", '<html lang="en">', "<body>"]) {
+      assert.ok(md("```\n" + start + "\n```").includes("st-code--live"), "untagged and opens with " + start);
+    }
+    for (const start of ["<div>x</div>", "<p>hi", "text\n<html>"]) {
+      assert.ok(!md("```\n" + start + "\n```").includes("st-code--live"), "untagged but not a document: " + start);
+    }
+    assert.ok(!md("```txt\n" + doc + "\n```").includes("st-code--live"), "```txt is the author's own label: stays source");
+    assert.ok(!md("```js\n" + doc + "\n```").includes("st-code--live"), "and ```js is not html");
+    // inside a bullet it works too (case 114 built the path this rides on)
+    assert.ok(md("- a page:\n  ```html\n  " + doc.split("\n").join("\n  ") + "\n  ```").includes("st-code--live"),
+              "a live block nested in a list item");
+    // css and js inside the html are coloured as themselves, not as markup
+    const nested = md("```html\n<style>.a{color:red}</style>\n<script>const x=1</script>\n```");
+    assert.ok(nested.includes('class="t-attr">color'), "the <style> body is css: " + nested);
+    assert.ok(nested.includes('class="t-kw">const'), "the <script> body is js: " + nested);
+    const unclosedScript = md("```html\n<script>\nconst y=2\n");
+    assert.ok(unclosedScript.includes('class="t-kw">const'), "a script still being written is js already");
+    // and the nesting adds spans, never characters - this is what catches a region slice that double-counts
+    const nestedSrc = "<style>.a{color:red}</style>\n<script>const x=1</script>";
+    const nestedPre = /<pre><code>([\s\S]*)<\/code><\/pre>/.exec(nested)[1];
+    assert.strictEqual(nestedPre.replace(/<span class="t-\w+">|<\/span>/g, ""), s116.s.esc(nestedSrc),
+                       "css and js inside html change the colours and nothing else: " + nestedPre);
+
+    // the controls: a real click through the page's own chat handler, on the block the page inserted
+    const cm = {role: "assistant", text: "```html\n" + doc + "\n```", reasoning: "", time: Date.now(), tools: []};
+    const cel = s116.s.msgEl(cm, 0);
+    const bub = cel.querySelector(".st-bubble");
+    const box = bub.children.find((c) => (c.className || "").split(/\s+/).includes("st-code"));
+    assert.ok((box.className || "").includes("st-code--run"), "it starts as a preview");
+    const fakeBtn = (attr, sel) => { const b = {className: "", dataset: {[attr]: ""}, setAttribute(k, v) { this[k] = v; }};
+      b.closest = (q) => (q === sel ? b : (q === ".st-code" ? box : null)); return b; };
+    const click = (b) => s116.s.el("chat")._l["click"]({target: b, ctrlKey: false, metaKey: false, shiftKey: false});
+    click(fakeBtn("codeMode", "[data-code-mode]"));
+    assert.ok(!box.className.includes("st-code--run"), "Code: the source is shown");
+    click(fakeBtn("codeMode", "[data-code-mode]"));
+    assert.ok(box.className.includes("st-code--run"), "and Run puts the preview back");
+    click(fakeBtn("codeSplit", "[data-code-split]"));
+    assert.ok(box.className.includes("st-code--split") && !box.className.includes("st-code--run"),
+              "Split: both panes, the source not hidden");
+    click(fakeBtn("codeFull", "[data-code-full]"));
+    assert.ok(box.className.includes("st-code--full"), "Full takes the window");
+    click(fakeBtn("codeFull", "[data-code-full]"));
+    assert.ok(!box.className.includes("st-code--full"), "and the same button gives it back");
+    // Escape leaves Full, and it goes first: a full-screen block is above every panel the Escape chain closes
+    click(fakeBtn("codeFull", "[data-code-full]"));
+    s116.fireDoc("keydown", {key: "Escape"});
+    assert.ok(!box.className.includes("st-code--full"), "Escape leaves Full");
+    // the controls are inline SVG with names on them for a screen reader, and switching panes never touches
+    // the frame - the reload button does that, on purpose
+    const fr = box.querySelector(".st-code__frame");
+    fr.setAttribute("srcdoc", "the source\n");
+    click(fakeBtn("codeMode", "[data-code-mode]"));
+    click(fakeBtn("codeMode", "[data-code-mode]"));
+    click(fakeBtn("codeSplit", "[data-code-split]"));
+    click(fakeBtn("codeSplit", "[data-code-split]"));
+    assert.strictEqual(fr.srcdoc, undefined, "switching panes left the frame alone");
+    click(fakeBtn("codeReload", "[data-code-reload]"));
+    assert.strictEqual(fr.srcdoc, "the source\n", "the reload button re-armed it from the block's own srcdoc");
+    const modeBtn = fakeBtn("codeMode", "[data-code-mode]");
+    click(modeBtn);                                   // source -> preview
+    assert.ok(modeBtn.innerHTML.includes("<svg") && !modeBtn.innerHTML.includes("<use"),
+              "the icons are inline, so a stale sprite cannot blank them: " + modeBtn.innerHTML.slice(0, 90));
+    assert.ok(modeBtn.innerHTML.includes("M8.5 8L4.5 12L8.5 16"), "in the preview it offers the </> glyph");
+    assert.strictEqual(modeBtn["aria-label"], "Show the source", modeBtn["aria-label"]);
+    const modeBtn2 = fakeBtn("codeMode", "[data-code-mode]");
+    click(modeBtn2);                                  // preview -> source
+    assert.ok(modeBtn2.innerHTML.includes("M8.5 6L17.5 12L8.5 18"), "in the source view it offers a play triangle");
+    assert.strictEqual(modeBtn2["aria-label"], "Run the page", modeBtn2["aria-label"]);
+    // every control is an icon button with a name, drawn inline
+    const head116 = s116.s.codeBlock("html", "<!doctype html>", true);
+    for (const attr of ["data-code-copy", "data-code-reload", "data-code-mode", "data-code-split", "data-code-full"]) {
+      const tag = head116.slice(head116.indexOf(attr), head116.indexOf(attr) + 200);
+      assert.ok(tag.includes("aria-label=") && tag.includes("<svg") && !tag.includes("<use"),
+                `${attr} is an inline icon with a label: ${tag.slice(0, 110)}`);
+    }
+    // a pointer click must not leave focus behind on the control: a focused button activates on Space, which is
+    // how the owner's game kept re-toggling Split instead of flapping.  A keyboard click keeps its focus.
+    const ptr = (b, detail) => s116.s.el("chat")._l["click"]({target: b, detail, ctrlKey: false, metaKey: false, shiftKey: false});
+    const sb1 = fakeBtn("codeSplit", "[data-code-split]"); sb1.blur = () => { sb1._blurs = (sb1._blurs || 0) + 1; };
+    ptr(sb1, 1);
+    assert.strictEqual(sb1._blurs, 1, "a pointer click gives the focus back");
+    const sb2 = fakeBtn("codeSplit", "[data-code-split]"); sb2.blur = () => { sb2._blurs = (sb2._blurs || 0) + 1; };
+    ptr(sb2, 0);
+    assert.ok(!sb2._blurs, "a keyboard activation keeps focus where the reader expects it");
+    for (const attr of ["data-code-copy", "data-code-reload", "data-code-mode", "data-code-split", "data-code-full"]) {
+      const fb2 = fakeBtn(attr.replace(/data-code-(\w)/, (m, k) => k), `[${attr}]`);
+      fb2.blur = () => { fb2._blurs = 1; };
+      fb2.querySelector = () => ({innerHTML: "", textContent: "", setAttribute() {}, getAttribute: () => ""});
+      ptr(fb2, 1);
+      assert.strictEqual(fb2._blurs, 1, `${attr} blurs after a pointer click`);
+    }
+    // the preview can be tabbed into deliberately
+    assert.ok(s116.s.codeBlock("html", "<!doctype html>", true).includes('<iframe class="st-code__frame" tabindex="0"'),
+              "a keyboard reader can reach the preview");
+    done.push("html-block-preview: a finished ```html block (or an untagged one that opens like a document) gets " +
+              "a sandboxed iframe, Code/Split/Full controls, and css and js coloured inside it - while it streams " +
+              "it stays highlighted source, and no frame is ever given this page's origin");
+  }
+
+  // 117. a growing code block is grown, not rebuilt (the owner, 2026-11-22: "it flashes with every word").
+  //      The old path assigned the whole <code> innerHTML every frame; with colouring that is ~175 spans per
+  //      2,000 characters, 60 times a second.  What is asserted: the settled part is never touched, the tail is
+  //      the only thing rewritten, and the characters on screen are exactly what the whole-block path renders.
+  {
+    const s117 = run({}, {});
+    // the split is invisible: keep + tail is byte for byte what one pass over the whole block gives
+    for (const [lang, src] of [
+      ["bash", "ls -la\nsudo dmidecode -t memory\n# a comment\n"],
+      ["python", "def f(x):\n    return \"a string\"\n\n\"\"\"a docstring\nspanning lines\"\"\"\n"],
+      ["js", "const a = {x: 1};\n/* a block\n   comment */\nlet b = `t${a.x}`;\n"],
+      ["html", "<!doctype html>\n<html><body><p>hi</p>\n<style>.a{color:red}</style>\n<script>\nconst n=1;\n</script>\n</body></html>"],
+      ["bash", "echo \"unclosed string\nstill going"],
+      ["js", "let t = 1 /* comment that never closes"],
+    ]) for (const cut of [0, 5, 17, src.length]) {
+      const part = src.slice(0, cut);
+      const sp = s117.s.hlSplit(part, s117.s.HL_LANG[lang] || lang);
+      assert.strictEqual(s117.s.tokHtml(sp.keep) + s117.s.tokHtml(sp.tail), s117.s.hlRun(part, s117.s.HL_LANG[lang] || lang),
+                         `splitting ${lang} at ${cut} changed the output`);
+      assert.strictEqual(s117.s.codeSrc(sp.keep.length + sp.tail.length ? s117.s.hlRun(part, s117.s.HL_LANG[lang] || lang) : ""),
+                         part, `the spans add no characters to ${lang}`);
+    }
+    // stream it through the page's own update path and count what each frame touches
+    const cm = {role: "assistant", text: "```bash\nls -la\n", reasoning: "", time: Date.now(), tools: []};
+    const cel = s117.s.msgEl(cm, 0);
+    const bub = cel.querySelector(".st-bubble");
+    const box = bub.children.find((c) => (c.className || "").split(/\s+/).includes("st-code"));
+    const code = box.querySelector("code");
+    const frames = ["sudo dmidecode -t memory\n", "grep -A15 \"Locator: DIMM\"\n", "sudo nvme smart-log /dev/nvme0n1\n",
+                    "# the end\n", "```\n"];
+    for (const f of frames) {
+      cm.text += f;
+      s117.s.updateAssistant(cel, cm, true);
+    }
+    assert.strictEqual(code._sets, 1, "the <code> subtree was assigned once, not " + (frames.length + 1) + " times");
+    const keep = code.querySelector(".hl-keep"), tail = code.querySelector(".hl-tail");
+    assert.ok(keep && tail, "the settled part and the tail are separate elements");
+    assert.ok((keep._sets || 0) === 0, "the settled span was never reassigned: " + (keep._sets || 0));
+    assert.ok((keep._ins || 0) >= 1, "and it only ever had tokens appended: " + (keep._ins || 0));
+    assert.ok((tail._sets || 0) >= 1, "the tail is the part that is rewritten");
+    // and what is on screen is exactly the source, spans aside
+    const src = "ls -la\nsudo dmidecode -t memory\ngrep -A15 \"Locator: DIMM\"\nsudo nvme smart-log /dev/nvme0n1\n# the end\n";
+    const onScreen = keep.children.map((c) => c._html || "").join("") + (tail._html || "");
+    assert.strictEqual(s117.s.codeSrc(s117.s.hlRun(src, "shell")), src, "the whole-block render decodes back to the source");
+    assert.ok(s117.s.codeSrc(onScreen).includes("sudo nvme smart-log /dev/nvme0n1"), "the grown text is there: " + s117.s.codeSrc(onScreen));
+    // a block with an open construct in it (a docstring, a block comment, a <script>) must end up IDENTICAL to
+    // a single pass over the same text: the tail rule is what makes that true, and it is the rule that decides
+    // which tokens are allowed to settle
+    for (const [lang, fam, body] of [
+      ["python", "py", "x = 1\n\"\"\"a docstring\nthat spans lines\"\"\"\ny = 2\n"],
+      ["js", "js", "let a = 1;\n/* a comment\n   over lines */\nlet b = 2;\n"],
+      ["html", "html", "<html><body>\n<script>\nconst q = 1;\n</script>\n</body></html>"],
+    ]) {
+      const mm = {role: "assistant", text: "```" + lang + "\n", reasoning: "", time: Date.now(), tools: []};
+      const mel = s117.s.msgEl(mm, 0);
+      const mbox = mel.querySelector(".st-bubble").children.find((c) => (c.className || "").includes("st-code"));
+      const lines = body.split("\n");
+      for (const line of lines) {                 // one line per frame; markdownBlocks drops the last newline,
+        mm.text += line + "\n";                   // so the block ends holding exactly `body`
+        s117.s.updateAssistant(mel, mm, true);
+      }
+      const mk = mbox.querySelector("code").querySelector(".hl-keep"), mt = mbox.querySelector("code").querySelector(".hl-tail");
+      const grown = mk.children.map((c) => c._html || "").join("") + (mt._html || "");
+      assert.strictEqual(grown, s117.s.hlRun(body, fam), `${lang}: grown token by token is not what one pass makes`);
+    }
+    // the head order the owner asked for: copy first, then the live controls, maximize on the far right
+    const head = s117.s.codeBlock("html", "<!doctype html>", true);
+    const order = ["data-code-copy", "data-code-reload", "data-code-mode", "data-code-split", "data-code-full"]
+      .map((a) => head.indexOf(a));
+    assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "copy, reload, code, split, full: " + order);
+    assert.ok(head.includes('data-code-full aria-label="Full screen"'), "the far-right button starts as full screen");
+    // and it becomes Minimize with an inward arrow when you are full
+    const cm2 = {role: "assistant", text: "```html\n<!doctype html><body>x</body>\n```", reasoning: "", time: Date.now(), tools: []};
+    const cel2 = s117.s.msgEl(cm2, 0);
+    const box2 = cel2.querySelector(".st-bubble").children.find((c) => (c.className || "").includes("st-code"));
+    const fb = {className: "", dataset: {codeFull: ""}, setAttribute(k, v) { this[k] = v; }, innerHTML: ""};
+    fb.closest = (q) => (q === "[data-code-full]" ? fb : (q === ".st-code" ? box2 : null));
+    const click2 = (b) => s117.s.el("chat")._l["click"]({target: b, ctrlKey: false, metaKey: false, shiftKey: false});
+    click2(fb);
+    assert.ok(box2.className.includes("st-code--full"), "full");
+    assert.strictEqual(fb["aria-label"], "Exit full screen", "the button now says exit: " + fb["aria-label"]);
+    assert.ok(fb.innerHTML.includes("M6.5 6.5L17.5 17.5"), "with an X: " + fb.innerHTML);
+    click2(fb);
+    assert.ok(!box2.className.includes("st-code--full"), "and it comes back down");
+    assert.strictEqual(fb["aria-label"], "Full screen");
+    assert.ok(fb.innerHTML.includes("M9 4.5H4.5V9"), "back to the corner brackets");
+    done.push("code-grow: a growing code block keeps its settled tokens on screen and rewrites only the tail " +
+              "(one <code> assignment for five frames, and the settled span never reassigned), keep+tail is " +
+              "byte-identical to one pass over the block, and the head is copy / Code / Split / Max-Min");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));

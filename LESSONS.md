@@ -141,6 +141,31 @@ click in the MCP server form counted as an outside click and the wrench panel be
 modal was editing. The rule now excludes `.att-viewer`. Escape was already right (modal first, then popover), which
 is the tell: the keyboard path and the mouse path disagreed.
 
+**A reasoning recovery re-reads the whole conversation, and the client times out inside that re-read.** Measured
+2026-11-22 on this box, twice, from `/tmp/strata-server.log`: `"reasoning_loop_recovery": "recover"` splices the
+low-effort sentence **inside the first system message** (`focused_recovery_prompt` in `serve/server.py`), prompt
+reuse is exact token-prefix matching, so the second pass reports `cached 0`. Pass 1 of the same turn reused
+64,031 of 64,043 tokens in 374 ms; pass 2 read 66,079 tokens in 26,074 ms and produced **1 token** before the
+client hung up (`cancel=True`). The other one: 66,584 tokens in 21,681 ms, **output 0**. That is ~60x the cost of
+the same conversation with its prefix intact, it lands only on turns big enough to hurt (64k here), and both
+fires since the 13:06 restart did it — 2 of 2. What the owner sees is an answer of zero tokens. Item
+`slow-death` carries the lines and the fix shape (append the instruction as a trailing turn, the
+`effort_position: "end"` mechanism, rather than editing the head). The lesson generalises: **any "retry with a
+changed prompt" path has to be measured against the cache it invalidates, not just against the tokens it saves.**
+
+**Inside a character class, `]` closes the class — twice now in the same renderer.** The old `hr` rule ended in
+`[\s\1]`, which is whitespace-or-`\x01`, not a backreference (item markdown-cheatsheet-gaps). Today the yaml
+number rule `(?:^|[\s[],])-?\d` looked like "start, whitespace, bracket or comma" and was in fact "start,
+whitespace, `[`, comma" **followed by a literal comma** — so `n: 3` never got a number span. Write `[\s\[,\]]`.
+Pinned by the per-language want lists in case 113 of `serve/test_chat_sidebar.js`: every family has at least one
+sample that only passes if the class means what it reads like.
+
+**Check the units of your own probe before you quote its number.** The first measurement of the code highlighter
+divided `hrtime` nanoseconds by 1000 and printed the result as `ms`: an 8,000-character block read as **342 ms**,
+500× the truth (0.21 ms). It nearly went into a code comment as the reason for a size cap. The tell was that it
+disagreed with a number already on this box — 26 µs to build an 18,000-character answer's HTML — by four orders
+of magnitude. Divide by `1e6`, and read the new number against one already recorded before believing either.
+
 ## Where things actually go
 
 **Two logs, and the important one is lost by default.** Engine stderr →
@@ -266,6 +291,16 @@ so anything the page schedules - `loadHealth`'s 2 s retry, a toast's dismissal -
 fires in a test. Call the function yourself instead of waiting for the timer, and say so
 in the comment, or the test looks like it covers the retry when it covers nothing.
 
+**A state kept in classes needs a stub whose `classList.toggle` works.** The `app.js` harness built
+its elements with `classList: {add() {}, remove() {}, toggle() {}}`; `add` and `remove` were given
+real behaviour later, but `toggle` stayed an empty function. A page that flips state through
+classes — the live HTML block's Code / Split / Full, item `html-block-preview` — is then invisible:
+the call changes nothing and returns `undefined`, so `const on = box.classList.toggle(...)` reads
+as false and any test written against it is wrong in whichever direction it happens to lean.
+`toggle(c)` and `toggle(c, force)` are implemented now, with the real return value. Same family as
+the HTMLCollection trap in this file: when the stub is **weaker** than the platform the page throws
+or reads a false value; when it is **stronger**, the test lies quietly.
+
 **The web app's flash is the `innerHTML` assignment, not the markdown.** Measured on this
 box with the page's own renderer (node, 200 calls each): building the HTML for an 18,000-char
 answer is **26 us**, inside a code fence **10 us**, with an open tool block holding a
@@ -293,6 +328,58 @@ The one remaining assignment is the `Writing` placeholder painted before any tex
 thinking body was already text-only (`body.textContent`), which is why it never flickered.
 Still not measured: what the browser spends on those assignments - there is no browser on
 this box for it. The visible proof is the human's own eyes.
+
+**A per-frame element swap is invisible until the reader scrolls something.** The answer's last
+block is grown by inserting a new element and removing the old one (`updatePart` in
+`serve/web/app.js`; case 25 of `serve/test_chat_sidebar.js` pins it as "the growing block was
+replaced"). For a paragraph nobody can tell the difference. For a fenced code block the `<pre>`
+was inside that swap, and `scrollTop` lives on the node, so a code block being written **could
+not be scrolled at all** - the owner found it on 2026-11-22, long after the in-place design
+landed. Three rules follow, all now in `syncCode()`:
+- anything the reader can scroll, edit or select inside must be **updated, not replaced**: write
+  the inside of the node and keep the node;
+- "is this block unchanged?" has to be byte-exact against what the **settled** state will be. An
+  open fence carried its trailing newline, so the very frame its closer landed looked like a
+  change and rebuilt the block anyway - the fix would have lasted until the moment it mattered;
+- a follow-the-tail rule needs the reader's consent: `nearEnd(pre, 48)` read before the write,
+  the same slack `syncToolBody` already uses for a call's arguments.
+The test asserts **element identity**, not scroll behaviour: the harness has no layout, so the
+geometry is set by hand exactly as case 30 does for a thinking body.
+
+**Tokenizing a growing text is not stable — say which tokens are allowed to settle.** Re-highlighting
+a whole code block on every frame is what flashed ("it flashes with every word", 2026-11-22): 40
+whole-`<code>` assignments and **336,545 characters of rebuilt HTML** to write one 6,090-character
+fence. Growing it instead — settled tokens in one span that is only appended to, the rest in a tail
+that is rewritten — took that to 1 assignment and ~10x less work. But the split point has to be
+chosen with care, and three attempts were wrong before they were right:
+- a token may settle only where the next character **cannot join it**: the character after the
+  boundary must be whitespace. Mid-stream, `"""a docstring` tokenizes as an empty string `""` plus a
+  stray quote; let that settle and the docstring can never be coloured right. `1` in `1.5` is the
+  same trap.
+- with a nested language (`<style>`/`<script>` inside html), the cursor must never pass the **start**
+  of the last region, open or closed — a slice that begins mid-`<script>` colours js with html rules.
+- the tail must render the **whole** region after the cursor. Rendering only the "not yet final"
+  part loses the characters in between — first it dropped a space, then a whole word.
+The assertion that makes this hold: stream a block line by line and require the result to be **byte
+identical to one pass over the same text**. It failed three times before it was true.
+
+**Markup the renderer emits cannot depend on the page's icon sprite.** The sprite is inlined into `index.html`
+at request time, so a page loaded before a symbol exists has no such symbol - and a `<use href="#i-new"/>`
+inside a code block the renderer produced that day renders an **empty button**. That is why the code block's
+controls looked black or missing to the owner twice. Anything `app.js` builds at runtime now draws its SVG
+inline (`SVG(ICON.x)`); the sprite stays for the page's own chrome, which is loaded and reloaded as a whole.
+Related: an icon button with no explicit size and no text reads as nothing at all - `.st-code .st-btn--icon`
+is now a 28 px target with a 17 px glyph.
+
+**A button you clicked with the mouse still owns the Space key.** Native behaviour: an activated `<button>`
+keeps DOM focus and Space re-activates it. So after the owner clicked **Split**, every Space re-toggled
+Split instead of reaching the game inside the preview iframe - and clicking the iframe did not help, because
+the game called `preventDefault()` on `pointerdown`, which suppresses the focus change. Two fixes, and they
+are different fixes: in the page, pointer-driven controls give focus back (`codeBtnDone`: blur when
+`e.detail` is non-zero, keep it when the click came from the keyboard, where `detail === 0`); in any
+embedded document, don't `preventDefault()` a `pointerdown` you only wanted for scroll suppression -
+`touch-action: none` does that without stealing focus. Also give the preview `tabindex="0"`, so a keyboard
+reader can go *into* it deliberately rather than only by mouse.
 
 **Four traps in that same render path, all hit on 2026-10-23.** (1) `send()` used to capture one element
 (`const el = $("chat").lastElementChild`) and paint into it for the whole turn, so **any `renderChat()` while a

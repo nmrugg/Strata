@@ -79,8 +79,61 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 /* code */
 .st-code{border-radius:var(--st-r-md);background:var(--st-code-bg);color:var(--st-code-ink);overflow:hidden}
 .st-code__head{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 8px 14px;font:500 var(--st-fs-xs)/1 var(--st-font);color:#9aa3ab;border-bottom:1px solid rgba(255,255,255,.06)}
-.st-code pre{margin:0;padding:14px;overflow:auto;font:400 13px/1.6 var(--st-font-mono)}
+/* max-height is what gives a code block its own scroll box.  Without it the <pre> grows to fit whatever the
+   model writes, the block is never scrollable, and "scroll the code block" means scrolling the chat - which the
+   page is busy pulling back to the bottom every frame (the owner, 2026-11-22: "I still can't scroll code blocks
+   while you are writing").  With it, the block scrolls on its own and app.js keeps your position there. */
+.st-code pre{margin:0;padding:14px;overflow:auto;max-height:65vh;font:400 13px/1.6 var(--st-font-mono)}
 .st-code .st-btn--icon{color:#9aa3ab} .st-code .st-btn--icon:hover{background:rgba(255,255,255,.08);color:#fff}
+/* Syntax colouring inside a code fence (item code-syntax-highlight).  serve/web/app.js only adds these spans
+   when the fence names a language it knows, so a plain block keeps --st-code-ink and looks exactly as before.
+   One set of values for both themes, because the code palette is dark in both (tokens.css:50,81).  Derived
+   from the GitHub dark palette; every value was checked against both backgrounds with WCAG contrast.  The
+   lowest ratio in the set is .t-del/#f85149 at 4.9:1 on the light theme's #1b1f23 and 5.8:1 on the dark
+   theme's #0a0c0e; the dim grey, .t-cmt and .t-meta at #8b949e, is 5.4:1 and 6.4:1. */
+.st-code .t-cmt{color:#8b949e} .st-code .t-meta{color:#8b949e}
+.st-code .t-str{color:#a5d6ff} .st-code .t-hunk{color:#a5d6ff}
+.st-code .t-num{color:#79c0ff} .st-code .t-attr{color:#79c0ff} .st-code .t-hex{color:#79c0ff}
+.st-code .t-kw{color:#ff7b72} .st-code .t-at{color:#ff7b72}
+.st-code .t-fn{color:#d2a8ff} .st-code .t-cmd{color:#d2a8ff}
+.st-code .t-key{color:#7ee787} .st-code .t-tag{color:#7ee787}
+.st-code .t-flag{color:#ffa657} .st-code .t-var{color:#ffa657}
+.st-code .t-ins{color:#56d364} .st-code .t-del{color:#f85149}
+/* A live HTML block (item html-block-preview): one block, three views.  Source is what every code block
+   already shows; --run shows the iframe and hides the source; --split shows both side by side; --full enlarges
+   whichever of those is showing.  The iframe is a sandboxed document of its own (FRAME_SANDBOX in app.js) with
+   a white page, so the seam between it and the code palette is deliberate. */
+.st-code__acts{display:flex;align-items:center;gap:2px;margin-left:auto}
+/* a fixed 28 px target and a 17 px glyph: the buttons were inheriting whatever size the generic icon button
+   had, and a 20 px glyph in a bare button reads as nothing at all on a dark block */
+.st-code .st-btn--icon{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center}
+.st-code .st-btn--icon .st-icon{width:17px;height:17px}
+.st-code .st-btn--icon[aria-pressed="true"]{background:rgba(255,255,255,.12);color:#fff}
+.st-code .st-btn--sm{font:500 var(--st-fs-xs)/1 var(--st-font);padding:5px 8px;border:0;border-radius:6px;
+                     background:transparent;color:#9aa3ab}
+.st-code .st-btn--sm:hover{background:rgba(255,255,255,.08);color:#fff}
+.st-code .st-btn--sm[aria-pressed="true"]{background:rgba(255,255,255,.12);color:#fff}
+.st-code__frame{display:none;width:100%;height:52vh;border:0;border-top:1px solid rgba(255,255,255,.06);
+                background:#fff;color-scheme:normal}
+.st-code--run .st-code__frame{display:block}
+.st-code--run pre{display:none}
+/* Split: both panes get an explicit height.  The row used to be `minmax(0,1fr)` in an auto-height grid, and a
+   1fr row in an auto-sized container resolves to the item's content height - for an iframe that is the 150 px
+   default, so the preview came out a strip (the owner, 2026-11-22).  The source still sizes to its content up
+   to the same cap, so a two-line block does not leave a tall empty box beside it. */
+.st-code--split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto auto}
+.st-code--split .st-code__head{grid-column:1 / -1}
+.st-code--split pre{grid-column:1;max-height:min(62vh,720px);border-right:1px solid rgba(255,255,255,.06)}
+.st-code--split .st-code__frame{display:block;grid-column:2;height:min(62vh,720px);border-top:0}
+.st-code--full{position:fixed;inset:0;z-index:80;margin:0;border-radius:0;display:flex;flex-direction:column}
+.st-code--full pre,.st-code--full .st-code__frame{flex:1 1 auto;height:auto;min-height:0;max-height:none}
+/* height:100%, not auto: an iframe is a replaced element, and a grid does not stretch a replaced element the
+   way it stretches a <pre> - `auto` on it means the intrinsic 150 px, which showed up as a short clipped strip
+   in full-screen split (the owner, 2026-11-22).  The row has a definite height here (the block is fixed to the
+   viewport), so a percentage resolves against it. */
+.st-code--full.st-code--split{display:grid;grid-template-rows:auto minmax(0,1fr)}
+.st-code--full.st-code--split .st-code__frame{height:100%}
+.st-code--full.st-code--split pre{height:100%;max-height:none}
 
 /* composer */
 .st-composer{display:flex;flex-direction:column;gap:8px;padding:10px;background:var(--st-surface);border:1px solid var(--st-line);border-radius:var(--st-r-lg);box-shadow:var(--st-sh-bar)}
