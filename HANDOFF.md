@@ -69,6 +69,10 @@ it is not. If you must discuss one, name the tag instead of reproducing it.
   `serve/test_chat_sidebar.py` runs it from Python. **Run both** for any `app.js` change.
   `node --check serve/web/app.js` for syntax. **Count the `ok -` lines** (47 as of
   2026-10-24): a hanging harness exits 0 and prints nothing, which looks like a pass.
+- Service worker: `node serve/test_service_worker.js` → **5 `ok -` lines** as of 2026-11-21. It loads
+  `serve/web/sw.js` for real against a stub worker scope, so it is the test for any change to that file or to
+  the `/sw.js` route in `serve/server.py`; the server half is `serve.test_static_cache`'s `WorkerRoute` class.
+  Same counting rule as above.
 - Files: web app `serve/web/app.js`, `serve/web/index.html`, `serve/web/app.css`; server
   `serve/server.py`; parser `serve/frontend.py`; MCP hub `serve/mcp.py`.
 - Settings live in `DEFAULTS` in `app.js` and persist through the `store` object

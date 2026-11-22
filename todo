@@ -678,6 +678,97 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Needs: an outbox in IndexedDB (the store already exists), a health poll, ordering rules,
     and a decision about a second message arriving while one is queued. It must survive a
     reload, which is what makes it an IndexedDB problem rather than an array.
+    DECIDED 2026-11-21 by the owner: not now.  "I don't think we have a proper queueing system yet. It should
+    just be treated exactly the same way it would work if the server was up" - so the page holds a message and
+    sends it once the server answers, and the real queue (several waiting, their order, one per chat) stays
+    this item.  It cannot be built before item offline-web-assets: with nothing listening on the port the page
+    itself does not load, so there is nothing to type into.
+
+`offline-web-assets`  The page opens when nothing is listening on the port: keep the web app in the browser. [ui] [py] DONE 2026-11-21 (needs a restart; never seen in a real browser)
+    Asked for 2026-11-21: "the web assets should be totally cached and able to load without the server running".
+    Today that is impossible by design, and it is the design we chose: _send_static answers every asset with
+    Cache-Control: no-cache plus an ETag (item asset-validator) so an edit to app.js shows on the next reload
+    with no restart - which means every load asks the server, and with the server down the navigation itself
+    fails.  The conversations survive (IndexedDB); the page does not.  Only a service worker can answer a
+    navigation for an origin that is not listening, and none is registered: grep serviceWorker over serve/ finds
+    nothing.
+    The shape that keeps both promises is network-first while online (so the no-cache dev loop and LESSONS.md's
+    "a web-app change needs no restart" stay true) and cache-only when the fetch fails.  What it would hold,
+    measured on this box 2026-11-21: index.html 20 KB, web/app.js 208 KB, app.css 36 KB, components.css 12 KB,
+    tokens.css 4 KB, favicon.svg 4 KB, the woff2 fonts 60 KB.  The icon sprite costs nothing: item sprite-inline
+    already puts it in the page.
+    Two hard parts, both decided before code:
+      - it must be served from /sw.js to control "/", and today only /web/* and the two pages have a route, so
+        the server half has to land before the page half - the ordering trap in LESSONS.md ("a web-app file that
+        needs a matching server change breaks the running app the moment you save it").  The page's registration
+        should tolerate the 404 the running server gives until it is restarted.
+      - a service worker registers only in a secure context: http://localhost and https.  This box runs
+        host 0.0.0.0, so the page opened from a LAN address over http cannot have it - "opens with no server"
+        means on this PC, not from a phone.  Say so in the docs rather than letting it read as a promise.
+    SHIPPED 2026-11-21, both halves.  serve/web/sw.js is network-first for the page and its own files and
+    answers from the cache ONLY when the network call fails - that order is the whole design, because it keeps
+    item asset-validator's promise ("edit app.js, reload, no restart") true while still opening the page with
+    the port dead.  Online it also refreshes the cache on the way past, so an offline visit gets the files the
+    server was actually running, not the ones from install time.  What it caches: "/", the three stylesheets,
+    app.js, favicon, and the two woff2 fonts (measured: app.js 208 KB, app.css 36 KB, components.css 12 KB,
+    tokens.css 4 KB, fonts 47 KB).  What it never touches: /v1/*, /health, /metrics, /settings, /config, /mcp,
+    any POST, any other origin - answering one of those from a cache would look like a live reply.
+    The server gained one route, /sw.js, and refuses /web/sw.js: a worker's scope is its own path, so a worker
+    under /web/ could not control the page, and a second path is a way to get it wrong silently rather than a
+    second way to get it right.  No-cache on the WORKER is deliberate - a long max-age there means an old
+    worker serves an old app.js forever and nothing on screen says so.
+    The page registers it in the start block, guarded on isSecureContext and on the key existing, with the
+    rejection swallowed: a browser at a LAN address over http, a browser with no serviceWorker at all, and a
+    server older than the file (404) are all normal and none of them is something the reader can act on.
+    Tests: serve/test_static_cache.py class WorkerRoute (4 - served from the root as javascript, revalidates to
+    a 304, no second path, the page route untouched); serve/test_service_worker.js (5 ok lines, new - it loads
+    web/sw.js for real against a stub worker scope and drives install/activate/fetch); harness case 101 (92 ok
+    lines - the path and scope, and the three unavailable cases).  Controls that bite: cache-first instead of
+    network-first (the online case fails: a cached copy would be served and an edit would never show),
+    cacheable() always true (the API gets intercepted), register() without the catch (an unhandled rejection),
+    and dropping the isSecureContext guard.
+    Still unverified: any of it in a browser - there is none on this box.  What to look for after the restart:
+    DevTools > Application > Service Workers shows /sw.js, a reload with the server stopped still opens the
+    chat, and the conversations are already there (IndexedDB, unaffected).
+    TWO FALSE CLAIMS FIXED the same day, at the owner's ask.  With the server down the empty state still read
+    "The model runs on this PC. Nothing leaves it." - never updated, because the /health fetch had failed - and
+    an exported chat was headed with the built-in default model name, because a page opened from the worker's
+    cache never gets a /health to ask.  Now a failed fetch says "The server is not running. The chats in this
+    browser are still here.", and a successful /health remembers the name under localStorage key strata.model,
+    which is what a page boots with when there is nothing to ask.  Harness case 103 (93 ok lines); controls:
+    delete either half and its assertion fails.
+
+`tools-block-empty`  A request asked for MCP tools and got none: instrumented and partly repaired, 2026-11-21. [py] PARTLY DONE
+    What it looks like from the chat: an agent turn just stops.  The request ends on `stop` with plausible text,
+    no tool call, and EVERY counter at zero - not an empty turn (content was delivered), not abandoned, not
+    unread, not drift, not an unknown name.  Measured on this box 2026-11-21: one process served three requests
+    whose records carry `tools: 0` and not a single `writing a tool call` line in the whole process - while the
+    same process had printed `MCP server 'easyCMP': 31 tools` at start-up.  The hub was up; the prompt still had
+    no tools block.
+    Why it kills the turn: `use_mcp = bool(extra)` (serve/server.py, the strata_mcp branch) - an empty list means
+    the request runs as if MCP were off, and a model with no tools block does not complain, it answers in prose.
+    The hub's own print says "Its tools are left out; the chat works without them", which is true for a person
+    chatting and false for an agent whose every turn is a tool call.
+    Three ways to get there, and they need different fixes: no server ready (`routes()` empty); the
+    conversation's pinned list (`strata_mcp_tools`, todo #mcp-live-toggles) matching none of the hub's current
+    names - a renamed or removed tool, or a tool server that came back with a different list (the hub now prints
+    31 tools where this repo's notes recorded 30, so the list HAS changed on this box); or every tool of every
+    server turned off in the config.
+    DONE 2026-11-21 - the instrument.  The handler now prints which of the three it was, naming each server's
+    status and tool count, and counts `mcp_requests_without_tools` in /metrics.  Tests: serve/test_mcp.py class
+    NoTools (2 - the failed-server reason, and the pinned-list-matched-nothing reason); control: delete the
+    print and both fail.
+    STILL OPEN: which of the three it was in that process (its records died with it), and what the server should
+    DO about the other two.  Also done 2026-11-21, the one cause with a repair worth making: a pinned list that
+    matches NOTHING now falls back to the hub's current list and says so - because 0 tools is already a different
+    tools block from the one in that conversation's prompt, so the re-read the pinned list exists to prevent is
+    happening either way, and the fallback costs nothing extra while keeping the turn able to call something.
+    Test: serve/test_mcp.py NoTools.test_a_pinned_tool_list_that_matches_nothing_falls_back_to_the_current_one
+    (the tool runs, and the "got NONE" line does NOT appear); control: delete the fallback and the request runs
+    with no tools block while the log still says `fake=ready(7 tools)` - which is the whole fault in one line.
+    Left open: no server ready (the handler already waits 10 s for one; is that enough, and should a request
+    that gets none be refused rather than answered tool-less?), and every tool turned off in the config (that
+    one is the user's choice and should stay a choice).
 
 `unread-call-recovery`  Stop losing a tool call the model wrote: port upstream's parser fixes. [py] MEDIUM
     STEP 1 DONE 2026-11-19 - the drift instrument.  An agent chat died twice on this box with a round that
@@ -750,8 +841,84 @@ all: fold-control replaced them, and the four overlapping switches became one co
         Also fixed in passing: UnknownCall inherited ToolLoop, so it silently re-ran ToolLoop's tests (45 tests
         here, not the 64 that inflation produced); the fixture is now LoopFixture and both classes use it.
         Needs a restart.
+      - THE COST OF THAT FIX, found and fixed 2026-11-21 (the owner saw the re-read in the Monitor and asked for
+        it).  The answered-error round DID cost a re-read, and the page was not at fault: run_with_mcp kept the
+        calls it answers in two lists and joined them real-first (`calls += unknown`), while a client rebuilds a
+        round in the order the calls ARRIVED (onTool pushes on the announcement, assistantMessages replays that
+        array).  A round that wrote an unknown call BEFORE a real one therefore entered the history in a
+        different order than the engine had been fed - the calls and their results both moved - and the exact-
+        prefix reuse stopped matching at that round.  Measured in a real agent chat on this box: the request
+        after such a round read 36,281 of its 87,463 prompt tokens (14.4 s) where its neighbours read 91 and
+        876, and the client hung up while waiting (finish=disconnect).  Fixed: one ordered list (`answered`), so
+        the round keeps the model's order; nothing else about the round changes.
+        Test: serve/test_mcp_round_history.py test_a_mixed_round_keeps_the_order_the_model_wrote - the page's
+        side is built from the events it was actually sent, in the CLIENT's shape, and read through
+        openai_to_messages and the real template (the rule from the 2026-11-20 breaks).  Two controls bite: the
+        old join fails the order assertion, and reversing the client's rebuild fails the prefix assertion.
+        How it was found is in LESSONS.md ("a re-read inside one request is only in the engine log").
+        Needs a restart.
+      - THE CAP WAS WRONG, found by living with it 2026-11-21 (it killed this session's own turn).  The two
+        answered rounds were counted PER REQUEST, and an agent turn is ONE request with thirty tool rounds in
+        it: three slips across thirty rounds is ordinary work, not the name-inventing loop the cap guards
+        against.  The third went to the over-cap branch, its call was shown as "not run", the loop broke, and
+        the turn ended with no answer - the exact death this item is about, caused by the fix for it.
+        Measured: `[strata] 3 call(s) named a tool that neither the request declared nor this server offers:
+        easyCMP__fs_run_cmd`, in a request that had run ~30 real rounds and 268,485 prompt tokens.
+        Fixed: the counter is a STREAK now - any round that runs a real tool resets it - so back-to-back
+        invention still stops after a short streak, and a slip in a long working turn never does.  RAISED to
+        five in a row the same day (the owner: "it won't hurt much, and it's better than dying") - and the
+        number is now one constant, BAD_CALL_STREAK, shared by both answers so they cannot drift.  Cost of one
+        answered attempt, measured on a 290k-token chat: the round's own tail re-read (876-2,366 tokens) plus
+        one pass, 1-2 s; five in a row is ~5-10 s against a turn that already runs 60-200 s here.  Controls
+        pin the value: set it back to two and both cap tests fail.
+        Test: serve/test_mcp.py UnknownCall.test_a_real_round_between_two_slips_does_not_use_the_cap_up
+        (slip, real, slip, real, slip -> all five answered); the existing four-in-a-row cap test still passes,
+        which is the half that matters - the guard is not gone.  Control: deleting the reset line brings back
+        `skipped: True` on the fifth result.  Needs a restart.
       - Also still true: the name the model actually asked for in that dead chat is unrecoverable - api_monitor
         keeps what the CLIENT received, and the call never reached it.  Only the new counter can name it.
+      - THE SPECIMEN, recorded 2026-11-21 - the counters named a death on this box for the first time.  Two
+        lines, one turn: "1 tool call(s) the model opened and never finished: dropped, no call ran" and
+        "EMPTY TURN ... state=call held=... abandoned=1 reasoning_tokens=135", on an agent turn of the agent
+        fixing this very item, calling a tool the request HAD declared, cut part-way through the parameter
+        value.  It is now corpus entry `recorded-cut-call-2026-11-21` in serve/fixtures/rcall_specimens.json
+        (38 specimens, the split test updated), built from the log's own held buffer with ast.literal_eval -
+        never retyped - with the thinking closer and the call wrapper put back from the state the log
+        reported.  That putting-back is itself a finding: the same recorded text without the wrapper reads as
+        `drift`, and without the closer as unclosed thinking, so three different parser paths come from one
+        fragment and a fixture has to say which one it means.  The corpus runner now takes an optional
+        "props" per specimen, because the walkers resolve a DECLARED parameter differently and the live call
+        had its parameter declared.  What this shape is not: not the unknown-call death (fixed above), and not
+        covered by reasoning_close_retry - its "calls" mode tests state `rcall`, a call opened inside the
+        thinking (serve/server.py:4235), while this one opened after the thinking closed.  And it cost the
+        turn, not the cache: the next pass read 17 tokens of 293,959.
+      - THE SHAPE ANSWERED, 2026-11-21 - the owner chose this over leaving it ("I don't want it to stop"), and
+        over re-running the pass, because a round is the one thing the server and the page already rebuild
+        identically.  A call opened and never finished now gets the same treatment as a call for a name nobody
+        offers: the loop adds the round - the call as far as it got, plus a result naming the parameter it
+        stopped inside and saying nothing ran - and the model gets another pass to write it whole.  The parser
+        already held every piece needed (the announced call is `scall`, and the scanner's state says where it
+        stopped), so the change is one new event, `tool_cut`, carrying the call and the parameter name, and the
+        loop answering it.  The call is NEVER run: control B showed why - with the guard removed the hub ran
+        `fake__echo` with `{}`, the half-written arguments simply gone, which is the silent wrong-answer shape
+        this item already documents twice.  Capped at BAD_CALL_STREAK rounds in a row (five), the same rule as
+        the unknown-call answer, and an answered cut does not reset the streak - only a round that actually ran
+        a tool does, which was a bug waiting to happen.  A cut-off call is always the last thing a pass wrote,
+        so appending it preserves the order the model wrote the round in.
+        The page needs no new code - a tool block with an error result is already recorded and replayed - and
+        that is pinned rather than asserted (serve/test_chat_sidebar.js case 100), including the half that must
+        NOT change: a call refused over the cap still stays out of the history.  Note for the next reader: that
+        last assertion needs BOTH halves of the replay filter removed to fail (`round != null` and
+        `state !== "skipped"` each exclude it alone), which is how I found the first control I wrote for it was
+        measuring nothing.
+        Tests: serve/test_mcp.py class CutCall (3) plus ToolLoop's rewritten #211 test;
+        serve/test_mcp_round_history.py test_a_cut_off_call_becomes_a_round_both_sides_rebuild_the_same.
+        Counted apart from the shape: totals `cut_tool_calls` and `cut_tool_calls_answered`.  Three controls
+        bite: drop the parser's handover (back to `['start']` only, nothing delivered), drop the streak reset
+        (the third cut in a working turn is refused), let the prepared call reach the hub (it runs with `{}`).
+        The Anthropic path needed a guard for the new kind - LESSONS.md, "a 400 can be our bug" - and
+        serve/test_server.py UnfinishedToolCall is what caught it; those five tests still pin the plain
+        non-MCP path as it was.  Needs a restart.
 
     STILL OPEN - the ports, in this order:
       - 9c349c45a  empty stubs skipped, a cut opener dropped, a call with no readable parameter is NOT run
@@ -1174,7 +1341,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     Watch: openDrawer(true) calls loadDrawer() + loadShared() + loadMcp() (app.js:1785-1789); the snapshot must
     be taken from `settings` (already the applied state), not re-read from the controls after loadDrawer.
 
-`server-before-model`  Start the web server before the model loads, so the page can open while loading. [py] MEDIUM
+`server-before-model`  Start the web server before the model loads, so the page can open while loading. [py] DONE 2026-11-21 (restart needed; not yet seen in a browser)
     Measured and documented in LESSONS.md ("`/health`'s loaded does not mean the model is loaded"): the port
     does not listen until the model is up - httpd = serve(svc, ...) is serve/server.py:6633, AFTER "loading the
     model (the first start takes a minute or two) ..." at server.py:6448 and after the StrataEngine(...)
@@ -1191,6 +1358,38 @@ all: fold-control replaced them, and the four overlapping switches became one co
         open_browser is false); with the server up early, decide whether it opens earlier now.
     Also: the engine is constructed on the main thread today, so loading has to move to a thread or the
     server must be started before it. That is the real work, and it is where the risk is.
+    DECIDED 2026-11-21 by the owner, asked because AGENTS.md says new behaviour is opt-in: this one is NOT
+    behind a key - "Default, no configuration here. It just works this way now." And for a request that arrives
+    while the model is still loading: the FRONT END holds it and sends it when the server is up; the server's
+    queue is not redesigned around it.  What the tree already has for this, read 2026-11-21: StrataEngine's
+    constructor returns at once with lazy=True (serve/server.py:694), Service.ensure_loaded() starts it under
+    the FIFO (:3117), and prepare() already raises EngineStarting -> a 503 "the engine is starting (a minute or
+    two)" (:3739, :5595) - so "bind first, load in a thread" is mostly moving the call to the constructor.
+    Three things must move with it, or they stop working at all: warn_tight_ram and desktop_vram_note read
+    engine.info, which is empty until the engine reports INFO; the start_beep bell belongs to the model being
+    ready, not the port; and a config that cannot start the engine now leaves a page open that has to say why.
+    SHIPPED 2026-11-21, both halves, no flag (the owner's call).  serve/server.py: the engine and the vision
+    encoder are built lazy at every start now, and start_model_load() (next to serve()) brings them up on a
+    thread once the port is listening.  It holds the FIFO for the load - the same lock Service.run takes before
+    ensure_loaded() - so a request that arrives mid-load waits its turn and is served: measured 200 with one
+    restart, not a 503.  What had to move with it, exactly as the notes above warned: warn_tight_ram and
+    desktop_vram_note are now post_load_notes(), called once the engine has reported INFO (left where they
+    were they would read an empty engine.info and simply stop firing); the start_beep bell moved off the URL
+    banner onto a new "model ready: ..., N s" line; --open still opens once the MODEL is ready, because #560
+    #516 wants the card note on the console before a browser is started at that card.  /health gained
+    `loading`, `load_seconds` and `load_error`, and the banner carries ", model loading" so the "ready: http"
+    line LESSONS.md greps for still marks a process boundary.  A model that will not start leaves the server up
+    with the reason in it instead of the process dying before a port exists.
+    The page (serve/web/app.js): loadHealth() keeps asking every 2 s while loading; healthPill() paints
+    "Loading the model" (blue - producing nothing is what that colour already means) or "The model did not
+    start" (amber); renderPill() asks it first, so the 1 s metrics poll cannot paint Idle over it; and the
+    empty-state line carries the failure's reason rather than claiming a model that is not running.
+    Tests: serve/test_web_first_start.py (5, new module) - the three states on /health; a request that arrives
+    mid-load is served and does not start a second load; a failed load leaves the server up, reports, and the
+    next request loads it and clears the report; the load holds the FIFO; and the wiring itself, with
+    serve/server.py run as a real process and a stand-in engine that says READY 6 s in - the port answers at
+    ~1 s.  Harness case 99 (90 ok lines).  Four controls bite: the blocking constructor (the port answers at
+    6.2 s), /health without `loading`, renderPill without the guard, and loadHealth that does not distinguish.
 
 `slow-death`  The slow death: "recover" restarts the request, and the log could not show what it was doing. [py] PARTLY DONE 2026-10-24
     Written up in strata-slow-death.txt at the repo root (untracked; dense with literal control tags, so read

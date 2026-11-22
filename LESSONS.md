@@ -109,6 +109,19 @@ in some way, and a call envelope handed back as prose is none of them. Cross-che
 unread-call-instrument: `unread` / `unread_names` on the parser, one printed line and `totals.unread_tool_calls`
 in the server.
 
+**A request that asked for MCP tools and got none looks exactly like a dead engine, and no counter could see it.**
+2026-11-21: an agent chat stopped answering with tool calls. The requests ended `stop` with plausible text while
+`empty_turns`, `abandoned_tool_calls`, `unread_tool_calls`, `drift_tool_markup` and `unknown_tool_calls` were all
+absent - because content WAS delivered. The request record's `tools` field said `0`: the handler computes
+`use_mcp = bool(extra)` from the hub's tool list, and an empty list means the prompt is rendered with no tools
+block at all, so the model does something else instead of failing. The hub had printed `31 tools` at start-up, so
+the usual suspect - the tool server being down, which this file already records twice - was wrong this time. Two
+rules: when a turn dies with every counter at zero, read the record's `tools` count before suspecting the parser;
+and a silently tool-less prompt needs its own print, because the one that exists ("Its tools are left out; the
+chat works without them") is true for a person chatting and false for an agent whose every turn is a call. Now
+instrumented: `totals.mcp_requests_without_tools`, and a line naming which of the three causes it was (item
+tools-block-empty).
+
 **Where a state is decided late, an instrument has to wait for the end.** An unclosed code fence and a quoted
 example of the format are indistinguishable while the text is arriving (`_fence_quoted_think` already says so for
 the think tag). So the parser now *remembers* the openers the code-quote rule turned into text and only decides in
@@ -160,6 +173,48 @@ parser only reaches at the end — whether an open code fence swallowed a real c
 unread-call-instrument — cannot live in that record: it would read absent for exactly the case it exists to flag.
 The printed line and `totals` are the only places those are visible. Found by adding the field, watching a test
 that otherwise passed come back `None`, and reading the order instead of blaming the assertion.
+
+**A re-read inside one request is visible only in the engine log, per pass.** The engine prints one line per
+pass: `strata serve: prompt N tokens = R reused + X read in ... ms`. `request_stats` in `serve/server.py` builds
+the `/metrics` record from **segments[0]** for `reused`/`prompt_read`, so a request whose second or later round
+lost the prefix records the first pass's good numbers and looks clean. Found 2026-11-21 chasing a re-read the
+owner had seen in the Monitor: the record said 87,463 prompt / 51,182 reused / 36,281 read, and the neighbouring
+engine lines for the same chat read 91 and 876 tokens - the 36k was a *later* pass of the request before it.
+To find *which* message diverged: `GET /api/requests` lists the retained requests, `GET /api/requests?id=ID`
+returns that request's `input` (the whole body as sent, cut at 262,144 characters, `input_truncated` says so).
+Diffing consecutive requests' `input` by hand is a dead end when they are different turns; what works is
+converting the char offset of the divergence into a token offset and reading the engine log's per-pass prompt
+sizes to find the pass that ends just before it, then reading the server log's `[strata] tool ...` lines in that
+pass's window. That is how the round below was pinned to 176 tokens.
+
+**A round's calls have one order, and it is the model's.** `run_with_mcp` used to keep the calls it answers
+itself in two lists - the hub's tools and the names nobody offers - and join them real-first. The client never
+sees that join: it builds its tool list from the announcements as they arrive and replays that array, so a round
+that wrote an unknown call before a real one was re-ordered in the history, and the token prefix stopped
+matching there. Measured 2026-11-21: 36,281 of 87,463 tokens re-read (14.4 s) by the next request, and the
+client hung up. Same root as the thinking-shape and the tool-picture re-reads: **the server's internal grouping
+is not part of the contract; the sequence of tokens it produced is.** Any list the server rebuilds from a turn
+has to be in the order the model wrote it, not the order the server found it convenient to run it in.
+
+**An agent turn is ONE request, so a per-request limit is a per-turn limit in disguise.** The MCP loop runs the
+tools itself and re-prompts, so a turn with thirty tool rounds is one HTTP request containing thirty engine
+passes - measured 2026-11-21 on this box: one request, `prompt 268,485` tokens, ~30 `[strata] tool ...` lines
+inside it. Anything `run_with_mcp` counts per request is therefore counted once per turn, and a turn is long.
+The cap of two answered unknown calls (ported from upstream, where a turn is one question and one answer)
+killed a working turn here: three slips across thirty rounds, the third went over the cap, its call was shown
+as "not run", the loop broke, and the turn ended with no answer - the death item unread-call-recovery exists
+to remove, caused by the fix for it. A limit meant to stop a loop has to count the **streak**, not the total.
+The same trap sits in the Monitor: `request_stats` folds those thirty passes into one row.
+
+**A new parser event kind has to be tolerated by every consumer of the event stream, and a 400 can be our bug.**
+Adding `tool_cut` to the parser's events broke `serve/test_server.py UnfinishedToolCall` with `HTTP 400 Bad
+Request`, not a crash: `anthropic_events` maps kinds through a dict (`{"reasoning": ..., "tool_call": ...}[ev.kind]`,
+`serve/server.py`), the KeyError escaped the generator, and the handler's `except (TypeError, KeyError,
+AttributeError, IndexError, UnicodeError)` branch answered it as **"the request is malformed"** - a message that
+blames the client for a server-side hole. The traceback is printed to the console (`[strata] 400 malformed
+request (KeyError: 'tool_cut')`), so the way to read a 400 from this server is to check the console before
+suspecting the client. Grep `\[ev.kind\]` before adding a kind: the OpenAI path uses `elif` chains (an unknown
+kind is inert) and the Anthropic path uses a dict (it is not).
 
 **`serve/frontend.py`'s tag constants are not in one place.** `CALL_START`, `CALL_END`, `PARAM_END`, `FUNC_START`
 and `FUNC_END` sit together near the top; `PARAM_START` is about 100 lines further down, with the parameter
@@ -277,6 +332,32 @@ every tool call in the app was `display: none`, because the stub never read bare
 inserted HTML - a shell written as `<details ... hidden>` looked visible. The stub now parses the root tag,
 its classes and its bare attributes, and fires a `toggle` event when script sets `open`. When a control fails
 to fail, suspect the stub before believing the code.
+
+**Patch, test, restore inside one command - then re-read the tree before believing the control.** On 2026-11-21
+a control run written as one shell command (patch the source, run the test, copy the good file back) printed a
+failure that named the code I had just fixed, and the next command could not reproduce it. Clearing
+`serve/__pycache__` did not change it, and a clean re-run of the same three states - fixed, patched, restored -
+behaved correctly every time. What was wrong was my reading of which file each run had used. So: run each
+control as its own step, and `grep` the exact line you changed immediately before and after it, rather than
+trusting that a `cp` in the same command list did what it says.
+
+**A stub that is missing a property the code READS drives a path no real browser takes, and the test then proves
+the stub.** Writing `serve/test_service_worker.js` (item offline-web-assets) produced three stub bugs in a row,
+each of which would have shipped a broken feature with green tests: (1) a worker-scope `location` stub with
+`href` but no `origin` made the worker's own origin guard true for every request, so it intercepted nothing and
+the offline cases failed for a reason that had nothing to do with the worker; (2) the page harness's "no service
+worker" case set `navigator.serviceWorker = undefined`, which makes `"serviceWorker" in navigator` **true** -
+the code then called `.register()` on undefined, in a browser shape that does not exist; (3) the cache stub
+keyed entries by whatever string it was handed, so `add("/web/app.js")` and `match(<absolute-URL request>)`
+never met and every offline hit looked like a miss. Same family as the DOM stub's `data-*` and `toggle` gaps:
+list what the code *reads* off the platform (`origin`, whether a key exists at all, `pathname`) and give the
+stub that shape - a real `new URL(...)` for `location`, an omitted key rather than an undefined one.
+
+**A failure collector that reports only at the end turns a crash into a silent exit 0.** Adding
+`process.on("unhandledRejection", r => unhandled.push(r))` to the chat harness hid a real bug: the run printed
+nothing, exited **0**, and the 92 `ok -` lines never appeared - the exact shape recorded above for a hang.
+Report the moment it happens (`console.error` plus `process.exitCode = 1`). A collector is only safe if the run
+always reaches the reporting line, and a failing run is precisely when it does not.
 
 **Blank chats are not stable, and more than one is reachable today.** `newChat()` invents an
 id (`c<time><rand>`) and `openHistory` pushes a blank chat into `chats` **without writing it**,
@@ -487,6 +568,20 @@ the preloading problem. Prefer passing state through over reconstructing it.
 mixed a diagnostic with a behaviour change, which made the behaviour change impossible to
 review or revert on its own. `AGENTS.md` already requires this; it is here because it was
 broken anyway.
+
+**A split history has to be verified per commit, and `git worktree` is the safe way to do it.**
+On 2026-11-21 a day's work in one file had to become five commits. Two attempts produced
+commits that did not pass their own tests, and both times the cause was a hunk split that
+separated an edit from the thing it depended on: a harness stub defined `registers` in one
+commit and used it in another; `renderPill` called `healthPill()` in a commit where the
+function arrived later, because the `loadHealth` edit that adds both also carried an unrelated
+wording change. Neither shows up if you run the suite from the working tree - I ran it five
+times against the final tree and it said OK five times. What caught it: `git worktree add
+--detach /tmp/v <sha>` for each commit and running the suite **inside** that directory (never
+touching the working tree), then `git worktree remove`. Two rules follow: verify each commit as
+a tree, not each diff as a patch; and when classifying hunks by content, never use a phrase that
+appears in your own comments as the marker - "server-before-model" is written in the code it was
+supposed to identify, and it dragged nine hunks into the wrong commit.
 
 **New behaviour goes behind a flag with the default unchanged, and the flag needs a test
 for both positions.** A parser fix that changed the default path violated the repo rule and
