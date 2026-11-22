@@ -1342,6 +1342,65 @@ function openDb() {
     r.onblocked = () => resolve(null);           // another tab holds an older version of the database
   });
 }
+// ------------------------------------------------------------------ the other tabs (todo #multi-tab-sync)
+// Two tabs are two apps over one IndexedDB, and every save writes the WHOLE chat - so today the tab that
+// saves last silently overwrites the other's work. This is the cheap half of the fix: say what changed, and
+// let the other tab re-read it before it writes. The stream itself cannot be shared - an in-flight answer
+// belongs to one tab's fetch and AbortController - and that is item keep-generating, not this.
+const TAB_ID = Math.random().toString(36).slice(2);
+const chan = (typeof BroadcastChannel === "function") ? new BroadcastChannel("strata") : null;
+// chat id -> when it was deleted, seen here or announced by another tab. Without it, a tab that still holds a
+// deleted chat writes it back on its next save - the other half of the clobber.
+const tombstones = new Map();
+const TOMBSTONE_MS = 10 * 60 * 1000;
+function tell(kind, id, extra) {
+  if (!chan) return;
+  try { chan.postMessage({kind, id, tab: TAB_ID, at: Date.now(), ...(extra || {})}); }
+  catch (e) { /* a closed channel changes nothing */ }
+}
+function tombstoned(id) {
+  const at = tombstones.get(id);
+  if (!at) return false;
+  if (Date.now() - at > TOMBSTONE_MS) { tombstones.delete(id); return false; }
+  return true;
+}
+function readChat(id) {
+  return new Promise((resolve) => {
+    if (!db) return resolve(null);
+    const t = db.transaction("chats", "readonly"), req = t.objectStore("chats").get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+    t.onabort = () => resolve(null);
+  });
+}
+// Take another tab's version of a chat, unless this tab is the one working on it: a live turn means local is
+// ahead, because the other tab cannot see the stream and overwriting here would lose the answer being written.
+async function adoptRemote(id, restored) {
+  if (!db || turnIn(id) || activeEdit) return;     // never pull an open edit box away
+  if (restored) tombstones.delete(id);             // an Undo elsewhere: the chat is back on purpose
+  else if (tombstoned(id)) return;
+  const rec = await readChat(id);
+  if (!rec) return;
+  const i = chats.findIndex((c) => c.id === id);
+  if (i >= 0) chats[i] = rec; else chats.push(rec);
+  if (id === chatId) { chat = rec; chatId = rec.id; messages = rec.messages; renderChat(); }
+  else renderSidebar();
+}
+function dropLocalChat(id) {
+  const i = chats.findIndex((c) => c.id === id);
+  if (i >= 0) chats.splice(i, 1);
+  if (id === chatId) { const next = chats[0] || newChat(); if (!chats.includes(next)) chats.push(next); showChat(next); }
+  renderSidebar();
+}
+if (chan) chan.onmessage = (e) => {
+  // "chat" covers created, renamed and edited - every one of those goes through writeChat, and adoptRemote
+  // adds a record this tab has never seen. A delete is its own message because the record is gone by the time
+  // anyone asks for it.
+  const m = (e && e.data) || {};
+  if (m.kind === "deleted") { tombstones.set(m.id, m.at || Date.now()); dropLocalChat(m.id); return; }
+  if (m.kind === "chat") adoptRemote(m.id, m.restored === true);
+};
+
 function allChats() {
   return new Promise((resolve) => {
     // the result is on the request, not on the store: reading it at oncomplete gives nothing
@@ -1360,17 +1419,23 @@ function onQuota(t) {
 }
 // one record per chat: rewriting the whole list for one message is wasteful when a chat is megabytes.
 // Another tab's writes do not show up here until that page is reloaded - there is no event for them.
-function writeChat(c) {                           // the record only; the caller renders the list once
+function writeChat(c, restored) {                  // the record only; the caller renders the list once
   if (!db) return;
+  if (tombstoned(c.id) && !restored) return;       // deleted in another tab: this one must not bring it back
+  if (restored) tombstones.delete(c.id);           // an Undo is a deliberate act, not a stale tab writing
+  c.rev = (c.rev || 0) + 1;                        // a counter another tab can compare against (item multi-tab-sync)
   const t = db.transaction("chats", "readwrite");
   t.objectStore("chats").put(cleanChat(c));
   onQuota(t);
+  tell("chat", c.id, restored ? {restored: true} : null);
 }
 function dropRecord(c) {
   if (!db) return;
+  tombstones.set(c.id, Date.now());
   const t = db.transaction("chats", "readwrite");
   t.objectStore("chats").delete(c.id);
   onQuota(t);
+  tell("deleted", c.id);
 }
 function putChat(c) { writeChat(c); renderSidebar(); }   // memory only: the change still has to show
 function dropChat(c) { dropRecord(c); renderSidebar(); }
@@ -1982,7 +2047,11 @@ function deleteChat(c) {
     if (chats.includes(c)) return;                  // already put back
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
     if (draft) store.set(dkey, draft);                // before showChat, which reads the draft back
-    if (wasOpen) showChat(c); else { writeChat(c); renderSidebar(); }
+    // an Undo is deliberate: clear this tab's tombstone and write with the restored flag, so the other tabs
+    // clear theirs too instead of refusing a chat they saw deleted
+    tombstones.delete(c.id);
+    writeChat(c, true);
+    if (wasOpen) showChat(c); else renderSidebar();
   }});
 }
 // duplicate the conversation (todo #chat-row-menu, and the shared core of item fork-chat): a second chat with

@@ -121,6 +121,18 @@ function makeEl() {
 }
 
 // ---------------------------------------------------------------- the stub IndexedDB
+// Two tabs over one database: the channel registry is module-level so separate run() calls in this process
+// can talk, and delivery is a microtask - a real BroadcastChannel never calls the sender back synchronously,
+// and never calls itself at all.
+const channels = {};
+class TestBroadcastChannel {
+  constructor(name) { this.name = name; this.onmessage = null; (channels[name] = channels[name] || []).push(this); }
+  postMessage(msg) {
+    for (const c of channels[this.name]) if (c !== this) queueMicrotask(() => c.onmessage && c.onmessage({data: msg}));
+  }
+}
+const closeChannels = () => Object.keys(channels).forEach((k) => delete channels[k]);
+
 function makeIdb(hooks, seed) {
   const data = Object.assign({}, seed);          // the records, keyed by id
   const stores = {};                             // the store is only there if the upgrade handler made it
@@ -135,6 +147,15 @@ function makeIdb(hooks, seed) {
         if (hooks.abort) return;                       // the transaction aborts, the request says nothing
         // as on the read side: a real put structured-clones, so the record does not alias the page's object
         data[value.id] = JSON.parse(JSON.stringify(value)); req.result = value; req.onsuccess && req.onsuccess();
+      });
+      return req;
+    },
+    get(key) {
+      const req = {result: null, error: null, transaction: current, onsuccess: null, onerror: null};
+      queueMicrotask(() => {
+        // a read returns a fresh copy, never the stored object - same structured-clone rule as getAll
+        req.result = key in data ? JSON.parse(JSON.stringify(data[key])) : undefined;
+        req.onsuccess && req.onsuccess();
       });
       return req;
     },
@@ -186,7 +207,7 @@ function makeIdb(hooks, seed) {
 }
 
 // ---------------------------------------------------------------- run app.js as the page would
-function run(hooks, stored, seed) {
+function run(hooks, stored, seed, shared) {
   const byId = {};
   const document = {getElementById: (id) => (byId[id] = byId[id] || makeEl()),
                     createElement: () => makeEl(), createTextNode: (t) => ({nodeType: 3, textContent: t}),
@@ -196,7 +217,7 @@ function run(hooks, stored, seed) {
                     _l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },   // recorded so a test can fire the document click/keydown
                     removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); },   // the sidebar drag takes its move/up listeners off again
                     querySelectorAll: () => []};
-  const idb = makeIdb(hooks, seed);
+  const idb = shared || makeIdb(hooks, seed);      // pass one idb twice for two tabs over one database
   // window listeners are recorded so a test can ask "is anything holding the page open right now, and what
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
   const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
@@ -230,6 +251,7 @@ function run(hooks, stored, seed) {
                                return hooks.workerFails ? Promise.reject(new Error("404"))
                                                         : Promise.resolve({scope: "./"}); }}}),
     URL: {createObjectURL: () => "blob:stub", revokeObjectURL: () => {}},   // the image open-in-tab path builds a blob: URL
+    BroadcastChannel: TestBroadcastChannel,        // the other tabs (todo #multi-tab-sync)
     innerWidth: hooks.innerWidth || 1200, innerHeight: 800, window: win, queueMicrotask,
   };
   const names = Object.keys(env);
@@ -240,7 +262,7 @@ function run(hooks, stored, seed) {
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "loadHealth, healthPill, get health() { return health; }, " +
-    "runInspector, renderInspect, renderSysCard, openMcpPicker, closePopover, " +
+    "runInspector, renderInspect, renderSysCard, openMcpPicker, closePopover, writeChat, tombstoned, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, get turns() { return turns; }, " +
@@ -3973,6 +3995,71 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     const last = cr.records.cc;
     assert.strictEqual(last.messages.length, 2, "the turn still ends with one assistant message, not two records");
     done.push("crash-recovers-last-turn: the record is written when the question is sent and again at each milestone, so a crash mid-turn keeps what happened");
+  }
+
+  // 112. multi-tab-sync: two tabs over one database. Before this, every save wrote the WHOLE record, so the
+  // tab that saved last silently deleted whatever the other one had written. A write now announces itself and
+  // the other tab re-reads the record before it writes anything.
+  {
+    closeChannels();
+    const shared = makeIdb({}, {});
+    let releaseA = null;
+    const stream = {fetch: async (u) => {
+        if (u === "v1/chat/completions") return {ok: true, body: {getReader: () => ({
+          read: () => new Promise((res) => { releaseA = () => res({value: undefined, done: true}); })})}};
+        return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
+      }};
+    const A = run(stream, {}, {}, shared);
+    await wait();
+    const B = run(stream, {}, {}, shared);
+    await wait();
+    // A renames its chat: that writes the record and announces it
+    const rowOf = (s, id) => s.el("sidebar-list").children.find((r) => (r.dataset || {}).id === id);
+    const idA = A.s.chat.id;
+    A.s.renameChat(rowOf(A.s, idA), A.s.chat);
+    const field = rowOf(A.s, idA).children.find((c) => (c.className || "").includes("chat-item__input"));
+    field.value = "written by A";
+    field._l["keydown"]({key: "Enter", preventDefault() {}});
+    for (let i = 0; i < 6; i++) await wait();
+    const inB = B.s.chats.find((c) => c.id === idA);
+    assert.ok(inB, "B learned about the chat without reloading");
+    assert.strictEqual(inB.title, "written by A", "with the name A gave it: " + JSON.stringify(inB.title));
+    // A sends a message (the stream stays open); B adopts the record at the question milestone
+    A.s.openChat(idA); await wait();
+    A.s.el("input").value = "asked in A";
+    A.s.send();
+    for (let i = 0; i < 6; i++) await wait();
+    assert.strictEqual((shared.records[idA].messages || []).length, 2,
+                       "the record holds the question and the streaming answer");
+    // B, which now holds the same chat, writes something of its own. Its write must be based on the copy it
+    // adopted, not the stale one it loaded at open - that is the clobber this whole item is about.
+    B.s.openChat(idA); await wait();
+    B.s.renameChat(rowOf(B.s, idA), B.s.chat);
+    const f2 = rowOf(B.s, idA).children.find((c) => (c.className || "").includes("chat-item__input"));
+    f2.value = "renamed by B";
+    f2._l["keydown"]({key: "Enter", preventDefault() {}});
+    for (let i = 0; i < 6; i++) await wait();
+    const after = shared.records[idA];
+    assert.strictEqual(after.title, "renamed by B", "B's rename landed");
+    assert.strictEqual((after.messages || []).length, 2,
+                       "and it did not delete what A had written: " + JSON.stringify(after.messages || []).slice(0, 160));
+    if (releaseA) releaseA();
+    for (let i = 0; i < 4; i++) await wait();
+    // and a tab that still holds a chat deleted elsewhere must not write it back
+    const stale = A.s.chats.find((c) => c.id === idA);
+    const inB2 = B.s.chats.find((c) => c.id === idA);
+    B.s.deleteChat(inB2);
+    for (let i = 0; i < 6; i++) await wait();
+    assert.ok(!shared.records[idA], "the delete landed in the store");
+    assert.ok(!A.s.chats.some((c) => c.id === idA), "and A dropped it from its own list");
+    // the save that was already in flight when the delete arrived - there is no UI left to drive it, because
+    // A has already dropped the chat from its list, so this is the one place calling writeChat directly is the
+    // faithful model rather than the function-call trap
+    if (stale) A.s.writeChat(stale);
+    for (let i = 0; i < 4; i++) await wait();
+    assert.ok(!shared.records[idA], "a stale tab's write did not bring the chat back");
+    closeChannels();
+    done.push("multi-tab-sync: a write announces itself and the other tab re-reads before writing, so neither tab deletes the other's work");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));

@@ -1716,7 +1716,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     turns are NOT counted by it today. Add that (a call abandoned in state call/json is
     already counted in abandoned_tool_calls) and correlate it with what the window shows.
 
-`multi-tab-sync`  Multiple tabs open at once, kept in sync. [ui] MEDIUM - and it splits into two problems
+`multi-tab-sync`  Multiple tabs open at once, kept in sync. [ui] PARTLY DONE 2026-11-22 - easy half; the shared stream is open
     of very different size.
     Today: nothing. app.js has no BroadcastChannel and no "storage" event listener, so two
     tabs are two independent apps over one IndexedDB. Worse, every save writes the WHOLE chat
@@ -1751,6 +1751,31 @@ all: fold-control replaced them, and the four overlapping switches became one co
     now.
     Order I would take: fix the clobbering (revision + tombstones) -> BroadcastChannel for
     the list -> 21/31 -> shared stream.
+    EASY HALF DONE 2026-11-22, in that order and in one pass, because the two are the same mechanism: every
+    write stamps `rev` on the record and announces `{kind:"chat", id}` on BroadcastChannel("strata"); a delete
+    tombstones the id in both tabs and announces `{kind:"deleted"}`.  The receiving tab re-reads the record
+    before it writes anything, which is what stops the clobber - it is not a merge algorithm, it is not writing
+    from a stale copy.  Three guards, each because a real case broke without it: a tab with a live turn in that
+    chat keeps its local copy (the other tab cannot see the stream, and adopting there would lose the answer
+    being written); a tab with an open edit box does not adopt at all (the field would be pulled out from under
+    the reader); and a tombstoned id is refused by writeChat, so an in-flight save that lands after someone
+    else's delete cannot resurrect the chat.  Undoing a delete is the deliberate exception: it clears the local
+    tombstone and broadcasts `{restored:true}`, which clears the others.
+    Harness case 112 runs two tabs over one stub database (the harness gained a BroadcastChannel registry and a
+    shared-idb argument - without those, "two tabs" cannot be modelled at all): B learns A's rename without a
+    reload; B's later rename keeps the two messages A had written; a delete in B drops the chat from A; and a
+    stale handle in A does not bring it back. Controls bite: no broadcast on write, and no tombstone guard.
+    STILL OPEN, in this item:
+      - the HARD half is unchanged - an in-flight answer belongs to one tab's fetch, so the other tab shows
+        nothing until it re-reads. That is keep-generating (and the output-on-disk item) before any of it
+        becomes a poll.
+      - a chat deleted while ANOTHER tab is streaming into it: that tab keeps writing to a deleted record and
+        its write is then refused by the tombstone, so the answer is lost. Needs the decision the item already
+        names - stop that stream, or let it finish and drop the result.
+      - drafts: two tabs typing in the same chat still share one localStorage key and overwrite each other.
+      - `rev` is stamped and carried but nothing compares it yet; the broadcast is what prevents the clobber.
+        A comparison is the next hardening step if a tab is ever offline (a background tab that missed
+        messages) rather than live.
 
 
 `search-full-text`  Search should cover the whole chat, not just the title - fast titles first, then full text. [ui]
