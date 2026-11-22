@@ -3918,12 +3918,17 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
             messages: [{id: "c1", role: "user", text: "hi", time: Date.now()}],
             queue: [{id: "qq2", text: "still waiting", images: [], files: [], time: Date.now()}]}});
     await wait(); await wait();
-    const n0 = sent.length;
+    // a click inside a queued row that is not one of its two buttons must not be swallowed
+    const rows0 = held2.s.el("chat").children.filter((c) => (c.className || "").includes("queued"));
+    held2.s.el("chat")._l.click({target: {closest: (sel) => (sel === ".queued" ? rows0[0] : null)}});
+    assert.strictEqual(held2.s.chat.queue.length, 1, "clicking the bubble changes nothing");
+    assert.strictEqual(held2.s.el("input").value, "", "and the click was passed on, not eaten");
+    const n1 = sent.length;
     held2.s.el("input").value = "a new question"; held2.s.send();
     await wait(); await wait();
-    assert.strictEqual(sent.length, n0 + 1, "the new message sent");
+    assert.strictEqual(sent.length, n1 + 1, "the new message sent");
     assert.strictEqual(held2.s.chat.queue.length, 1, "the post that came back from the record is still waiting");
-    assert.strictEqual(sent.length, n0 + 1, "and a finishing turn did not fire it");
+    assert.strictEqual(sent.length, n1 + 1, "and a finishing turn did not fire it");
     done.push("queue-other-chats: a message sent mid-turn waits on the record, shows as a queued post, fires when its turn is next, and survives a reload waiting for Send");
   }
 

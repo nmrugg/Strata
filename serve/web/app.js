@@ -2928,16 +2928,18 @@ function queuedEl(q) {
 function queuedClick(e) {
   const row = e.target.closest(".queued");
   if (!row) return false;
-  const q = (chat.queue || []).find((x) => x.id === row.dataset.qid);
-  if (!q) return true;                               // the row is stale: swallow the click, change nothing
-  if (e.target.closest("[data-q-cancel]")) {
+  const send = e.target.closest("[data-q-send]"), cancel = e.target.closest("[data-q-cancel]");
+  if (!send && !cancel) return false;               // only the two buttons: never swallow a click inside the
+  const q = (chat.queue || []).find((x) => x.id === row.dataset.qid);   // row that might belong to something else
+  if (!q) return true;                              // the row is stale: change nothing
+  if (cancel) {
     chat.queue = chat.queue.filter((x) => x.id !== q.id);
     writeChat(chat);
     $("input").value = q.text;
     autosize();
     saveDraft();
     renderChat();
-  } else if (e.target.closest("[data-q-send]")) {
+  } else {
     chat.queue = chat.queue.filter((x) => x.id !== q.id);
     writeChat(chat);
     renderChat();
