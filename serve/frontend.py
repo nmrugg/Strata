@@ -585,7 +585,7 @@ class ToolCall:
 
 @dataclass
 class Event:
-    kind: str                     # "reasoning" | "content" | "tool_call"
+    kind: str                     # "reasoning" | "content" | "tool_start" | "tool_args" | "tool_call" | "tool_cut"
     text: str = ""
     call: ToolCall | None = None
 
@@ -1203,6 +1203,7 @@ class OutputParser:
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.sparam = None             # the parameter the scanner is inside: what a cut-off call stopped in
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -1234,6 +1235,7 @@ class OutputParser:
                     if b < 0:
                         return out
                     pname = stripped[11:b]
+                    self.sparam = pname
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
@@ -1620,6 +1622,10 @@ class OutputParser:
                 # announced (so the client saw a tool start) and never finished: nothing is delivered for it (#211),
                 # which from the chat looks like the engine died.  Counted, so the server can say so instead.
                 self.abandoned += 1
+                # And handed to the tool loop whole: the name, the parameters that did close, and the parameter it
+                # stopped inside (text).  A half-written call must never be RUN - that is how a truncated command
+                # would execute - so the loop answers it with the note instead (item unread-call-recovery).
+                out.append(Event("tool_cut", text=self.sparam or "", call=self.scall))
             self.buf = ""
             self._reset_scan()
             return out

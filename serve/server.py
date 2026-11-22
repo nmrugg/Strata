@@ -3190,6 +3190,7 @@ class Service:
             if vision_started:
                 self.vision.unload()
             raise
+        self.load_error = None                        # item server-before-model: a load that worked ends the report
         print("[strata] the engine is running again", flush=True)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
             try:
@@ -4527,6 +4528,27 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 MCP_IMAGE_INLINE_MAX = 8 << 20
 
 
+def cut_call_note(name: str, param: str) -> str:
+    """What the model is told when it opened a call and stopped before closing it (item unread-call-recovery;
+    the shape the corpus records as recorded-cut-call-2026-11-21).  The call is never RUN: half a command is
+    exactly the thing that must not execute, and running it with only the parameters that survived is the
+    silent wrong answer this item already documents twice - a call that ran with no arguments and the
+    conversation carried on as if it had worked."""
+    where = f'part-way through the parameter "{param}"' if param else "before finishing any parameter"
+    return (f"error: your call to {name} stopped {where} and was not run - nothing happened. Write the whole "
+            "call again with every parameter closed, or answer without calling it.")
+
+
+# How many rounds in a row a bad call is answered before the turn gives up.  Upstream caps the unknown-name
+# answer at two, which is the right number when a turn is one question and one answer; here an agent turn is
+# ONE request with thirty tool rounds in it, and three slips across thirty is ordinary work (measured: the
+# third killed a working turn).  Cost of one answered attempt, measured on a 290k-token chat: the round's own
+# tail re-read (876-2,366 tokens) plus one pass, 1-2 s - so five in a row is ~5-10 s against a turn that
+# already runs 60-200 s, and it is still a hard stop rather than burning mcp.max_rounds (900 here).
+# A round that runs a real tool resets the streak, so this only bites back-to-back failures.
+BAD_CALL_STREAK = 5
+
+
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names, keep_thinking=False, stream_args=False, frozen=False):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
@@ -4548,9 +4570,13 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     # see the unknown-call notice below (item unread-call-recovery)
     own_names = {t.get("name") for t in (tools or []) if isinstance(t, dict)}
     unknown_calls, unknown_names, unknown_rounds = 0, set(), 0
+    cut_calls, cut_rounds, cut_answered = 0, 0, 0   # opened and never finished: counted, streak, and how many got an answer
     handle = object()          # this generator: the key its running calls are tracked under, for /metrics
     while True:
         text, reasoning, calls, unknown, own_calls = [], [], [], [], 0
+        answered = []          # every call this loop answers, kept in the order the MODEL wrote them - see below
+        cut = []               # (call, the parameter it stopped in): answered below, never run
+        prepared = {}          # id -> the result to give a cut-off call instead of running it
         for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
             if kind == "done":
                 done = x
@@ -4567,10 +4593,18 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                     elif ev.kind == "tool_call":
                         if ev.call.name in mcp_names:
                             calls.append(ev.call)
+                            answered.append(ev.call)
                         else:
                             unknown.append(ev.call)      # answered below, or skipped if the cap is reached
+                            answered.append(ev.call)     # ... in the model's order either way, see the join below
                             unknown_calls += 1           # counted either way - see the notice at the end
                             unknown_names.add(ev.call.name)
+                    elif ev.kind == "tool_cut":
+                        # opened and never closed.  The parser hands it whole (name, the parameters that did
+                        # close, and the one it stopped inside) because running a half-written call is the one
+                        # thing that must never happen - a truncated command would still execute.
+                        cut.append((ev.call, ev.text))
+                        cut_calls += 1
                     elif stream_args and ev.kind == "tool_args":
                         # todo #tool-args-stream: the call's raw JSON as it is written, so the page can show what the model is
                         # typing instead of "(being written)".  Only for requests that asked (strata_mcp_args);
@@ -4585,17 +4619,44 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                     reasoning.append(ev.text)
             yield kind, x
         total += done["completion_tokens"]
-        if unknown and not own_calls and done["finish"] == "stop" and not cancel.is_set() and unknown_rounds < 2:
+        if unknown and not own_calls and done["finish"] == "stop" and not cancel.is_set() \
+                and unknown_rounds < BAD_CALL_STREAK:
             # answer it.  The hub has no server behind the name, so the result is its own error text and the
             # model gets a turn to pick the tool it meant - which is what the chat needed instead of dying
-            # (item unread-call-recovery; upstream caps the same thing at two).
+            # (item unread-call-recovery).  BAD_CALL_STREAK rounds IN A ROW, not per request: the counter is
+            # reset by any round that ran a real tool, further down.
             unknown_rounds += 1
-            calls += unknown
+            # not `calls + unknown`: the client rebuilds this round from the calls in the order it SAW them
+            # announced (onTool pushes on arrival, assistantMessages replays that array), and the template
+            # renders the round in list order - so putting every real call first reorders the history and the
+            # engine's exact-prefix reuse stops matching at this round.  Measured here 2026-11-21: the request
+            # after one such mixed round re-read 36,281 of its 87,463 prompt tokens, 14.4 s.
+            calls = answered
         elif unknown:
             for c in unknown:                    # over the cap, or the client has its own call to answer
                 yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
                               "chars": 0, "truncated": False, "ms": 0}
         unknown = []
+        if cut and not own_calls and done["finish"] == "stop" and not cancel.is_set() \
+                and cut_rounds < BAD_CALL_STREAK:
+            # The same treatment, for the other death: the model is told its call was cut off and gets another
+            # turn to write it whole (item unread-call-recovery, the shape the corpus records as
+            # recorded-cut-call-2026-11-21).  It joins THIS round, last - a call cut off is by definition the
+            # last thing the pass wrote - so the order the client rebuilds is still the order the model wrote.
+            # Its result is prepared here and handed out below WITHOUT going to the hub: the name is a real
+            # tool, and running half a command is worse than the death this replaces.
+            cut_rounds += 1
+            cut_answered += len(cut)
+            for c, param in cut:
+                note = cut_call_note(c.name, param)
+                prepared[c.id] = {"ok": False, "text": note, "chars": len(note), "truncated": False, "ms": 0,
+                                  "images": []}
+                calls.append(c)
+        elif cut:
+            for c, _ in cut:                     # over the cap: the block says so, rather than hanging open
+                yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
+                              "chars": 0, "truncated": False, "ms": 0}
+        cut = []
         run_them = calls and not own_calls and done["finish"] == "stop" and not cancel.is_set()
         if run_them and rounds >= max_rounds:
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
@@ -4611,6 +4672,16 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             s, tool = hub.routes().get(c.name, (None, c.name))
             yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
                           "tool": tool, "arguments": c.arguments, "round": rounds}
+            if c.id in prepared:
+                # cut off, so: not run.  The note is both what the model is told and what the block on screen
+                # shows, so there is one story about what happened rather than two.
+                r = prepared[c.id]
+                print(f"[strata] tool {c.name}: the model stopped part-way through the call; answered with the "
+                      "note, the call was not run", flush=True)
+                results.append(r)
+                yield "mcp", {"event": "result", "id": c.id,
+                              **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
+                continue
             # The call runs on a thread while this generator keeps yielding heartbeats: they reach the client as
             # keep-alives, which is how a client that went away (the web app's Stop) is noticed during a slow tool.
             # todo #waiting-state: an MCP call running is its own state.  Before this, /metrics answered live.state=idle
@@ -4676,6 +4747,15 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         messages += [{"role": "tool",
                       "content": ([{"type": "text", "text": r["text"]}, *r["images"]]
                                   if r["images"] else r["text"])} for r in results]
+        # The cap on answered unknown calls counts a STREAK, not the request.  An agent turn is one request with
+        # thirty tool rounds in it, and three slips across thirty is ordinary work, not the loop the cap exists
+        # to stop: measured on this box 2026-11-21, the third one ended a 30-round turn with its call shown as
+        # "not run" and no answer at all, which is the death this item exists to remove.  A round that ran a
+        # real tool breaks the streak; a model inventing names back to back still stops after two.
+        # A round that ran a real tool breaks the streak.  The prepared ones do not count: a cut-off call to a
+        # real tool would otherwise reset the counter that exists to stop cut-off calls.
+        if any(c.name in mcp_names and c.id not in prepared for c in calls):
+            unknown_rounds = cut_rounds = 0
         try:
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
         except ClientGone:                                      # #1999: the client left while a picture was prepared
@@ -4688,8 +4768,13 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         # looks dead.  Counting it is step one; whether the loop should answer it instead is the owner's call.
         svc.totals["unknown_tool_calls"] = svc.totals.get("unknown_tool_calls", 0) + unknown_calls
         print(f"[strata] {unknown_calls} call(s) named a tool that neither the request declared nor this server "
-              f"offers: {', '.join(sorted(unknown_names))}. The tool loop does not run it and the page has no "
-              "handler for it, so the turn ends with no answer and no tool block", flush=True)
+              f"offers: {', '.join(sorted(unknown_names))}. The hub's own answer went back as the result and the "
+              "model got another turn to pick the tool it meant", flush=True)
+    if cut_calls:
+        # counted apart from abandoned_tool_calls, which is the parser's count of the SHAPE: this one says how
+        # many of them the loop answered, so a counter going up while the chat survives is readable in /metrics
+        svc.totals["cut_tool_calls"] = svc.totals.get("cut_tool_calls", 0) + cut_calls
+        svc.totals["cut_tool_calls_answered"] = svc.totals.get("cut_tool_calls_answered", 0) + cut_answered
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
 
 
@@ -4876,6 +4961,11 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                 continue
             if ev.kind == "tool_call" and ev.call.id in streamed:
                 finished.add(ev.call.id)
+                continue
+            if ev.kind == "tool_cut":
+                # a call the model opened and never finished: there is no tool_use block to open for it.  The
+                # MCP loop answers that shape (run_with_mcp); a plain Anthropic client has nobody to answer it,
+                # so it sees nothing - exactly what it saw before this event existed.
                 continue
             want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
             if ev.kind not in ("tool_call", "tool_start") and not ev.text:
@@ -7090,7 +7180,14 @@ def main() -> int:
                   "       (and set this network to Private in Windows' network settings)", flush=True)
     if a.open and cfg.get("open_browser") is not False:   # #609: the config's "open_browser": false wins (an older
         import webbrowser                                  # run-<model>.bat still passes --open)
-        webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/")
+        url = f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/"
+        if loader is not None:
+            # the browser still opens once the MODEL is ready, as it always has: #560 #516 is why (the card note
+            # has to reach the console before a browser is started at that card), and a page opened at a model
+            # that never loaded is a worse first run than one opened a minute later
+            threading.Thread(target=lambda: (loader.join(), webbrowser.open(url)), daemon=True).start()
+        else:
+            webbrowser.open(url)
     # #96: docker stop sends SIGTERM, which Python ignores by default, so the container's PID 1 would be killed after
     # the grace period with the engine still running. SIGTERM takes Ctrl+C's path below (QUIT to the engine).
     # SIGINT keeps Python's own handler, so Ctrl+C and a second Ctrl+C work as before.

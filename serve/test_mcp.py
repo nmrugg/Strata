@@ -23,7 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp as mcp_mod  # noqa: E402
 from serve import server as serve_mod  # for patching serve.server's module attributes in tests
 from serve import mcp_fake_server as fake  # noqa: E402
-from serve.frontend import ChatTemplate  # noqa: E402
+from serve.frontend import THINK_END, ChatTemplate  # noqa: E402
+# a plain answer script, built from the parser's own constant: the boundary tags are never spelled out here
+# (LESSONS.md, Existential - a session died twice while writing them inside a fenced block)
+PLAIN_ANSWER = THINK_END + "\n\nDone."
 from serve.mcp import McpCancelled, McpHub, hub_from_config  # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
@@ -446,18 +449,29 @@ class ToolLoop(LoopFixture):
         self.assertIn("<tool_response>\nhello from the tool\n</tool_response>", second)
         self.assertEqual(cs[-1]["usage"]["prompt_tokens"], len(self.engine.prompts[1]))
 
-    def test_a_call_the_output_ends_inside_is_not_run(self):
-        """#211: the model's turn ends inside an MCP call: nothing runs (it used to run with no arguments)."""
+    def test_a_call_the_output_ends_inside_is_answered_and_never_run(self):
+        """#211: the model's turn ends inside an MCP call, so nothing runs (it used to run with no arguments).
+        What changed 2026-11-21 is what the chat does with that: instead of the block closing as "not run" and
+        the turn ending with no answer, the call gets a result naming where it stopped and the model gets
+        another turn to write it whole (item unread-call-recovery; the owner chose this over leaving it)."""
         script = call_script("fake__echo", text="hello from the tool")
-        self.start(script[:script.index("from the tool")], "</think>\n\nnever")
+        self.start(script[:script.index("from the tool")], PLAIN_ANSWER)
         code, text = self.post({"strata_mcp": True})
         self.assertEqual(code, 200, text)
         cs = self.chunks(text)
         mcp = [c["strata_mcp"] for c in cs if "strata_mcp" in c]
-        self.assertEqual([m["event"] for m in mcp], ["start"])        # the web app shows it as "Not run" at the end
-        self.assertEqual(len(self.engine.prompts), 1)
-        self.assertNotIn('"call"', Path(self.log.name).read_text())    # nothing ran
+        self.assertEqual([m["event"] for m in mcp], ["start", "call", "result"],
+                         "the block is closed with what the model was told, not left hanging open")
+        bad = [m for m in mcp if m["event"] == "result"][0]
+        self.assertFalse(bad["ok"])
+        self.assertIn("stopped part-way through", bad["text"], bad["text"][:200])
+        self.assertIn('"text"', bad["text"], "and it names the parameter the call stopped inside")
+        self.assertIn("fake__echo", bad["text"], "and the tool it was calling")
+        self.assertNotIn('"call"', Path(self.log.name).read_text())    # nothing ran - the point of #211
+        self.assertEqual(len(self.engine.prompts), 2, "the model was given a turn after the note")
         self.assertEqual(cs[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(self.svc.totals.get("cut_tool_calls"), 1, "counted as the shape")
+        self.assertEqual(self.svc.totals.get("cut_tool_calls_answered"), 1, "and as answered")
 
     def test_non_stream(self):
         self.start(call_script("fake__add", a=2, b=3), "</think>\n\n5.")
@@ -738,18 +752,47 @@ class UnknownCall(LoopFixture):
         self.assertIn("Done.", answer, "and the chat ends with an answer instead of nothing")
 
     def test_the_answer_is_capped_so_a_model_inventing_names_cannot_burn_the_rounds(self):
-        self.hub.settings["max_rounds"] = 8
-        self.start(*([call_script("fake__nothere", text="hi")] * 4))
+        """Five rounds in a row, not two (raised 2026-11-21 at the owner's call): an agent turn is one request
+        with thirty tool rounds in it, and three slips across thirty is ordinary work - the old cap of two
+        killed a working turn on this box.  The cap is a STREAK, so a round that runs a real tool clears it,
+        and it is still a hard stop rather than burning mcp.max_rounds (900 in this config)."""
+        self.hub.settings["max_rounds"] = 9
+        self.start(*([call_script("fake__nothere", text="hi")] * 7))
         code, text = self.post({"strata_mcp": True})
         self.assertEqual(code, 200, text)
         mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
         results = [m for m in mcp if m["event"] == "result"]
         answered = [m for m in results if not m.get("skipped")]
-        self.assertEqual(len(answered), 2, "the error goes back twice, no more")
+        self.assertEqual(len(answered), 5, "the error goes back five times, no more")
         self.assertEqual(len([m for m in results if m.get("skipped")]), 1,
-                         "and the third is shown as not run, not swallowed on the way out")
-        self.assertEqual(len(self.engine.prompts), 3, "then the turn ends rather than looping")
-        self.assertEqual(self.svc.totals.get("unknown_tool_calls"), 3, "and every one is still counted")
+                         "and the sixth is shown as not run, not swallowed on the way out")
+        self.assertEqual(len(self.engine.prompts), 6, "then the turn ends rather than looping")
+        self.assertEqual(self.svc.totals.get("unknown_tool_calls"), 6, "and every one is still counted")
+
+    def test_a_real_round_between_two_slips_does_not_use_the_cap_up(self):
+        """The cap is a streak, not a budget for the request.  An agent turn is ONE request with thirty tool
+        rounds in it, so slip - real call - slip - real call - slip is ordinary work.  Counting it as a budget
+        is what killed a real 30-round turn on this box on 2026-11-21: the third slip went to the over-cap
+        branch, its call was shown as "not run", and the turn ended with no answer - the death item
+        unread-call-recovery exists to remove, caused by the fix for it."""
+        self.hub.settings["max_rounds"] = 9
+        self.start(call_script("fake__nothere", text="one"),
+                   call_script("fake__echo", text="working"),
+                   call_script("fake__nothere", text="two"),
+                   call_script("fake__echo", text="still working"),
+                   call_script("fake__nothere", text="three"),
+                   PLAIN_ANSWER)
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        results = [m for m in mcp if m["event"] == "result"]
+        self.assertEqual(len(results), 5, "three slips and two real calls, all answered")
+        self.assertEqual([bool(m.get("skipped")) for m in results], [False] * 5,
+                         "every slip got the hub's own answer: a real round broke the streak between them")
+        self.assertEqual(len([m for m in results if not m["ok"]]), 3, "and the three are the hub's error text")
+        answer = "".join((c["choices"][0].get("delta") or {}).get("content") or "" for c in self.chunks(text))
+        self.assertIn("Done.", answer, "the turn ends with an answer, not with a not-run block")
+        self.assertEqual(self.svc.totals.get("unknown_tool_calls"), 3, "still counted, all three")
 
     def test_a_tool_the_client_declared_is_not_unknown(self):
         # the other half of the rule: a tool the request brought itself is the client's to answer, and that is

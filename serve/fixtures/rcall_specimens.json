@@ -370,6 +370,23 @@
    "calls": [
     "web_extract"
    ]
+  },
+  {
+   "name": "recorded-cut-call-2026-11-21",
+   "about": "RECORDED, not constructed - the first specimen of this shape the counters named on this box. An agent turn where the model opened a tool it HAD been given, wrote the parameter opener and part of the value, and then emitted its end-of-turn token: the log says state=call, abandoned=1, reasoning_tokens=135, finish=stop, nothing delivered (serve/server.py, the abandoned and EMPTY TURN prints). Everything from the parameter opener on is the parser's own held buffer, pulled out of the log line with ast.literal_eval and never retyped; the thinking's words and the call wrapper were not kept, so the closer and the wrapper are put back from the state the log reported - checked against the real parser: with them it lands on state=call / abandoned=1, the live reading; without the wrapper it reads as drift instead, and without the closer as unclosed thinking, both different paths. Kept because neither unknown-call fix covers it: the call was real and never closed, so nothing runs, the client shows a 'not run' block and the turn has no answer - and reasoning_close_retry only fires for rcall (a call opened inside the thinking).",
+   "tools": [
+    "easyCMP__run_cmd"
+   ],
+   "props": {
+    "easyCMP__run_cmd": [
+     "cmd",
+     "cwd",
+     "timeout"
+    ]
+   },
+   "finish": "stop",
+   "input": "</think>\n\n<tool_call>\n\n<function=easyCMP__run_cmd>\n<parameter=cmd>\ncd /programs/Strata && echo \"open-item lines: $(sed '/^## 9. Historical/,$d",
+   "calls": []
   }
  ]
 }

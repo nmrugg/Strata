@@ -10,6 +10,7 @@ re-read everything after it.  This checks that both sides now render one and the
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 import threading
@@ -33,9 +34,10 @@ def render(msgs):
 class FakeSvc:
     """Two rounds: the model thinks and calls, then answers.  prepare() records what the loop rebuilt."""
 
-    def __init__(self, call_name=TOOL):
+    def __init__(self, call_name=TOOL, events=None):
         self.round, self.prepared = 0, []
         self.call_name = call_name          # an unknown name exercises the answered-error round
+        self.events = events                # a scripted round, for a round with more than one call
         # run_with_mcp reports the call it is running through these (todo #waiting-state), so the stand-in has to carry
         # what a real Service carries - and the unknown-call notice counts into totals, so that too
         self.status_lock = threading.Lock()
@@ -45,6 +47,10 @@ class FakeSvc:
     def run(self, ids, thinking, tools, max_new, sampling, cancel):
         self.round += 1
         if self.round == 1:
+            if self.events is not None:
+                yield from (("event", e) for e in self.events)
+                yield "done", {"completion_tokens": 10, "finish": "stop"}
+                return
             yield "event", Event("reasoning", THINKING)
             yield "event", Event("tool_call", call=ToolCall(self.call_name, {"value": 7}, "call_x"))
         else:
@@ -175,6 +181,87 @@ class RoundHistory(unittest.TestCase):
         self.assertEqual(svc.round, 2, "and the model was given a second turn to correct itself")
         self.assertTrue(render(self.client(rebuilt, False)).startswith(render(rebuilt)),
                         "the page's rebuild continues the tokens the engine already holds: no re-read")
+
+    def test_a_mixed_round_keeps_the_order_the_model_wrote(self):
+        """The answered-error round cost a re-read after all, and it was the LOOP's doing, not the page's: the
+        calls it answers were kept in two lists and joined real-first, while the page rebuilds a round from the
+        order the calls ARRIVED (onTool pushes on the announcement, assistantMessages replays that array).  One
+        unknown call written before a real one therefore moved that round's calls - and their results - into a
+        different order than the engine had been fed, and the exact-prefix reuse stopped matching at that round.
+        Measured on this box 2026-11-21 over a real agent chat: the request after such a round re-read 36,281 of
+        its 87,463 prompt tokens, 14.4 s, and the client hung up while waiting (finish=disconnect).
+        Both sides go through the real conversion: the page's messages are built in the CLIENT's shape from the
+        events it was actually sent, then read by openai_to_messages - never hand-modelled (LESSONS.md)."""
+        first = ToolCall(self.UNKNOWN, {"value": 1}, "call_u")      # the name nobody offers, written FIRST
+        second = ToolCall(TOOL, {"value": 7}, "call_t")
+        svc = FakeSvc(events=[Event("tool_start", call=first), Event("tool_call", call=first),
+                              Event("tool_start", call=second), Event("tool_call", call=second)])
+        asked = "Call the missing one, then the noop."
+        out = list(run_with_mcp(svc, FakeHub(), [{"role": "user", "content": asked}], [{"name": TOOL}],
+                                {}, [], True, 100, 100, {}, threading.Event(), {TOOL}, False))
+        rebuilt = svc.prepared[-1]
+        rounds = [m for m in rebuilt if m.get("tool_calls")]
+        self.assertEqual([c["function"]["name"] for c in rounds[0]["tool_calls"]], [self.UNKNOWN, TOOL],
+                         "the round the loop builds keeps the order the model wrote the calls in")
+        self.assertEqual([m["content"] for m in rebuilt if m.get("role") == "tool"],
+                         [f"error: there is no tool named {self.UNKNOWN!r}", "7"],
+                         "and each result sits under its own call")
+        # what the page holds: the calls in arrival order, each with the result that came back for it
+        order = [x["id"] for k, x in out if k == "mcp" and x["event"] == "start"]
+        got: dict = {}
+        for k, x in out:
+            if k == "mcp" and x["event"] in ("call", "result"):
+                got.setdefault(x["id"], {}).update(x)
+        self.assertEqual(order, ["call_u", "call_t"], "the page saw the unknown call first")
+        as_client = [{"role": "user", "content": asked},
+                     {"role": "assistant", "content": "", "tool_calls": [
+                         {"id": i, "type": "function",
+                          "function": {"name": got[i]["name"], "arguments": json.dumps(got[i]["arguments"])}}
+                         for i in order]},
+                     *[{"role": "tool", "tool_call_id": i, "content": got[i]["text"]} for i in order],
+                     {"role": "assistant", "content": "done"}, {"role": "user", "content": "and now?"}]
+        client, _, _ = openai_to_messages({"messages": as_client})
+        self.assertTrue(render(client).startswith(render(rebuilt)),
+                        "the page's rebuild of that round continues the tokens the engine already holds")
+
+    def test_a_cut_off_call_becomes_a_round_both_sides_rebuild_the_same(self):
+        """Answering a call the model opened and never finished puts a new round into the history: the call as
+        far as it got, and the note the model was told.  The page rebuilds that round from the events it was
+        sent, so the two have to agree token for token or the prefix breaks here - the hazard that measured
+        36,281 tokens on this box.  A cut-off call is also always the LAST thing a pass wrote, so appending it
+        keeps the model's order rather than disturbing it."""
+        half = ToolCall(TOOL, {"text": "hello from"}, "call_cut")
+        svc = FakeSvc(events=[Event("tool_start", call=half),
+                              Event("tool_args", text='{"text": "hello from"', call=half),
+                              Event("tool_cut", text="text", call=half)])
+        asked = "Call the noop tool and stop half way through."
+        out = list(run_with_mcp(svc, FakeHub(), [{"role": "user", "content": asked}], [{"name": TOOL}],
+                                {}, [], True, 100, 100, {}, threading.Event(), {TOOL}, False))
+        rebuilt = svc.prepared[-1]
+        rounds = [m for m in rebuilt if m.get("tool_calls")]
+        self.assertEqual(len(rounds), 1, "the cut-off call is a round in the history")
+        self.assertEqual(rounds[0]["tool_calls"][0]["function"]["name"], TOOL)
+        self.assertEqual(rounds[0]["tool_calls"][0]["function"]["arguments"], {"text": "hello from"},
+                         "with the arguments as far as the model got, not an empty call")
+        note = [m for m in rebuilt if m.get("role") == "tool"][0]["content"]
+        self.assertIn("was not run", note, note[:200])
+        self.assertIn('"text"', note, "and it names the parameter the call stopped inside")
+        order = [x["id"] for k, x in out if k == "mcp" and x["event"] == "start"]
+        got: dict = {}
+        for k, x in out:
+            if k == "mcp" and x["event"] in ("call", "result"):
+                got.setdefault(x["id"], {}).update(x)
+        as_client = [{"role": "user", "content": asked},
+                     {"role": "assistant", "content": "", "tool_calls": [
+                         {"id": i, "type": "function",
+                          "function": {"name": got[i]["name"], "arguments": json.dumps(got[i]["arguments"])}}
+                         for i in order]},
+                     *[{"role": "tool", "tool_call_id": i, "content": got[i]["text"]} for i in order],
+                     {"role": "assistant", "content": "done"}, {"role": "user", "content": "and now?"}]
+        client, _, _ = openai_to_messages({"messages": as_client})
+        self.assertTrue(render(client).startswith(render(rebuilt)),
+                        "the page's rebuild of the cut round continues the tokens the engine already holds")
+        self.assertEqual(svc.round, 2, "and the model was given a turn after the note")
 
 
 if __name__ == "__main__":

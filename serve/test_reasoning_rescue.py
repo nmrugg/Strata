@@ -61,7 +61,12 @@ WIDTHS = (1, 2, 3, 7, 0, 100_000)
 class Corpus(unittest.TestCase):
     def test_every_specimen_whole_and_in_chunks(self):
         for sp in SPECIMENS:
-            tools = [{"name": n, "parameters": {"properties": {}}} for n in sp["tools"]]
+            # a specimen may declare its tools' parameter names ("props"): the parser's walkers resolve a
+            # declared parameter differently from an undeclared one, and the recorded cut-off call had its
+            # parameter declared - a schema of no properties would test a different path than the live one
+            props = sp.get("props") or {}
+            tools = [{"name": n, "parameters": {"properties": {k: {} for k in props.get(n, [])}}}
+                     for n in sp["tools"]]
             seen = set()
             for width in WIDTHS:
                 for st in (True, False):
@@ -72,7 +77,7 @@ class Corpus(unittest.TestCase):
             self.assertEqual(len(seen), 1, sp["name"])        # streamed and whole agree
 
     def test_the_corpus_has_the_reported_split(self):
-        self.assertEqual((len(SPECIMENS), sum(bool(s["calls"]) for s in SPECIMENS)), (37, 16))
+        self.assertEqual((len(SPECIMENS), sum(bool(s["calls"]) for s in SPECIMENS)), (38, 16))
 
 
 class Gates(unittest.TestCase):
