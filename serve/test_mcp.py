@@ -807,6 +807,109 @@ class UnknownCall(LoopFixture):
         self.assertNotIn("neither the request declared", out.getvalue())
 
 
+class CutCall(LoopFixture):
+    """A call the model opened and never finished - the shape the corpus records as
+    recorded-cut-call-2026-11-21, the first one these counters named on this box.  It used to end the turn: the
+    block closed as "not run", nothing was delivered, and the chat looked dead.  Now it is answered the way an
+    unknown name is answered, and the model gets another turn (owner's decision, 2026-11-21)."""
+
+    def cut(self, name="fake__echo"):
+        whole = call_script(name, text="hello from the tool")
+        return whole[:whole.index("from the tool")]
+
+    def test_five_cuts_in_a_row_are_answered_and_the_sixth_is_not(self):
+        self.hub.settings["max_rounds"] = 9
+        self.start(*([self.cut()] * 8))
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        results = [m for m in mcp if m["event"] == "result"]
+        self.assertEqual([bool(m.get("skipped")) for m in results], [False] * 5 + [True],
+                         "the streak is capped at five, as the unknown-call answer is")
+        self.assertEqual(len(self.engine.prompts), 6, "then the turn ends rather than looping")
+        self.assertEqual(self.svc.totals.get("cut_tool_calls"), 6, "all six counted")
+        self.assertEqual(self.svc.totals.get("cut_tool_calls_answered"), 5, "five answered")
+
+    def test_a_real_round_between_cuts_resets_the_cap(self):
+        """Same rule as the unknown-call cap, and for the same reason: an agent turn is ONE request with
+        dozens of rounds in it, so a per-request budget would kill ordinary work."""
+        self.hub.settings["max_rounds"] = 9
+        self.start(self.cut(),
+                   call_script("fake__echo", text="one"),
+                   self.cut(),
+                   call_script("fake__echo", text="two"),
+                   self.cut(),
+                   PLAIN_ANSWER)
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        results = [m for m in mcp if m["event"] == "result"]
+        self.assertEqual(len(results), 5, "three cuts and two real calls; the closing answer runs no tool")
+        self.assertEqual([bool(m.get("skipped")) for m in results], [False] * 5,
+                         "no cut was refused: a round that ran broke the streak each time")
+        answer = "".join((c["choices"][0].get("delta") or {}).get("content") or "" for c in self.chunks(text))
+        self.assertIn("Done.", answer, "and the turn ends with an answer")
+
+    def test_a_cut_call_is_never_run_even_though_its_name_is_a_real_tool(self):
+        """The safety half.  fake__echo exists in the hub, so the loop COULD run the half-written call - and
+        that is the shape this item already documents twice: a call that ran with nothing in it and answered as
+        if it had worked.  Here the hub must be asked for nothing, and the model must be told instead."""
+        self.hub.settings["max_rounds"] = 4
+        self.start(self.cut(), PLAIN_ANSWER)
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200)
+        self.assertEqual([l for l in Path(self.log.name).read_text().splitlines() if '"call"' in l], [],
+                         "the hub was never asked to run the truncated call")
+        results = [c["strata_mcp"] for c in self.chunks(text)
+                   if "strata_mcp" in c and c["strata_mcp"]["event"] == "result"]
+        self.assertEqual(len(results), 1, "the block got exactly one result")
+        self.assertIn("was not run", results[0]["text"], results[0]["text"][:200])
+        self.assertEqual(results[0]["chars"], len(results[0]["text"]), "the note is the whole result")
+
+
+class NoTools(LoopFixture):
+    """A request that asks for MCP tools and is given none.  The model then has no tools block at all: it cannot
+    call anything, and it ends the turn with plausible text - not an empty turn, not an abandoned call, not
+    unread or drift, no counter of any kind.  Measured on this box 2026-11-21: three such requests in a row in
+    an agent chat that looked exactly like the engine had died, and nothing in the log said what had happened."""
+
+    def test_a_request_that_gets_no_tools_says_why_and_counts_it(self):
+        self.hub.close()
+        self.hub = McpHub({"broken": stdio("--crash-at-start")}, {"timeout_s": 10, "start_timeout_s": 10})
+        self.hub.start(wait=True)
+        self.assertEqual(self.hub.routes(), {}, "the only server never came up")
+        self.start(PLAIN_ANSWER)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, _ = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200)
+        said = out.getvalue()
+        self.assertIn("asked for MCP tools and got NONE", said, said[:400])
+        self.assertIn("no MCP server has any tools ready", said, "and it names which of the three reasons")
+        self.assertIn("broken=failed", said, "and the state of each server, so the reason is checkable")
+        self.assertEqual(self.svc.totals.get("mcp_requests_without_tools"), 1)
+
+    def test_a_pinned_tool_list_that_matches_nothing_falls_back_to_the_current_one(self):
+        # the other way to land there: the conversation carries its own list (strata_mcp_tools) and none of those
+        # names is in the hub any more - a renamed or removed tool, or a tool server that came back different.
+        # Falling back costs nothing the chat wasn't already paying: an empty tools block is a different tools
+        # block, so its prefix is broken either way - and the pinned list exists to stop a re-read, not to
+        # disarm the turn.
+        self.hub.settings["max_rounds"] = 4
+        self.start(call_script("fake__echo", text="still works"), PLAIN_ANSWER)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code, text = self.post({"strata_mcp": True, "strata_mcp_tools": ["nosuch__tool"]})
+        self.assertEqual(code, 200, text)
+        said = out.getvalue()
+        self.assertIn("matched none of the MCP tools on offer", said, said[:400])
+        self.assertIn("sending the current list instead", said, said[:400])
+        ran = [l for l in Path(self.log.name).read_text().splitlines() if '"call"' in l]
+        self.assertEqual(len(ran), 1, "the tool ran: the turn kept its tools")
+        self.assertNotIn("asked for MCP tools and got NONE", said, "repaired, not just reported")
+        self.assertIsNone(self.svc.totals.get("mcp_requests_without_tools"), "absent means zero")
+
+
 class RuntimeChange(unittest.TestCase):
     """todo #mcp-server-add: a server can be added, changed or removed while Strata runs.  The hub has to
     construct and start an added entry, rebuild a changed one (a toggle would leave it answering with the tools

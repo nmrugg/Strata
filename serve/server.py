@@ -6073,7 +6073,32 @@ def make_handler(svc: Service):
                 svc.mcp.wait(10)                                  # servers still starting (only right after start)
                 only = mcp_only(req)                              # this conversation's own tool list, if it sent one
                 extra = svc.mcp.template_tools(exclude=own, only=only, include_disabled=only is not None)
+                if not extra and only:
+                    # The conversation's pinned list matched NOTHING the hub offers now - a renamed or removed
+                    # tool, or a tool server that came back with a different list.  Keeping the empty list
+                    # protects nothing: 0 tools is already a different tools block from the one its prompt
+                    # starts with, so that chat is paying the re-read either way.  Fall back to what the hub
+                    # offers today, which at least lets the turn call something (item tools-block-empty).
+                    print(f"[strata] this conversation's own tool list ({len(only)} names) matched none of the "
+                          f"MCP tools on offer - sending the current list instead "
+                          f"({len(svc.mcp.template_tools(exclude=own))} tools)", flush=True)
+                    extra = svc.mcp.template_tools(exclude=own)
                 use_mcp = bool(extra)
+                if not extra:
+                    # The request asked for MCP tools and got none.  The model then has no tools block at all,
+                    # so it cannot call anything: it ends the turn with plausible text, no tool call, and no
+                    # counter - which from the chat looks exactly like the engine dying.  Seen on this box
+                    # 2026-11-21 with three such requests in a row and nothing in the log to say so.  Name the
+                    # reason, because there are three different ones and they need different fixes.
+                    why = ("no MCP server has any tools ready" if not svc.mcp.routes()
+                           else "this conversation's own tool list (strata_mcp_tools) matched none of them"
+                           if only is not None
+                           else "every tool of every server is turned off in the config")
+                    print(f"[strata] a request asked for MCP tools and got NONE ({why}) - the model runs this "
+                          f"turn with no tools block: "
+                          + ", ".join(f"{n}={s.status}({len(s.tools)} tools)"
+                                      for n, s in svc.mcp.servers.items()), flush=True)
+                    svc.totals["mcp_requests_without_tools"] = svc.totals.get("mcp_requests_without_tools", 0) + 1
                 tools = (tools or []) + extra or None
                 # The tools block is the FIRST system turn, so anything that changes it re-reads every
                 # conversation that follows - measured on this box at 580,567 tokens and 228 s.  A server that
