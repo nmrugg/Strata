@@ -5442,6 +5442,12 @@ def make_handler(svc: Service):
                          ".svg": "image/svg+xml"}
                 f = ROOT / "serve" / "web" / name
                 ext = os.path.splitext(name)[1]
+                if name == "sw.js":
+                    # one route for the worker, and it is the root one: a worker served from /web/ has the
+                    # scope /web/ and cannot control the page at "/", so the second path is a way to get this
+                    # wrong silently rather than a second way to get it right
+                    self._json(404, {"error": {"message": "the service worker is served from /sw.js"}})
+                    return
                 if "/" in name or "\\" in name or ext not in types or not f.is_file():
                     self._json(404, {"error": {"message": "not found"}})
                     return
@@ -5499,6 +5505,17 @@ def make_handler(svc: Service):
                 # that second half the page could not show it, and could never switch it back on.
                 if self._authorized():
                     self._json(200, mcp_answer(svc))
+                return
+            if path == "/sw.js":
+                # the web app's service worker (todo #offline-web-assets).  It has to be served from the root:
+                # a worker's scope is its own path, so a /web/sw.js could never control "/".  Same validator as
+                # every other asset, and no-cache is deliberate on the WORKER too - a cached old worker keeps
+                # serving an old app.js forever, which is the classic way this feature goes wrong.
+                f = ROOT / "serve" / "web" / "sw.js"
+                if not f.is_file():                    # a checkout without it: the page's register() sees a 404
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                self._send_static(f, "text/javascript; charset=utf-8")
                 return
             if path == "" or (path == "/api-monitor" and svc.api_monitor):
                 # the page itself gets the same validator: with no Cache-Control at all a browser could serve a

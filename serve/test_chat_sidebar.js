@@ -11,6 +11,14 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 
+// A rejected promise nobody catches is a bug this harness would otherwise say nothing about: the page keeps
+// working and the failure never surfaces.  Reported the moment it happens, with a non-zero exit - a collector
+// that only prints at the end hides the failure when the run never reaches the end (measured: a silent exit 0).
+process.on("unhandledRejection", (r) => {
+  console.error("UNHANDLED REJECTION: " + ((r && r.stack) || r));
+  process.exitCode = 1;
+});
+
 // ---------------------------------------------------------------- the stub DOM
 function makeEl() {
   const el = {
@@ -192,8 +200,12 @@ function run(hooks, stored, seed) {
   // does it do to the event" - the page's own leave warning is added and removed with the busy flag
   const win = {_l: {}, addEventListener(t, f) { (this._l[t] = this._l[t] || []).push(f); },
                removeEventListener(t, f) { this._l[t] = (this._l[t] || []).filter((g) => g !== f); },
+               // the worker is registered only in a secure context, so a test has to be able to say which
+               // kind of page this is (a LAN address over http is not one)
+               isSecureContext: hooks.secure !== false,
                open: (u) => { opened.push(u); return {}; }};
   const confirms = [], confirmAnswer = {yes: true}, copied = [], raf = [], timers = [], fetches = [], opened = [];
+  const registers = [];                                 // navigator.serviceWorker.register calls
   const answer = async () => ({ok: true, json: async () => ({}), text: async () => ""});
   // requestAnimationFrame is queued, not swallowed: a stream that never paints cannot be tested at all, and
   // flush() gives a test the same "one paint per frame" interleaving the browser gives the page.
@@ -208,7 +220,14 @@ function run(hooks, stored, seed) {
     setTimeout: (f, ms) => { timers.push({f, ms}); return timers.length; },
     clearTimeout: (id) => { if (id) timers[id - 1] = {f: null, ms: 0}; },
     requestAnimationFrame: (f) => { raf.push(f); return raf.length; }, cancelAnimationFrame: () => {},
-    navigator: {clipboard: {writeText: async (t) => { copied.push(t); }}},   // what the page put on the clipboard
+    // the worker registration is recorded, and can fail the way a server older than the worker fails: a 404
+    // makes register() reject, and the page must carry on regardless.  A browser without one has NO key -
+    // setting it to undefined would make `"serviceWorker" in navigator` true and test a browser that does not
+    // exist, which is what it did here before it was fixed
+    navigator: Object.assign({clipboard: {writeText: async (t) => { copied.push(t); }}},   // clipboard writes
+                             hooks.noWorker ? {} : {serviceWorker: {register: (p, o) => { registers.push([p, o]);
+                               return hooks.workerFails ? Promise.reject(new Error("404"))
+                                                        : Promise.resolve({scope: "./"}); }}}),
     URL: {createObjectURL: () => "blob:stub", revokeObjectURL: () => {}},   // the image open-in-tab path builds a blob: URL
     innerWidth: hooks.innerWidth || 1200, innerHeight: 800, window: win, queueMicrotask,
   };
@@ -219,6 +238,7 @@ function run(hooks, stored, seed) {
     "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, toolBodyHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
+    "loadHealth, healthPill, get health() { return health; }, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
@@ -230,7 +250,7 @@ function run(hooks, stored, seed) {
     "loadMcp, renderMcp, mcpServers, get mcpInfo() { return mcpInfo; }, " +
     "setQuery: (v) => { sidebarQuery = v; renderSidebar(); }, el: document.getElementById, get chatMenu() { return activePopover; }, get viewerEl() { return viewerEl; }, get modalEl() { return msgModal; }, get lastLive() { return lastLive; }, get settingsModal() { return settingsModal; }, openChatPicker, parseChatsJsonl, chatToJsonl, parseLlamaJsonl, parseImport, unzipEntries, zipTexts, row: (cls) => document.getElementById(\"sidebar-list\").children.find((c) => c.className.includes(cls))};";
   const api = {s: new Function(...names, source)(...names.map((n) => env[n])), stored, records: idb.records, calls: idb.calls, win, confirms, confirmAnswer, copied,
-               fetches, timers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
+               fetches, timers, registers, body: document.body, opened, fireDoc: (t, ev) => (document._l[t] || []).forEach((f) => f(ev)), flush: () => { while (raf.length) raf.shift()(); }};
   return api;
 }
 
@@ -3354,6 +3374,123 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
 
   done.push("ai-image-visible: a picture a tool returned is kept, shown in its block, and replayed as the same " +
             "parts the server put in the prompt - a round without one is unchanged");
+
+  // 99. server-before-model: the port answers before the model does, so loaded:false has three meanings and the
+  // page has to pick the right one.  setTimeout is a recorder in this stub (LESSONS.md), so the 2 s retry is
+  // not waited for - loadHealth() is called again by hand, which is the same call the timer would make.
+  {
+    let hAnswer = {status: "ok", model: "strata", max_context: 1048576, images: false,
+                   loaded: false, loading: true};
+    const wf = run({fetch: async (u) => (u === "health" ? {ok: true, json: async () => hAnswer}
+                                                        : {ok: true, json: async () => ({})})}, {});
+    await wait();
+    wf.s.loadHealth(); await wait();
+    assert.strictEqual(wf.s.el("pill").dataset.state, "reading",
+                       "loading is the blue state: the engine is producing nothing yet, as during a prompt read");
+    assert.strictEqual(wf.s.el("pill-text").textContent, "Loading the model", wf.s.el("pill-text").textContent);
+    assert.ok(wf.s.el("chat-empty-sub").textContent.includes("is loading"),
+              "and the empty state does not claim a model that is not up: " + wf.s.el("chat-empty-sub").textContent);
+    // the metrics poll runs every second and would otherwise paint straight over this
+    wf.s.renderPill({live: {state: "idle"}});
+    assert.strictEqual(wf.s.el("pill-text").textContent, "Loading the model", "a poll cannot overwrite the state");
+    // the same page once the model is up
+    hAnswer = {status: "ok", model: "strata", max_context: 1048576, images: false, loaded: true, loading: false,
+               load_seconds: 71.4};
+    wf.s.loadHealth(); await wait();
+    wf.s.renderPill({live: {state: "idle"}});
+    assert.strictEqual(wf.s.el("pill-text").textContent, "Idle", "the pill goes back to what the poll says");
+    assert.ok(wf.s.el("chat-empty-sub").textContent.includes("runs on this PC"),
+              wf.s.el("chat-empty-sub").textContent);
+    // the third state: it is not loading, it failed, and the reason is the useful part
+    hAnswer = {status: "ok", model: "strata", max_context: 4096, images: false, loaded: false, loading: false,
+               load_error: "the engine exited before it was ready"};
+    wf.s.loadHealth(); await wait();
+    wf.s.renderPill({live: {state: "idle"}});
+    assert.strictEqual(wf.s.el("pill-text").textContent, "The model did not start",
+                       wf.s.el("pill-text").textContent);
+    assert.strictEqual(wf.s.el("pill").dataset.state, "queued", "amber: a state, not a fault colour for the chat");
+    assert.ok(wf.s.el("chat-empty-sub").textContent.includes("exited before it was ready"),
+              "the reason is on the page, not only in the console: " + wf.s.el("chat-empty-sub").textContent);
+    done.push("server-before-model: the page tells loading, up and failed apart, and a poll cannot overwrite them");
+  }
+
+  // 100. unread-call-recovery: a call the model opened and never finished is now ANSWERED (the loop gives it a
+  // result and the model another turn) instead of ending the turn on a "not run" block.  The page needs no new
+  // code for it - it is a tool block with an error result, which onTool already records and assistantMessages
+  // already replays - but "needs no new code" is a claim, so both halves are pinned, including the path that
+  // must NOT change: a call the loop refused (over the cap) still stays out of the history.
+  {
+    const s100 = run({}, {});
+    await wait();
+    const cut = {role: "assistant", text: "", reasoning: "", tools: [], time: Date.now()};
+    s100.s.onTool(cut, {event: "start", id: "c1", name: "easyCMP__run_cmd"});
+    s100.s.onTool(cut, {event: "call", id: "c1", name: "easyCMP__run_cmd", server: "easyCMP", tool: "run_cmd",
+                        arguments: {cmd: "cd /pro"}, round: 1});
+    s100.s.onTool(cut, {event: "result", id: "c1", ok: false, chars: 60, truncated: false, ms: 0,
+                        text: 'error: your call to easyCMP__run_cmd stopped part-way through the parameter "cmd" ' +
+                              'and was not run - nothing happened.'});
+    assert.strictEqual(cut.tools[0].state, "error",
+                       "an answered cut reads as a tool that answered with an error, not as one that never ran");
+    const msgs = s100.s.assistantMessages({...cut, text: ""}, false);
+    const toolMsg = msgs.find((x) => x.role === "tool");
+    assert.ok(toolMsg && toolMsg.content.includes("was not run"),
+              "and it goes back to the server as the round's result: " + (toolMsg && toolMsg.content));
+    const callMsg = msgs.find((x) => x.role === "assistant");
+    assert.deepStrictEqual(JSON.parse(callMsg.tool_calls[0].function.arguments), {cmd: "cd /pro"},
+                           "with the arguments as far as the model got them, not an empty call");
+    const refused = {role: "assistant", text: "", reasoning: "", tools: [], time: Date.now()};
+    s100.s.onTool(refused, {event: "start", id: "c2", name: "easyCMP__run_cmd"});
+    s100.s.onTool(refused, {event: "result", id: "c2", ok: false, skipped: true, text: "not run", chars: 0,
+                            truncated: false, ms: 0});
+    assert.strictEqual(s100.s.assistantMessages({...refused, text: ""}, false).some((x) => x.role === "tool"),
+                       false, "a call shown as not run still stays out of the history: the old path is unchanged");
+    done.push("unread-call-recovery: an answered cut-off call is an error block that replays; a refused one still does not");
+  }
+
+  // 101. offline-web-assets: the page registers the worker, and both ways it can be unavailable are silent.
+  // The register() promise is the part that matters - a server older than /sw.js answers 404, and a page that
+  // lets that rejection escape has just traded a missing cache for a broken start.
+  {
+    const w1 = run({}, {});
+    await wait();
+    assert.deepStrictEqual(w1.registers, [["sw.js", {scope: "./"}]],
+                           "the path is relative to the page, so it is /sw.js with scope / - a worker under "
+                           + "/web/ could not control the page");
+    assert.deepStrictEqual(run({secure: false}, {}).registers, [],
+                           "a LAN address over http is not a secure context: no worker, and no message about it");
+    assert.deepStrictEqual(run({noWorker: true}, {}).registers, [], "a browser without serviceWorker: nothing tried");
+    const w4 = run({workerFails: true}, {});
+    await wait(); await wait();
+    assert.strictEqual(w4.registers.length, 1, "an older server 404s the worker");
+    assert.strictEqual(w4.s.el("sidebar").hidden, false, "and the page still started");
+    done.push("offline-web-assets: the worker is registered at /sw.js with scope /, and a 404 or an insecure origin costs nothing");
+  }
+
+  // 103. offline-web-assets, the two claims that were false with the server down: the empty state still said
+  // "The model runs on this PC" after /health had failed, and an exported chat was headed with the built-in
+  // default model name, because a page opened from the worker's cache never gets a /health to ask.
+  {
+    const downFetch = async (u) => { if (u === "health") throw new TypeError("Failed to fetch");
+                                     return {ok: true, json: async () => ({})}; };
+    const offf = run({fetch: downFetch}, {});
+    await wait();
+    offf.s.loadHealth(); await wait();
+    assert.ok(offf.s.el("chat-empty-sub").textContent.includes("not running"),
+              "the empty state says what is true when nothing answers: " + offf.s.el("chat-empty-sub").textContent);
+    const onl = run({fetch: async (u) => (u === "health" ? {ok: true, json: async () => ({status: "ok",
+        model: "qwen3.8-flash-next-iq3_s", max_context: 4096, images: false, loaded: true})}
+        : {ok: true, json: async () => ({})})}, {});
+    await wait();
+    assert.strictEqual(onl.stored["strata.model"], JSON.stringify("qwen3.8-flash-next-iq3_s"),
+                       "a successful /health remembers the model name");
+    const remembered = run({fetch: downFetch}, {"strata.model": JSON.stringify("qwen3.8-flash-next-iq3_s")});
+    await wait();
+    assert.strictEqual(remembered.s.health.model, "qwen3.8-flash-next-iq3_s",
+                       "and a page that boots with no /health to ask still knows the model its chats came from");
+    assert.ok(remembered.s.el("chat-empty-sub").textContent.includes("not running"),
+              "the boot path says it too, not only a later retry");
+    done.push("offline-web-assets: the empty state tells the truth with the server down, and exports keep the real model name");
+  }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

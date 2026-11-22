@@ -282,5 +282,38 @@ class MetricsStillUncached(Server):
         self.assertTrue(json.loads(body)["live"]["state"])
 
 
+class WorkerRoute(Server):
+    """todo #offline-web-assets: the service worker is the one asset whose path decides whether the feature
+    works at all - a worker's scope is its own path, so one served from /web/ can never control the page at
+    "/".  Hence exactly one route, at the root, and it revalidates like every other file: a cached old worker
+    keeps serving an old app.js forever, which is how this feature usually goes wrong."""
+
+    def test_the_worker_is_served_from_the_root_as_javascript(self):
+        code, h, body = get(self.conn, "/sw.js")
+        self.assertEqual(code, 200)
+        self.assertEqual(h.get("Content-Type"), "text/javascript; charset=utf-8", h)
+        self.assertIn(b"addEventListener", body, "the real worker, not a stub")
+        self.assertTrue(h.get("ETag", "").startswith('W/"'), h)
+
+    def test_the_worker_is_still_revalidated_every_time(self):
+        # no-cache on the WORKER is not a detail: with a long max-age an updated app.js would never reach a
+        # browser that had an old worker, and nothing on the page would say so
+        _, h, _ = get(self.conn, "/sw.js")
+        self.assertEqual(h.get("Cache-Control"), "no-cache", h)
+        code, h2, body = get(self.conn, "/sw.js", {"If-None-Match": h["ETag"]})
+        self.assertEqual(code, 304)
+        self.assertEqual(body, b"")
+
+    def test_there_is_no_second_worker_path_under_web(self):
+        code, _, _ = get(self.conn, "/web/sw.js")
+        self.assertEqual(code, 404, "one route, the one whose scope covers the page")
+
+    def test_adding_the_route_left_the_page_alone(self):
+        code, h, body = get(self.conn, "/")
+        self.assertEqual(code, 200)
+        self.assertIn(b"<title>Strata</title>", body)
+        self.assertEqual(h.get("Cache-Control"), "no-cache")
+
+
 if __name__ == "__main__":
     unittest.main()

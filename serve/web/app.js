@@ -99,15 +99,42 @@ function headers(json = false) {
 $("api-key").value = store.get("apikey", "");
 $("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
 
-let health = {model: "strata", images: false, max_context: 0};
+// The model name is remembered between visits (todo #offline-web-assets): an exported chat is headed with it,
+// and a page opened with the server down has no /health to ask, so without this the export says "strata" - the
+// built-in default - instead of the model that actually wrote the answers.
+let health = {model: store.get("model", "strata"), images: false, max_context: 0};
+// The server answers the port before the model is up (todo #server-before-model), so loaded:false has three
+// meanings and one boolean cannot tell them apart: still loading, unloaded on purpose, or it failed and why.
+// While it is loading this keeps asking - every 2 s, the same cadence a failed fetch already uses - so the
+// page stops saying "loading" by itself, without the human touching anything.
 async function loadHealth() {
+  let h;
   try {
-    health = await (await fetch("health")).json();
-    updateAttachEnabled();
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
+    h = await (await fetch("health")).json();
   } catch (e) {
-    setTimeout(loadHealth, 2000);
+    // Nothing is answering at all - not started, or stopped, and the page was opened from the worker's cache.
+    // Say what is true then, rather than leaving the claim the page booted with (todo #offline-web-assets).
+    $("chat-empty-sub").textContent = "The server is not running. The chats in this browser are still here.";
+    setTimeout(loadHealth, 2000);                     // and the pill still says Connecting
+    return;
   }
+  health = h;
+  store.set("model", health.model);                   // remembered for the next visit, online or not
+  updateAttachEnabled();
+  $("chat-empty-sub").textContent =
+    health.load_error ? health.load_error
+    : health.loading ? `${health.model} is loading; the first start takes a minute or two.`
+    : `${health.model} runs on this PC. Nothing leaves it.`;
+  if (health.loading) setTimeout(loadHealth, 2000);
+  healthPill();
+}
+// One place decides what the pill says about the model itself, so the metrics poll cannot paint "Idle" over
+// it a second later.  Blue for loading: the engine is producing no tokens, which is the state that colour
+// already means (LESSONS.md, one colour per state).
+function healthPill() {
+  if (health.loading) { setPill("reading", "Loading the model"); return true; }
+  if (health.load_error) { setPill("queued", "The model did not start"); return true; }
+  return false;
 }
 
 // ------------------------------------------------------------------ Monitor
@@ -244,6 +271,7 @@ const promptUnreused = (live) => Math.max(0, (live.prompt_total || 0) - promptCa
 const promptNew = (live) => Math.max(0, (live.prompt_read || 0) - promptCached(live));
 // the header pill on its own, which is all a lite answer carries
 function renderPill(m) {
+  if (healthPill()) return;             // the model's own state outranks what a poll happens to say
   const live = m.live || {};
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * promptNew(live)) / promptUnreused(live)) : null;
@@ -3297,4 +3325,12 @@ const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=..
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
+// The page opens when nothing is listening on the port (todo #offline-web-assets): the worker caches the page
+// and its files and answers from that cache only when the network call fails.  Registered here rather than
+// from a script tag so the harness can drive it.  Both ways it can be unavailable are normal and silent - a
+// browser that is not a secure context (this page opened from a LAN address over http) refuses to register,
+// and a server older than the worker answers 404 - and neither is something the reader can act on.
+if (window.isSecureContext && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js", {scope: "./"}).catch(() => {});
+}
 // showTab scheduled the first poll (it calls pollNow), so there is no second one here: one scheduler, one chain
