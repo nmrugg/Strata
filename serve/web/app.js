@@ -1839,7 +1839,7 @@ function markFor(c) {
 }
 function paintMark(row, c) {
   const want = markFor(c);
-  const mark = (row.children || []).find((x) => (x.className || "").split(/\s+/).includes("chat-item__state"));
+  const mark = (row.children ? [...row.children] : []).find((x) => (x.className || "").split(/\s+/).includes("chat-item__state"));
   if (!want.cls) { if (mark) mark.remove(); return; }
   if (!mark) {
     const n = node("span", `chat-item__state ${want.cls}`);
@@ -1855,7 +1855,7 @@ function paintRow(row, c) {
   const t = chatTitle(c), drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
   const want = markFor(c);
   row.className = `chat-item${c.id === chatId ? " on" : ""}`;
-  const btn = (row.children || []).find((x) => (x.className || "").split(/\s+/).includes("chat-item__title"));
+  const btn = (row.children ? [...row.children] : []).find((x) => (x.className || "").split(/\s+/).includes("chat-item__title"));
   if (btn) {
     btn.className = `chat-item__title${drafted ? " draft" : ""}`;
     btn.textContent = t;
@@ -1907,7 +1907,7 @@ function renderSidebar() {
   const kids = box.children;
   // a row is reusable only while it is still the shape chatItem made: renameChat swaps the title button for a
   // field, and that row has to be built again (the owner's rename must show, not linger as a field)
-  const hasTitle = (r) => (r.children || []).some((c) => (c.className || "").split(/\s+/).includes("chat-item__title"));
+  const hasTitle = (r) => (r.children ? [...r.children] : []).some((c) => (c.className || "").split(/\s+/).includes("chat-item__title"));
   const sameShape = plan.length === kids.length && plan.every((p, i) =>
     p.head ? (kids[i].textContent || "") === p.head
            : (kids[i].dataset || {}).id === p.chat.id && hasTitle(kids[i]));
