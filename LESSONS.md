@@ -353,6 +353,14 @@ never met and every offline hit looked like a miss. Same family as the DOM stub'
 list what the code *reads* off the platform (`origin`, whether a key exists at all, `pathname`) and give the
 stub that shape - a real `new URL(...)` for `location`, an omitted key rather than an undefined one.
 
+**Never run `git checkout <path>` on a file with uncommitted work.** 2026-11-22: while bisecting a change by
+control-patching it, a cleanup command ended with `git checkout serve/web/app.js` and discarded the queue
+plumbing that was sitting uncommitted in that file - the control patches had already rewritten it, so the
+"restore" step restored the *committed* state, not the working one. It was recoverable only because a copy had
+been taken to `/tmp` before the first control. The rule: before any edit-and-restore cycle on an uncommitted
+file, `cp` it aside and say so in the command; and prefer `git stash push -- <path>` / `git stash pop` to a
+checkout, because stash is recoverable and a checkout is not.
+
 **A failure collector that reports only at the end turns a crash into a silent exit 0.** Adding
 `process.on("unhandledRejection", r => unhandled.push(r))` to the chat harness hid a real bug: the run printed
 nothing, exited **0**, and the 92 `ok -` lines never appeared - the exact shape recorded above for a hang.
