@@ -945,6 +945,34 @@ class ConversationLock(LoopFixture):
         self.assertEqual(self.svc.conv_locks, {}, "no token, no entry: nothing was ever locked")
 
 
+    def test_metrics_says_which_conversation_the_engine_holds(self):
+        # item queue-other-chats: the page cannot tell which of its own turns is at the engine, because the
+        # FIFO is released between MCP rounds.  live.conv is what tells it, so the mark is a fact and not a
+        # guess about ordering.
+        self.hub.settings["max_rounds"] = 4
+        self.start(call_script("fake__sleep", seconds=0.8), PLAIN_ANSWER, PLAIN_ANSWER)
+        out, threads = {}, []
+        threads.append(self.post_thread("convA", out, "first"))
+        time.sleep(0.3)
+        with urllib.request.urlopen(self.base + "/metrics?lite=1", timeout=10) as r:
+            self.assertEqual(json.loads(r.read())["live"]["conv"], "convA", "the turn at the engine is named")
+        threads.append(self.post_thread("convB", out, "other"))
+        time.sleep(0.2)
+        with urllib.request.urlopen(self.base + "/metrics?lite=1", timeout=10) as r:
+            self.assertEqual(json.loads(r.read())["live"]["conv"], "convB",
+                             "and when the FIFO frees up mid-tool-call, the other conversation is the one running")
+        for th in threads:
+            th.join(30)
+        self.assertEqual({v[0] for v in out.values()}, {200}, out)
+
+    def test_a_request_that_names_no_conversation_leaves_the_field_null(self):
+        self.start(PLAIN_ANSWER)
+        code, _ = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200)
+        with urllib.request.urlopen(self.base + "/metrics?lite=1", timeout=10) as r:
+            self.assertIsNone(json.loads(r.read())["live"]["conv"], "no token in, nothing claimed")
+
+
 class Inspector(LoopFixture):
     """item prompt-inspector: POST /inspect renders the request's own prompt and measures its parts, running
     nothing.  The figures have to come from the same template call and the same tokenizer the chat path uses,

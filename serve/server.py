@@ -3508,6 +3508,11 @@ class Service:
         shown = bool(s.get("busy")) or bool(tool_running)
         live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if shown else None,
                 "tool": tool_running,
+                # which conversation the engine is working on, when the client named one
+                # (item queue-other-chats): the page cannot tell which of its own turns is at the engine,
+                # because the FIFO is released between MCP rounds - a second chat really can be running while
+                # the first is in a tool call.  Guessing "the first one sent" painted a running chat amber.
+                "conv": s.get("conv"),
                 "prompt_tokens": s.get("prompt_tokens") if shown else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if shown else None,
                 "max_tokens": s.get("max_tokens") if shown else None,
@@ -3954,18 +3959,18 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None, conv=None) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force)
+            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, conv)
         finally:
             if ka is not None:
                 ka.release()
 
-    def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
+    def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None, conv=None) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
@@ -4091,7 +4096,7 @@ class Service:
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, pass_first_token=None,
                                   tool=None, tail="", max_tokens=max_new, reasoning_recoveries=0,
-                                  thinking_budget=budget)
+                                  thinking_budget=budget, conv=conv)
                         if par:
                             self.live_reqs[id(st)] = (st, rate)
                             self.status.update(st)
@@ -4675,6 +4680,10 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     has since turned off is still routed for THIS request - it is already in that conversation's prompt, and a tool
     the model can see but cannot call is a broken turn, not a safe one."""
     max_rounds = int(hub.settings["max_rounds"])
+    # the conversation this turn belongs to, so /metrics can say which of the page's chats the engine holds.
+    # The request dict arrives in the parameter named `sampling` (loose name, and _run reads the sampling keys
+    # out of it); `max_req` is the max-tokens figure, not the request.
+    conv = conv_token(sampling) if isinstance(sampling, dict) else None
     total, rounds, done = 0, 0, None
     messages = list(messages)
     # the names this request brought itself, which the client answers, as distinct from names NOBODY declared -
@@ -4688,7 +4697,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         answered = []          # every call this loop answers, kept in the order the MODEL wrote them - see below
         cut = []               # (call, the parameter it stopped in): answered below, never run
         prepared = {}          # id -> the result to give a cut-off call instead of running it
-        for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
+        for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel, conv=conv):
             if kind == "done":
                 done = x
                 continue
@@ -4934,7 +4943,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
-    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force):
+    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force,
+                                                       conv=conv_token(req)):
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
@@ -5060,7 +5070,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
     streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
-    for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force):
+    for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force, conv=conv_token(req)):
         if kind == "ping":
             yield None
             continue
@@ -6302,7 +6312,7 @@ def make_handler(svc: Service):
             def events():
                 yield from asm.start()
                 done = None
-                for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel):
+                for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, conv=conv_token(req)):
                     if kind == "ping":
                         yield None
                     elif kind == "event":

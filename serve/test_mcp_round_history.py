@@ -44,7 +44,9 @@ class FakeSvc:
         self.mcp_running = {}
         self.totals = {}
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel):
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, conv=None):
+        # this double mirrors Service.run, keywords included - conv names the conversation (item
+        # turn-lock-per-conversation), and a double that ignores a real parameter hides signature drift
         self.round += 1
         if self.round == 1:
             if self.events is not None:

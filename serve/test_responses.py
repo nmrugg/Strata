@@ -661,9 +661,9 @@ class CodexCompactionOverHttp(Server):
         self.parser_tools = []
         run = self.svc.run
 
-        def recorded(ids, thinking, tools, *rest):
+        def recorded(ids, thinking, tools, *rest, **kw):     # this double mirrors Service.run, keywords included
             self.parser_tools.append(tools)
-            return run(ids, thinking, tools, *rest)
+            return run(ids, thinking, tools, *rest, **kw)
         self.svc.run = recorded
 
     def compaction(self, meta, output="before", between=None, **extra):
