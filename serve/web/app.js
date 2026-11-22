@@ -2715,13 +2715,15 @@ function scrollToFirstMessage() {
   autoTop = s.scrollTop;      // read back: a browser clamps it, and our own scroll must not look like a fight
   return true;
 }
-// The system prompt of the chat on screen (todo #system-prompt): visible text at the top of the page, not a
-// fold - the whole point is that you scroll up and read what this conversation was told.
+// The system prompt of the chat on screen (todo #system-prompt): visible text above the first message, not a
+// fold - the whole point is that you scroll up and read what the conversation was told.  It appears once the
+// chat has a message: on a blank chat there is nothing it belongs to yet, and the row would be the only thing
+// on the page.  No caption beside it - the label says what it is (AGENTS.md: never state what the reader
+// already sees).
 function sysRowHtml() {
   const t = String((chat && chat.sys) || "");
-  if (!t.trim()) return "";
+  if (!t.trim() || !messages.length) return "";
   return `<div class="sysrow"><div class="sysrow__head"><span class="sysrow__label">System prompt</span>` +
-         `<span class="muted small">set when this chat started</span>` +
          `<button class="st-btn st-btn--secondary" data-sys-edit type="button">Edit</button></div>` +
          `<div class="sysrow__text">${esc(t)}</div></div>`;
 }
@@ -2738,8 +2740,17 @@ function editSysRow() {
   const body = row.querySelector(".sysrow__text");
   const ta = document.createElement("textarea");
   ta.className = "st-input sysrow__area";
-  ta.rows = Math.min(18, Math.max(4, (chat.sys || "").split("\n").length + 1));
   ta.value = chat.sys || "";
+  // big enough to read a whole prompt in, and it grows as you type: a system prompt is a paragraph, and a
+  // four-line box makes editing one a game of scrolling (the owner, 2026-11-22)
+  ta.rows = Math.min(24, Math.max(10, (chat.sys || "").split("\n").length + 2));
+  const grow = () => {
+    if (!ta.scrollHeight) return;                      // no layout to measure (a hidden box, the test stub)
+    ta.style.height = "auto";
+    ta.style.height = `${Math.max(220, ta.scrollHeight)}px`;
+  };
+  ta.addEventListener("input", grow);
+  grow();
   ta.setAttribute("aria-label", "System prompt for this chat");
   const n = chatPromptTokens();
   const acts = document.createElement("div");

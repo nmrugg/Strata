@@ -24,7 +24,9 @@ offers the same steps as tools.
 - **Never write UI text that states what the user already knows.** A switch that applies when you click it does
   not need "applied as you click", and a button does not need to describe itself. Say only what is not obvious
   and only when it is true: the cost of what you just did, in a number ("this re-reads 328,811 tokens"), and
-  nothing at all when nothing has happened.
+  nothing at all when nothing has happened. Two captions have been deleted for exactly this: "Picture from the
+  tool" (2026-11-20), under a picture the reader is looking at, and "set when this chat started" (2026-11-22),
+  under a row already labelled *System prompt*.
 - Read **[LESSONS.md](LESSONS.md)** before working on this box: it records things that cost time to discover
   (what to never restart, why the server's own log is missing by default, which config keys reach only the
   engine child, and which parser rules real recorded data has already rejected).

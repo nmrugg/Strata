@@ -3542,6 +3542,16 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.ok((sysrows()[0]._html || "").includes("You are a careful test."),
               "the words are on the page, not behind a fold: " + (sysrows()[0]._html || "").slice(0, 120));
     assert.ok((sysrows()[0]._html || "").includes("data-sys-edit"), "and it carries the control that edits it");
+    assert.ok(!(sysrows()[0]._html || "").includes("set when this chat started"),
+              "and no caption beside a label that already says what it is (AGENTS.md, Captain Obvious)");
+    // the prompt is there from the first keystroke of the chat, but the row waits for something to belong to
+    const blank = run({fetch: async (u) => (u === "health" ? {ok: true, json: async () => ({model: "m1",
+        max_context: 4096, loaded: true})} : {ok: true, json: async () => ({})})},
+        {"strata.sysdefault": JSON.stringify("You are a test.")});
+    await wait();
+    assert.ok(blank.s.chat.sys, "the blank chat already carries its prompt");
+    assert.strictEqual(blank.s.el("chat").children.filter((c) => (c.className || "").includes("sysrow")).length, 0,
+                       "and nothing is painted for it until the chat has a message");
     assert.ok(s.s.el("chat").children.indexOf(sysrows()[0]) < s.s.el("chat").children.indexOf(msgs()[0]),
               "and it sits above the first message");
     const none = run({}, {}, {cplain2: {id: "cplain2", title: "no prompt", time: Date.now(),
