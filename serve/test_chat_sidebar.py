@@ -335,6 +335,20 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("if (tab === \"monitor\") loadMcp();", self.js)
         self.assertIn("function redrawMcpViews()", self.js)      # the card and an open panel move together
 
+    def test_no_array_method_is_called_on_a_live_collection(self):
+        """The harness's `children` is a plain JS array; a browser's is an HTMLCollection, which has no
+        find/some/every/map/filter/reduce. So every one of those calls passes here and throws on the page -
+        three of them shipped on 2026-11-22 and the owner caught them.  No runtime test can cover this class,
+        so the guard is textual: no array method directly on .children / .childNodes / .cells /
+        querySelectorAll(...).  Indexing, .length and for..of are fine and are not flagged."""
+        bad = re.findall(r"\.(children|childNodes|cells|querySelectorAll\([^)]*\))"
+                         r"\.(find|some|every|map|filter|flatMap|reduce|includes|indexOf|at|slice|concat)\b", self.js)
+        self.assertEqual(bad, [], f"live collections used as arrays: {bad[:6]}")
+        # `x.children || []` looks like a guard but still hands back the HTMLCollection; spread it or use
+        # Array.from before reaching for an array method
+        self.assertEqual(re.findall(r"\.children \|\| \[\]", self.js), [],
+                         "`.children || []` does not convert anything")
+
     def test_the_settings_tab_holds_the_mcp_server_form(self):
         """todo #mcp-server-add / #mcp-settings-page: the fourth header tab exists and the server form is wired
         to it.  The clicks themselves are driven in serve/test_chat_sidebar.js (case 94); what is pinned here is

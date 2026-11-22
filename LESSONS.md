@@ -361,6 +361,18 @@ been taken to `/tmp` before the first control. The rule: before any edit-and-res
 file, `cp` it aside and say so in the command; and prefer `git stash push -- <path>` / `git stash pop` to a
 checkout, because stash is recoverable and a checkout is not.
 
+**The harness's `children` is an array; the browser's is an HTMLCollection.** 2026-11-22: `row.children.find(...)`,
+`.children.some(...)` and friends passed every harness case and threw on the real page - `HTMLCollection` has no
+`find`, `some`, `every`, `map`, `filter` or `reduce`. The owner caught it; three calls went out. Indexing,
+`.length` and `for..of` are fine, so only the array methods are the trap, and `x.children || []` is not a guard -
+it still hands back the collection; spread it (`[...x.children]`) or use `Array.from`.
+No runtime test can catch this, because the stub is an array - so the guard is textual:
+`serve/test_chat_sidebar.py::test_no_array_method_is_called_on_a_live_collection` greps `web/app.js` for an array
+method directly on `.children`, `.childNodes`, `.cells` or `querySelectorAll(...)`. Control: one `.children.some(`
+in the file fails it. The general rule for stub harnesses: **when the stub's data structure is more capable than
+the real one, the tests lie in one direction only** - check what the platform actually gives you before trusting
+a green run.
+
 **A failure collector that reports only at the end turns a crash into a silent exit 0.** Adding
 `process.on("unhandledRejection", r => unhandled.push(r))` to the chat harness hid a real bug: the run printed
 nothing, exited **0**, and the 92 `ok -` lines never appeared - the exact shape recorded above for a hang.
