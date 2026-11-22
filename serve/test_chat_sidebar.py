@@ -71,7 +71,7 @@ class ChatSidebar(unittest.TestCase):
         item = self.body("chatItem")
         # the gutter mark carries the engine's phase, in the colours the pill and the Monitor already use
         # (todo #sidebar-spinner-states); the behaviour itself is driven in the node harness, case 108
-        self.assertIn("own && (c.id !== chatId || showSpin)", item)   # own = turnIn(c.id): a turn per chat
+        self.assertIn("(own || waiting) && (c.id !== chatId || showSpin)", item)   # a turn, or a queue waiting
         self.assertIn('phase ? `run ${phase}` : c.unread ? "new" : ""', item)
         for phase, colour in (("read", "--st-info"), ("wait", "--st-ink-muted"),
                               ("queue", "--st-warn-text")):     # the badge's colour, not the pill's
@@ -83,7 +83,7 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("if (renaming) return;", self.body("refreshSpinners"))   # and never over a rename
         self.assertIn("$(" + '"spin-toggle").onclick', self.js)           # the always-show switch
         self.assertIn("renderSidebar();", self.body("setBusy"))          # the list follows turn start/end
-        self.assertIn("turn.chat.unread = true;", self.body("send"))
+        self.assertIn("turn.chat.unread = true;", self.body("startTurn"))
         self.assertIn("c.unread = false;", self.body("showChat"))
 
     def test_a_long_code_line_cannot_push_the_page_wide(self):
@@ -121,13 +121,14 @@ class ChatSidebar(unittest.TestCase):
         # todo #switch-while-running: switching chats mid-answer used to be refused, and the reason it could not simply be allowed
         # is that send() captured one element and renderChat() destroys them all (LESSONS.md, render-path trap 1).
         # The turn now belongs to a chat, and the row is looked up each frame.
-        self.assertIn("function rowOf(m)", self.js)
-        self.assertIn("const el = rowOf(m); if (el)", self.body("send"))
-        # the turn records which conversation it belongs to, and joins the list the server's FIFO works through
-        self.assertIn("const turn = {controller, msg: m, chat, chatId};", self.js)
-        self.assertIn("turns.push(turn);", self.body("send"))
+        self.assertIn("function rowOf(m, c = chat)", self.js)
+        self.assertIn("const el = rowOf(m, c); if (el)", self.body("startTurn"))
+        # the turn records which conversation it belongs to - and with the queue it can belong to one that is
+        # not on screen at all
+        self.assertIn("const turn = {controller, msg: m, chat: c, chatId: c.id};", self.js)
+        self.assertIn("turns.push(turn);", self.body("startTurn"))
         self.assertIn("const turnIn = (id) => turns.find((t) => t.chatId === id) || null;", self.js)
-        self.assertIn("saveChat(turn.chat);", self.body("send"))
+        self.assertIn("saveChat(turn.chat);", self.body("startTurn"))
         self.assertNotIn("$(\"chat\").lastElementChild", self.js)          # the capture that made this unsafe is gone
         self.assertIn("function saveChat(c = chat)", self.js)
         oc = self.body("openChat")
@@ -514,7 +515,7 @@ class ChatSidebar(unittest.TestCase):
         # and no control could reclaim it.  A thinking block never did that, because its "the reader touched
         # this" lives on the DOM element.  Now both are display state: dropped when the turn ends, and kept out
         # of the record on the way out and on the way back in.
-        self.assertIn("for (const t of m.tools || []) delete t.open;", self.body("send"))
+        self.assertIn("for (const t of m.tools || []) delete t.open;", self.body("startTurn"))
         self.assertIn("tools: (m.tools || []).map((t) => ({...t, open: undefined}))", self.js)   # cleanMessages
         self.assertIn("c.messages = dropToolOpen(c.messages || []);", self.body("openHistory"))  # records an
         self.assertIn("fromScreen ? messages : dropToolOpen(store.get(\"chat\", []))",            # older page wrote
@@ -540,7 +541,7 @@ class ChatSidebar(unittest.TestCase):
         think = self.body("syncThink")
         self.assertIn("const liveRun = p.i === p.runs - 1 && streaming && !p.cut && !(p.tstart != null && m.text.length > p.tstart);", think)
         self.assertIn("return {...r, i, secs, cut: i < cuts.length, tstart: (m.rts || [])[i]};", self.body("thinkRuns"))
-        self.assertIn("(m.rts = m.rts || [])[roundCuts(m).length] = m.text.length;", self.body("send"))
+        self.assertIn("(m.rts = m.rts || [])[roundCuts(m).length] = m.text.length;", self.body("startTurn"))
         self.assertIn("p.secs = w.secs; p.cut = w.cut;", self.js)            # the part refreshes the ones that grow
 
     def test_the_single_chat_mode_is_gone_and_its_key_is_migrated(self):
@@ -633,7 +634,7 @@ class ChatSidebar(unittest.TestCase):
 
     def test_the_open_chat_is_what_a_request_is_built_from(self):
         self.assertIn("messages = chat.messages", self.js)                # the list and the screen share the array
-        self.assertIn("function apiMessages()", self.js)
+        self.assertIn("function apiMessages(c = chat)", self.js)
         self.assertIn("function showChat(c)", self.js)
 
 

@@ -37,12 +37,19 @@ $("spin-toggle").setAttribute("aria-checked", String(showSpin));
 // a mark only changing colour must NOT rebuild the row - a replaced node starts its spin from 0deg, which reads
 // as the turn restarting when it merely changed phase (the owner, 2026-11-22).
 let spinKey = null, spinPhases = "";
+const markedTurns = () => {
+  const out = turns.filter((t) => t.chatId !== chatId || showSpin)
+    .map((t) => ({id: t.chatId, phase: turns[0] === t ? turnPhase() : "queue"}));
+  for (const c of chats)
+    if (!turnIn(c.id) && (c.queue || []).some((q) => !q.held) && (c.id !== chatId || showSpin))
+      out.push({id: c.id, phase: "queue"});
+  return out;
+};
 function refreshSpinners() {
   if (renaming) return;
-  const marked = turns.filter((t) => t.chatId !== chatId || showSpin);
-  const phaseOf = (t) => (turns[0] === t ? turnPhase() : "queue");
-  const key = marked.map((t) => t.chatId).join(",");
-  const phases = marked.map((t) => `${t.chatId}:${phaseOf(t)}`).join(",");
+  const marked = markedTurns();
+  const key = marked.map((m) => m.id).join(",");
+  const phases = marked.map((m) => `${m.id}:${m.phase}`).join(",");
   if (key !== spinKey) {                        // a mark appeared or went away: rebuild, let it start spinning
     spinKey = key;
     spinPhases = phases;
@@ -51,12 +58,12 @@ function refreshSpinners() {
   }
   if (phases === spinPhases) return;
   spinPhases = phases;                          // same rows, new phase: recolour where they stand
-  for (const t of marked) {
-    const row = Array.from($("sidebar-list").children).find((r) => r.dataset && r.dataset.id === t.chatId);
+  for (const m of marked) {
+    const row = Array.from($("sidebar-list").children).find((r) => r.dataset && r.dataset.id === m.id);
     const mark = row && row.querySelector(".chat-item__state");
     if (!mark) continue;
-    mark.className = `chat-item__state run ${phaseOf(t)}`;
-    mark.setAttribute("title", PHASE_TIP[phaseOf(t)]);
+    mark.className = `chat-item__state run ${m.phase}`;
+    mark.setAttribute("title", PHASE_TIP[m.phase]);
   }
 }
 // ------------------------------------------------------------------ toasts
@@ -656,15 +663,15 @@ const mcpPost = (change) => mcpPostAll([change]);
 // Names are the ones the model sees ("server__tool"), which is what strata_mcp_tools takes.
 const liveToolNames = () => mcpServers().filter((s) => !s.off)
   .flatMap((s) => s.chips.filter((c) => c.enabled).map((c) => c.name));
-const chatToolNames = () => (chat && Array.isArray(chat.tools)) ? chat.tools : null;
+const chatToolNames = (c = chat) => (c && Array.isArray(c.tools)) ? c.tools : null;
 // the chat pins nothing until it has a list worth pinning: right after a start the hub may still be
 // connecting, and pinning an empty list would leave that chat unable to call anything
-function pinChatTools() {
-  if (!chat || chatToolNames()) return false;
+function pinChatTools(c = chat) {
+  if (!c || chatToolNames(c)) return false;
   const live = liveToolNames();
   if (!live.length) return false;
-  chat.tools = live;
-  writeChat(chat);
+  c.tools = live;
+  writeChat(c);
   return true;
 }
 const toolsDiffer = () => { const p = chatToolNames(); return !!p && !sameSet(new Set(p), new Set(liveToolNames())); };
@@ -1765,6 +1772,9 @@ async function openHistory(fromScreen) {
   // a tool block's open/closed click is display state, not conversation, and an older page saved it with the
   // chat (see dropToolOpen).  Stripped where the records arrive, in place: the array from getAll is ours.
   for (const c of chats) c.messages = dropToolOpen(c.messages || []);
+  for (const c of chats) for (const q of (c.queue || [])) q.held = true;
+  // a queued post that came back from the record waits for a click: firing on page load would spend tokens
+  // nobody just asked for, and a reload is not a request to continue (the owner, 2026-11-22)
   // records written before message ids existed get one on load (identity only; never sent to the server)
   for (const c of chats) for (const m of c.messages) if (!m.id) m.id = mid();
   if (!chats.length) {
@@ -1830,14 +1840,16 @@ function chatItem(c) {
   // a turn answering in a conversation you are NOT looking at.  On the one you are in, the streaming answer is
   // itself the indicator, so a spinner there is noise - unless you ask for it (the switch in Settings).
   const own = turnIn(c.id);
-  const running = !!own && (c.id !== chatId || showSpin);
+  // a chat with nothing running but something waiting behind a turn that already ended still has work pending
+  const waiting = !own && (c.queue || []).some((q) => !q.held);
+  const running = (own || waiting) && (c.id !== chatId || showSpin);
   const drafted = !!String(store.get(draftKeyOf(c.id, !c.messages.length), "")).trim();
   // run and new sit in the row's left gutter, absolutely placed, so they cost no title width at all; a draft is
   // an asterisk on the name itself, because it belongs to the text rather than to what is happening to the
   // conversation.  A reply you have not read outranks a draft in the gutter: go read beats go type.
   // The engine runs one request at a time, so of the turns waiting, the first one sent is the one at the
   // engine and the rest are queued behind it - which is what the server's FIFO does with them.
-  const phase = running ? (turns[0] === own ? turnPhase() : "queue") : "";
+  const phase = running ? (own ? (turns[0] === own ? turnPhase() : "queue") : "queue") : "";
   const state = phase ? `run ${phase}` : c.unread ? "new" : "";
   const tip = phase ? PHASE_TIP[phase] : c.unread ? "unread reply" : "";
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
@@ -2856,16 +2868,56 @@ function updateAssistant(el, m, streaming) {
   // only thinking has arrived (todo #edit-posts); only a finished turn that produced nothing keeps a bare meta.
   el.querySelector(".st-msg__meta").hidden = false;
 }
+// A message waiting behind this chat's turn (todo #queue-other-chats). It is not a conversation message: it
+// never enters `messages`, so the replay and the engine's prefix never see it until it fires. One row per
+// pending message, with Cancel; a post that came back from the record also gets Send, because it waits for
+// the click rather than firing itself on page load.
+function queuedEl(q) {
+  const bits = [];
+  if ((q.images || []).length) bits.push(`${q.images.length} picture${q.images.length > 1 ? "s" : ""}`);
+  if ((q.files || []).length) bits.push(`${q.files.length} file${q.files.length > 1 ? "s" : ""}`);
+  const row = node("div", "st-msg st-msg--user queued");
+  row.dataset.qid = q.id;
+  row.innerHTML = `<div class="st-bubble">${esc(q.text || "")}</div>` +
+    (bits.length ? `<div class="muted small">${bits.join(" · ")}</div>` : "") +
+    `<div class="queued__bar"><span class="muted small">queued</span>` +
+    `<button class="st-btn st-btn--secondary" data-q-send type="button"${q.held ? "" : " hidden"}>Send</button>` +
+    `<button class="st-btn st-btn--secondary" data-q-cancel type="button">Cancel</button></div>`;
+  return row;
+}
+// Cancel gives the text back to the box instead of eating it; Send is the click that fires a held post.
+function queuedClick(e) {
+  const row = e.target.closest(".queued");
+  if (!row) return false;
+  const q = (chat.queue || []).find((x) => x.id === row.dataset.qid);
+  if (!q) return true;                               // the row is stale: swallow the click, change nothing
+  if (e.target.closest("[data-q-cancel]")) {
+    chat.queue = chat.queue.filter((x) => x.id !== q.id);
+    writeChat(chat);
+    $("input").value = q.text;
+    autosize();
+    saveDraft();
+    renderChat();
+  } else if (e.target.closest("[data-q-send]")) {
+    chat.queue = chat.queue.filter((x) => x.id !== q.id);
+    writeChat(chat);
+    renderChat();
+    startTurn(chat, q);                              // the click is the ask; nothing fires on its own here
+  }
+  return true;
+}
+
 function renderChat() {
-  const chat = $("chat");
-  chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
-  chat.querySelectorAll(".sysrow").forEach((e) => e.remove());
+  const box = $("chat");                          // `box`, not `chat`: the queue below belongs to the chat object
+  box.querySelectorAll(".st-msg").forEach((e) => e.remove());
+  box.querySelectorAll(".sysrow").forEach((e) => e.remove());
   const sys = sysRowHtml();
-  if (sys) chat.insertAdjacentHTML("beforeend", sys);   // before the messages below, which is what puts it first
+  if (sys) box.insertAdjacentHTML("beforeend", sys);   // before the messages below, which is what puts it first
   $("chat-empty").hidden = messages.length > 0;
-  messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
+  messages.forEach((m, i) => box.appendChild(msgEl(m, i)));
+  for (const q of (chat.queue || [])) box.appendChild(queuedEl(q));   // waiting behind the turn, in order
   renderSidebar();                                // the name in the list follows the first question
-  updateToolDot();                                // the wrench marks a chat whose tools are not what Settings says
+  updateToolDot();                                // the wrench marks a chat whose tools is not what Settings says
   // A chat that starts with a system prompt should look exactly as it did without one: the prompt is above the
   // first message, and the view opens with that message at the top. Once the conversation is longer than the
   // first exchange, the normal follow-the-bottom rule applies - scrolling to the top of a 400-message chat on
@@ -2950,8 +3002,9 @@ function editSysRow() {
 // for the whole turn, which broke the moment the chat was re-rendered - renderChat() removes every .st-msg, so
 // the stream kept painting a detached node and the answer vanished (LESSONS.md, "Four traps in that same render
 // path", trap 1).  Resolving it each frame is what makes switching chats safe.
-function rowOf(m) {
-  const i = messages.indexOf(m);                    // -1 when a different chat is on screen: nothing to paint
+function rowOf(m, c = chat) {
+  if (!c || c.id !== chatId) return null;           // another chat is on screen: nothing to paint into
+  const i = c.messages.indexOf(m);                  // -1 when the message is not in this conversation
   if (i < 0) return null;
   // +e.dataset.i: dataset values are text in a real DOM and numbers in the stub; neither should matter
   return Array.from($("chat").children).find((e) => +e.dataset.i === i) || null;
@@ -2980,6 +3033,7 @@ $("chat-scroll").addEventListener("scroll", () => {
 });
 
 $("chat").addEventListener("click", (e) => {
+  if (queuedClick(e)) return;                        // a queued post: Cancel gives the text back, Send fires it
   if (e.target.closest("[data-sys-edit]")) { editSysRow(); return; }   // the chat's own system prompt
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
@@ -3089,19 +3143,20 @@ $("chat").addEventListener("scroll", (e) => {
   }
 }, true);
 
-function apiMessages() {
+function apiMessages(c = chat) {
   const out = [];
   // The chat's own system prompt, frozen when it started (todo #system-prompt). The template merges a leading
   // system message into the first system turn, after the tools block (serve/chat_template.jinja:84), so the
   // tools block and the pinned prefix keep matching and only that chat pays if it changes.
-  if (chat && String(chat.sys || "").trim()) out.push({role: "system", content: chat.sys});
-  for (const m of messages) {
+  if (c && String(c.sys || "").trim()) out.push({role: "system", content: c.sys});
+  const t = turnIn(c.id);                        // the answer being asked for now is not history yet, and it
+  for (const m of c.messages) {                  // belongs to whichever chat is asking
     if (m.role === "user") {
       const imgs = (m.images || []).filter((i) => i.url);
       const text = userText(m);
       out.push({role: "user", content: imgs.length ? [{type: "text", text},
         ...imgs.map((i) => ({type: "image_url", image_url: {url: i.url}}))] : text});
-    } else if (!(busy && busy.msg === m)) {            // the answer being asked for now is not history yet
+    } else if (!(t && t.msg === m)) {
       out.push(...assistantMessages(m, settings.mcpthink === true));
     }
   }
@@ -3178,7 +3233,8 @@ function warnOnLeave(e) {
 function setBusy() {
   const mine = !!busy;                       // a turn in the chat you are looking at
   $("stop-btn").hidden = !mine;
-  $("send-btn").disabled = mine;             // another chat answering does not stop this one
+  $("send-btn").disabled = false;            // a second message in this chat queues behind its turn instead
+  // of being refused - and another chat's turn never stopped this one anyway
   $("composer-hint").textContent = mine ? "" : "Shift+Enter: new line";
   // the warning covers every turn: leaving the page loses them all, not just the visible one
   if (turns.length) window.addEventListener("beforeunload", warnOnLeave);
@@ -3190,38 +3246,65 @@ function setBusy() {
 // dropped (the old answer and all later turns), and a fresh turn is generated - so the edited post is the last
 // user turn the model sees.  With no editOf, send() works exactly as before (composer + attachments).
 async function send(editOf) {
-  let key;
   if (editOf) {
     if (turnIn(chatId)) return;
     if (!(editOf.text || "").trim() && !(editOf.images || []).length && !(editOf.files || []).length) return;   // the box saved text/attachments onto editOf
     const idx = messages.indexOf(editOf);
     if (idx < 0) return;                             // it is no longer in this conversation
     messages.length = idx + 1;                       // drop the old answer and everything after it
-  } else {
-    const text = $("input").value.trim();
-    if ((!text && !attachments.length) || turnIn(chatId)) return;   // this chat has a turn running; another
-    // chat's does not stop this one (todo #queue-other-chats)
-    key = draftKey();                                // taken before the message lands: a blank chat is keyed differently
-    messages.push({id: mid(), role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
-                   files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
-    attachments = [];
-    renderAttachments();
-    $("input").value = "";
-    autosize();
-    store.set(key, "");                              // sent: that draft is spent
+    return startTurn(chat, null);                    // the edited post is already the last user message
   }
+  const text = $("input").value.trim();
+  if (!text && !attachments.length) return;
+  const key = draftKey();                            // taken before the message lands: a blank chat is keyed differently
+  const item = {text, images: attachments.filter((a) => a.kind !== "file"),
+                files: attachments.filter((a) => a.kind === "file")};
+  attachments = [];
+  renderAttachments();
+  $("input").value = "";
+  autosize();
+  store.set(key, "");                                // sent: that draft is spent
+  if (turnIn(chatId)) { queuePush(chat, item); return; }   // this chat is answering: line up behind its turn
+  return startTurn(chat, item);
+}
+// The queue inside one chat (todo #queue-other-chats).  A pending message lives on the chat record, not in
+// `messages`, so it is not part of what gets sent until its turn comes - and it survives a crash or a reload
+// for the same reason.  Queued in this session fires on its own when the turn ahead of it ends; a queued post
+// that came back from the record waits for a click, because firing itself on page load spends tokens nobody
+// asked for (the owner's call, 2026-11-22).
+function queuePush(c, item) {
+  (c.queue = c.queue || []).push({id: mid(), text: item.text, images: item.images || [],
+                                  files: item.files || [], time: Date.now()});
+  writeChat(c);
+  if (c.id === chatId) renderChat();
+  renderSidebar();
+}
+function queueTake(c) {                              // the next message this chat will send by itself
+  const q = c.queue || [];
+  const i = q.findIndex((x) => !x.held);
+  if (i < 0) return null;
+  const [item] = q.splice(i, 1);
+  writeChat(c);
+  return item;
+}
+// The turn itself, for whichever chat asked - the open one or one answering in the background. Everything
+// that used to read the module-level chat/messages now reads the chat the turn belongs to.
+async function startTurn(c, item) {
+  const msgs = c.messages;
+  if (item) msgs.push({id: mid(), role: "user", text: item.text, images: item.images, files: item.files,
+                       time: Date.now()});
   const m = {id: mid(), role: "assistant", text: "", reasoning: "", time: Date.now(), turnStart: Date.now()};
-  messages.push(m);
-  renderChat();
+  msgs.push(m);
+  if (c.id === chatId) renderChat();
   // mark the new turn's row streaming right away (Edit button hidden from the first frame, no flicker) and show a
   // first live meta, so stats appear during thinking, not only once output arrives (todo #edit-posts).
-  const asstEl = rowOf(m);                            // look it up by index, not lastElementChild (that capture is unsafe - #switch-while-running)
+  const asstEl = rowOf(m, c);                        // look it up by index, not lastElementChild (that capture is unsafe - #switch-while-running)
   if (asstEl) { asstEl.classList.add("streaming"); asstEl.querySelector(".meta-text").textContent = liveMeta(m); }
   const controller = new AbortController();
-  const turn = {controller, msg: m, chat, chatId};   // which conversation this turn belongs to, not which is open
+  const turn = {controller, msg: m, chat: c, chatId: c.id};   // which conversation this turn belongs to, not which is open
   turn.mcpSig = mcpSignature();                      // the list this turn will be read against; see mcpPaid
   turns.push(turn);                                  // the server's FIFO takes them in this order
-  busy = turn;
+  rebindBusy();                                      // the open chat's turn, if this is it
   lastLive = null;                                   // new turn: drop the previous turn's held live figures
   setBusy();
   pollNow();               // todo #poll-on-enter: pressing Enter must not wait for the next idle poll (up to
@@ -3229,13 +3312,13 @@ async function send(editOf) {
                            // working).  schedulePoll clears the pending timer first, so this cannot fork a
                            // second chain (the metrics-lite lesson).
 
-  const body = {model: health.model, messages: apiMessages(), stream: true,
+  const body = {model: health.model, messages: apiMessages(c), stream: true,
                 reasoning_effort: settings.thinking,
                 // which conversation this is (item turn-lock-per-conversation): the server cannot tell two
                 // requests for one chat from two for different chats, and a second request must not start
                 // while this chat's turn is mid-tool-call.  A body field, not prompt content: it costs no
                 // tokens and cannot re-read anything.
-                strata_conv: chatId};
+                strata_conv: c.id};
   if (settings.temperature > 0) {
     Object.assign(body, {temperature: +settings.temperature, top_p: +settings.top_p, top_k: +settings.top_k});
   } else {
@@ -3248,12 +3331,13 @@ async function send(editOf) {
     body.strata_mcp = true;
     // Pin, then send the pin: the list this chat was built with, so a toggle in Settings does not reach it
     // and its prompt keeps matching what the engine already holds (todo #prompt-inspector).
-    if (!chatToolNames()) pinChatTools();
-    if (chatToolNames()) body.strata_mcp_tools = chatToolNames();
+    if (!chatToolNames(c)) pinChatTools(c);
+    if (chatToolNames(c)) body.strata_mcp_tools = chatToolNames(c);
     // The list THIS chat carries, not the current default: the tools block is the first system turn, so sending
     // whatever happens to be enabled now would change the start of its prompt and make it read its history again.
     // It rides on the chat record, so a reload does not lose it (todo #mcp-chat-tools).
-    renderMcp();                                   // the Monitor's status line is about THIS chat, and it just
+    if (c.id === chatId)
+      renderMcp();                                 // the Monitor's status line is about THIS chat, and it just
                                                    // changed from "will use the current tools" to "is holding the
                                                    // list it started with" - say so now, not at the next poll
     body.strata_mcp_args = true;               // todo #tool-args-stream: show the call's JSON as it is written, not "(being written)"
@@ -3268,7 +3352,7 @@ async function send(editOf) {
   // table - can add thousands of pixels in one frame, and measuring the gap after updateAssistant leaves the
   // reader past the 120 px slack, so the follow switched itself off and never came back.  This is what the
   // thinking body already does (nearEnd before assigning textContent).
-  const paint = () => { frame = 0; const el = rowOf(m); if (el) { const follow = following(); updateAssistant(el, m, true); if (follow) stickBottom(); } };
+  const paint = () => { frame = 0; const el = rowOf(m, c); if (el) { const follow = following(); updateAssistant(el, m, true); if (follow) stickBottom(); } };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -3361,13 +3445,17 @@ async function send(editOf) {
   if (turn.chat && turn.chatId !== chatId) turn.chat.unread = true;
   setBusy();                                         // the spinner clears; elsewhere a dot appears
   if (frame) cancelAnimationFrame(frame);
-  const fin = rowOf(m);
+  const fin = rowOf(m, c);
   if (fin) { const follow = following(); updateAssistant(fin, m, false); if (follow) stickBottom(); }
   saveChat(turn.chat);                              // write it into ITS chat, not whichever one is open now
   // the re-read a tool-list change promised has now happened for this conversation, so the note goes quiet by
   // itself - and comes back the moment something else moves (todo #mcp-live-toggles)
   if (turn.mcpSig) mcpPaid.set(turn.chatId, turn.mcpSig);
   renderMcp();
+  // the queue moves up: the next message this chat was holding fires on its own, whether or not you are
+  // looking at it.  A post that came back from the record (held) waits for a click instead (todo #queue-other-chats)
+  const next = turn.chat && !turnIn(turn.chatId) ? queueTake(turn.chat) : null;
+  if (next) startTurn(turn.chat, next);
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };

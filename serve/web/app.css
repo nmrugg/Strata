@@ -402,6 +402,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .sys-vars__b { border: 1px solid var(--st-line); background: var(--st-surface-2); border-radius: 999px;
                padding: 3px 9px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); cursor: pointer; }
 .sys-vars__b:hover { color: var(--st-ink); }
+/* a message waiting behind this chat's turn (todo #queue-other-chats): the bubble is the user's own, dimmed
+   because it has not been sent, with a bar that says so and the two things you can do with it */
+.st-msg.queued { opacity: .7; }
+.queued__bar { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.queued__bar .st-btn { height: 26px; padding: 0 10px; }
 /* the system prompt of the chat on screen (todo #system-prompt): visible text above the first message, not a
    fold - you scroll up and read what this conversation was told. Muted so it never competes with the answer. */
 .sysrow { border: 1px solid var(--st-line); border-radius: var(--st-r-md, 10px); background: var(--st-surface-2);

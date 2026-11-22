@@ -3765,9 +3765,10 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     await wait();
     q.s.el("input").value = "first"; q.s.send(); await wait();
     assert.strictEqual(q.s.turns.length, 1, "A has a turn");
-    assert.strictEqual(q.s.el("send-btn").disabled, true, "its Send is disabled while it runs");
+    assert.strictEqual(q.s.el("send-btn").disabled, false, "Send stays enabled: a second message queues instead");
     q.s.el("input").value = "second"; q.s.send(); await wait();
-    assert.strictEqual(q.s.turns.length, 1, "the same chat is not handed a second turn while it runs");
+    assert.strictEqual(q.s.turns.length, 1, "the same chat still has one turn");
+    assert.strictEqual((q.s.chat.queue || []).length, 1, "and the second message is waiting, not lost");
     q.s.openChat("qb"); await wait();
     assert.strictEqual(q.s.el("send-btn").disabled, false, "another chat can send while A is answering");
     q.s.el("input").value = "in B"; q.s.send(); await wait();
@@ -3775,7 +3776,7 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.deepStrictEqual(qbodies.map((b) => b.strata_conv), ["qa", "qb"],
                            "each request names the conversation it belongs to, so the server can hold one "
                            + "turn per conversation instead of letting a second start inside a tool call");
-    assert.strictEqual(q.s.el("send-btn").disabled, true, "and B's own Send is disabled now");
+    assert.strictEqual(q.s.el("send-btn").disabled, false, "and Send stays enabled in B - a third message queues");
     q.s.el("spin-toggle").onclick();                 // show the mark on the open chat too, to see both at once
     const rowHtml = (id) => {
       const r = q.s.el("sidebar-list").children.find((c) => c.dataset && c.dataset.id === id);
@@ -3784,11 +3785,94 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.ok(rowHtml("qa").includes("chat-item__state run gen"), "A is the turn at the engine: " + rowHtml("qa").slice(0, 140));
     assert.ok(rowHtml("qb").includes("chat-item__state run queue"), "B waits behind it: " + rowHtml("qb").slice(0, 140));
     q.s.el("spin-toggle").onclick();
-    rel.forEach((f) => f());
-    await wait(); await wait();
-    assert.strictEqual(q.s.turns.length, 0, "both turns finished");
+    // A's queued message fires when its turn ends, so draining takes more than one pass - that is the queue
+    // working, not a stuck turn
+    for (let i = 0; i < 4 && q.s.turns.length; i++) {
+      rel.slice().forEach((f) => f());
+      await wait(); await wait();
+    }
+    assert.strictEqual(q.s.turns.length, 0, "every turn finished");
+    assert.strictEqual((q.s.chats.find((c) => c.id === "qa").queue || []).length, 0, "and A's queue drained");
     assert.strictEqual(q.s.el("send-btn").disabled, false, "and the composer is free again");
     done.push("queue-other-chats: a turn belongs to its chat - another chat sends while one answers, and the marks show which is at the engine and which is queued");
+  }
+
+  // 110. queue-other-chats slice 2: the queue inside one chat.  A message sent while the chat is answering
+  // waits on the chat record (so a crash or a reload does not eat it), shows in the chat as a queued post,
+  // and fires on its own when the turn ahead of it ends.  One that came back from the record waits for Send.
+  {
+    const rel = [], sent = [];
+    const q = run({fetch: async (u, opt) => {
+        if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "generating", queued: 0, tok_s: 9}})};
+        if (u === "health") return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
+        if (u === "v1/chat/completions") {
+          sent.push(JSON.parse((opt || {}).body || "{}"));
+          return {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
+            rel.push(() => res({value: undefined, done: true})); })})}};
+        }
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("qa")},
+      {qa: {id: "qa", title: "chat A", time: Date.now(),
+            messages: [{id: "a1", role: "user", text: "hi", time: Date.now()}]}});
+    await wait();
+    q.s.el("input").value = "one"; q.s.send(); await wait();
+    q.s.el("input").value = "two"; q.s.send(); await wait();
+    q.s.el("input").value = "three"; q.s.send(); await wait();
+    assert.strictEqual(q.s.turns.length, 1, "one turn at a time per chat");
+    assert.strictEqual(q.s.chat.queue.length, 2, "two messages waiting");
+    assert.strictEqual(sent.length, 1, "and only the first reached the server so far");
+    const queuedRows = () => q.s.el("chat").children.filter((c) => (c.className || "").includes("queued"));
+    assert.strictEqual(queuedRows().length, 2, "both show in the chat, in order");
+    assert.ok((queuedRows()[0]._html || "").includes(">two<"), "the earlier one first: " + (queuedRows()[0]._html || "").slice(0, 120));
+    // the turn ahead finishes: the next queued message fires by itself
+    rel[0](); await wait(); await wait();
+    assert.strictEqual(sent.length, 2, "the queue moved up on its own when the turn ended");
+    assert.strictEqual(q.s.chat.queue.length, 1, "one still waiting");
+    // Cancel gives the text back to the box rather than eating it
+    const bar = queuedRows()[0];
+    bar._l && bar._l.click;                                   // the chat's delegated listener handles it
+    q.s.el("chat")._l.click({target: {closest: (sel) => (sel === ".queued" ? bar
+      : sel === "[data-q-cancel]" ? {} : null)}});
+    assert.strictEqual(q.s.chat.queue.length, 0, "cancelled");
+    assert.strictEqual(q.s.el("input").value, "three", "and the text is back in the composer, not lost");
+    // a queued post that came back from the record waits for a click
+    const held = run({fetch: async (u, opt) => {
+        if (u === "v1/chat/completions") { sent.push(JSON.parse((opt || {}).body || "{}"));
+          return {ok: true, body: {getReader: () => ({read: async () => ({value: undefined, done: true})})}}; }
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("qb")},
+      {qb: {id: "qb", title: "reloaded", time: Date.now(),
+            messages: [{id: "b1", role: "user", text: "hi", time: Date.now()}],
+            queue: [{id: "qq1", text: "was waiting", images: [], files: [], time: Date.now()}]}});
+    await wait(); await wait();
+    const before = sent.length;
+    const rows = held.s.el("chat").children.filter((c) => (c.className || "").includes("queued"));
+    assert.strictEqual(rows.length, 1, "the queued post came back with the chat");
+    assert.ok((rows[0]._html || "").includes("was waiting"), "with its text: " + (rows[0]._html || "").slice(0, 140));
+    assert.ok((rows[0]._html || "").includes("data-q-send"), "and the Send button it needs after a reload");
+    assert.strictEqual(sent.length, before, "nothing fired on page load - a reload is not a request to continue");
+    held.s.el("chat")._l.click({target: {closest: (sel) => (sel === ".queued" ? rows[0]
+      : sel === "[data-q-send]" ? {} : null)}});
+    await wait();
+    assert.strictEqual(sent.length, before + 1, "and the click is what sends it");
+    // and a held post stays held through a turn that finishes in this session: it was waiting before the page
+    // was reloaded, and nothing since has asked for it
+    const held2 = run({fetch: async (u, opt) => {
+        if (u === "v1/chat/completions") { sent.push(JSON.parse((opt || {}).body || "{}"));
+          return {ok: true, body: {getReader: () => ({read: async () => ({value: undefined, done: true})})}}; }
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("qc")},
+      {qc: {id: "qc", title: "reloaded 2", time: Date.now(),
+            messages: [{id: "c1", role: "user", text: "hi", time: Date.now()}],
+            queue: [{id: "qq2", text: "still waiting", images: [], files: [], time: Date.now()}]}});
+    await wait(); await wait();
+    const n0 = sent.length;
+    held2.s.el("input").value = "a new question"; held2.s.send();
+    await wait(); await wait();
+    assert.strictEqual(sent.length, n0 + 1, "the new message sent");
+    assert.strictEqual(held2.s.chat.queue.length, 1, "the post that came back from the record is still waiting");
+    assert.strictEqual(sent.length, n0 + 1, "and a finishing turn did not fire it");
+    done.push("queue-other-chats: a message sent mid-turn waits on the record, shows as a queued post, fires when its turn is next, and survives a reload waiting for Send");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
