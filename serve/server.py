@@ -4562,6 +4562,59 @@ def cut_call_note(name: str, param: str) -> str:
 BAD_CALL_STREAK = 5
 
 
+def mcp_tools_for(svc: Service, req: dict, own: set) -> tuple[list[dict], list[str] | None, str | None]:
+    """The MCP tools this request will render, in ONE place so the request path and the prompt inspector
+    (item prompt-inspector) cannot drift apart. -> (tools, the pinned list the request sent, a note if the
+    pin no longer matches anything).
+
+    A pinned list that matches nothing falls back to the current list: 0 tools is already a different tools
+    block from the one that conversation's prompt starts with, so the re-read pinning exists to prevent is
+    happening either way, and the fallback at least lets the turn call something (item tools-block-empty)."""
+    only = mcp_only(req)
+    extra = svc.mcp.template_tools(exclude=own, only=only, include_disabled=only is not None)
+    note = None
+    if not extra and only:
+        extra = svc.mcp.template_tools(exclude=own)
+        note = (f"this conversation's own tool list ({len(only)} names) matched none of the MCP tools on offer "
+                f"- sending the current list instead ({len(extra)} tools)")
+    return extra, only, note
+
+
+def inspect_prompt(svc: Service, req: dict) -> dict:
+    """item prompt-inspector: what this request would put in front of the model, in the numbers that matter,
+    with nothing run - no engine turn, no tool, no cost.
+
+    Every figure is a difference between two real renders of the same template through the same tokenizer, so
+    it is what the engine sees and not an estimate (the page's ~4 chars/token rule is fine for a gauge and
+    should never be quoted back to anyone as a cost).  Two renders at most: with no tools there is no second
+    one to take, and a 400k-token chat pays roughly what one request's encode does."""
+    msgs, tools0, kwargs = openai_to_messages(req)
+    own = {t.get("name") for t in tools0 or [] if isinstance(t, dict)}
+    extra, pinned, note = (mcp_tools_for(svc, req, own)
+                           if svc.mcp is not None and req.get("strata_mcp") is True else ([], None, None))
+    tools = ((tools0 or []) + extra) or None
+    count = lambda s: len(svc.tok.encode(s, parse_special=True))
+    full = svc.template.render(msgs, tools=tools, add_generation_prompt=True, **kwargs)
+    total = count(full)
+    block = total - count(svc.template.render(msgs, tools=None, add_generation_prompt=True, **kwargs)) if tools else 0
+    # the chat's own system text: the template joins leading system messages with a blank line and puts them
+    # after the tools block, so it can be counted straight off the messages - no third render of a huge prompt
+    lead = [m for m in msgs if m.get("role") in ("system", "developer")]
+    sys_tokens = count("\n\n" + "\n".join(str(m.get("content") or "") for m in lead)) if lead else 0
+    return {
+        "model": svc.model_for(req),
+        "prompt_tokens": total,
+        "tools_block": block,
+        "system_prompt": sys_tokens,
+        "messages": total - block - sys_tokens,
+        "tools": sorted(({"name": t.get("name"), "tokens": count(json.dumps(t))} for t in (tools or [])),
+                        key=lambda x: -x["tokens"]),
+        "pinned": pinned,
+        "note": note,
+        "thinking_kept": bool(req.get("strata_mcp_thinking") is True),
+    }
+
+
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
                  mcp_names, keep_thinking=False, stream_args=False, frozen=False):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
@@ -5644,6 +5697,13 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                if path == "/inspect":
+                    # the prompt inspector (item prompt-inspector): it renders a whole prompt and encodes it,
+                    # so only Strata's own page asks for it, and nothing runs - no engine turn, no tool
+                    if not self._own_page("the prompt inspector"):
+                        return
+                    self._json(200, inspect_prompt(svc, req))
+                    return
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
                     self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
                                                          "whole conversation to POST /v1/responses", code="not_found"))
@@ -6071,18 +6131,9 @@ def make_handler(svc: Service):
                 if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
                     return
                 svc.mcp.wait(10)                                  # servers still starting (only right after start)
-                only = mcp_only(req)                              # this conversation's own tool list, if it sent one
-                extra = svc.mcp.template_tools(exclude=own, only=only, include_disabled=only is not None)
-                if not extra and only:
-                    # The conversation's pinned list matched NOTHING the hub offers now - a renamed or removed
-                    # tool, or a tool server that came back with a different list.  Keeping the empty list
-                    # protects nothing: 0 tools is already a different tools block from the one its prompt
-                    # starts with, so that chat is paying the re-read either way.  Fall back to what the hub
-                    # offers today, which at least lets the turn call something (item tools-block-empty).
-                    print(f"[strata] this conversation's own tool list ({len(only)} names) matched none of the "
-                          f"MCP tools on offer - sending the current list instead "
-                          f"({len(svc.mcp.template_tools(exclude=own))} tools)", flush=True)
-                    extra = svc.mcp.template_tools(exclude=own)
+                extra, only, pin_note = mcp_tools_for(svc, req, own)
+                if pin_note:
+                    print(f"[strata] {pin_note}", flush=True)
                 use_mcp = bool(extra)
                 if not extra:
                     # The request asked for MCP tools and got none.  The model then has no tools block at all,

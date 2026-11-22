@@ -1686,7 +1686,7 @@ all: fold-control replaced them, and the four overlapping switches became one co
     controller, target message, chat id) and multi-tab-sync's per-chat busy tracking.  The FIFO already queues
     server-side (docs/BATCHING.md) - this is the front-end half.
 
-`prompt-inspector`  See - and edit - the other things sent to the model: the tool list, and the rendered prompt. [ui] [py] MEDIUM
+`prompt-inspector`  See - and edit - the other things sent to the model: the tool list, and the rendered prompt. [ui] [py] PARTLY DONE 2026-11-22
     Asked for 2026-11-21 next to item system-prompt: "a way to see/edit any other data sent to the llm, like
     the mcp server stuff".  Two different things hide in that sentence and must not be built the same way.
       - EDITABLE, and already half-supported: the per-conversation tool list.  The server accepts
@@ -1703,6 +1703,26 @@ all: fold-control replaced them, and the four overlapping switches became one co
     A prompt here is 430k+ tokens, so the view needs sections and counts, not a dump: the system turn, the
     tools block and its token cost, the per-turn thinking blocks - plus a download of the whole thing.
     Decides nothing on its own.  It is how a reader learns what a toggle costs before pulling it.
+    SLICE 1 DONE 2026-11-22 - the read-only half.  POST /inspect takes the same body a chat request would carry
+    and answers with the parts, running nothing: prompt tokens, the tools block, the chat's system prompt, the
+    conversation, and every tool with what its schema costs, biggest first.  Each figure is a difference between
+    two real renders of the same template through the same tokenizer, so it is what the engine sees - not the
+    page's ~4 chars/token guess, which is fine for a gauge and should never be quoted as a cost.  The tool
+    selection went into one helper, mcp_tools_for(), used by the request path AND the inspector, because two
+    copies of that logic is exactly how a "what will this cost me" number starts lying.  The card is in Settings
+    ("What the model is sent" / Measure this chat); it measures the chat that is open, with the same body send()
+    would put on the wire.
+    Measured on this box with the real tokenizer, for the record: the tools block as this agent chat runs it is
+    4,117 tokens for 16 tools - 3,904 of it the servers' own descriptions and schemas, 213 Strata's fixed
+    wrapper and the call-format reminder (182 of that is the reminder).  All 31 tools would cost 6,893, so the
+    15 turned off in the config save 2,776 tokens per request.  The five biggest schemas: fs_search 788,
+    fs_read 423, fs_find 327, run_cmd 298, fs_ls 281.  The reasoning-effort sentence is 42 tokens at xhigh, 30
+    at low, none at medium; thinking off takes 40 out of every prompt; an assistant turn's empty thinking block
+    still costs its wrapper.
+    STILL OPEN: the editable half - the per-chat tool list.  The server has taken strata_mcp_tools for a while
+    and no client has ever sent it, so the inspector can show what pinning a chat's list would save, but
+    sending it by default would change behaviour for every existing chat (a global toggle would stop reaching
+    chats that pinned a list), and that needs the owner's call rather than a decision made in passing.
 
 
 ## 4. Large - engine work, or a new subsystem (weeks)

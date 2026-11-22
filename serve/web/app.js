@@ -978,6 +978,45 @@ $("sys-save").onclick = () => {
           ? "Chats you already started keep the words they began with." : "");
 };
 
+// ------------------------------------------------------------------ the prompt inspector (todo #prompt-inspector)
+// The same body send() would put on the wire, measured by the server with the same template call and the same
+// tokenizer - so the numbers are what the engine sees, not the page's ~4 chars/token guess.  Nothing runs:
+// /inspect renders and counts, and answers before the model is asked anything.
+async function runInspector() {
+  const body = {model: health.model, messages: apiMessages(), stream: false,
+                reasoning_effort: settings.thinking,
+                strata_mcp: settings.mcp !== false && mcpInfo.tools > 0};
+  if (body.strata_mcp && settings.mcpthink === true) body.strata_mcp_thinking = true;
+  const btn = $("insp-run");
+  btn.disabled = true;
+  facts($("insp-sum"), [["The prompt", "measuring"]]);
+  try {
+    const r = await fetch("inspect", {method: "POST", headers: headers(true), body: JSON.stringify(body)});
+    const o = await r.json();
+    if (!r.ok) throw new Error((o.error || {}).message || `HTTP ${r.status}`);
+    renderInspect(o);
+  } catch (e) {
+    facts($("insp-sum"), []);
+    toast("error", "Could not measure", String((e && e.message) || e), 6000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+function renderInspect(o) {
+  facts($("insp-sum"), [
+    ["The prompt", `${fmt(o.prompt_tokens)} tokens`],
+    ["Tools block", o.tools_block ? `${fmt(o.tools_block)} tokens · ${o.tools.length} tools` : "none"],
+    ["System prompt", o.system_prompt ? `${fmt(o.system_prompt)} tokens` : "none"],
+    ["The conversation", `${fmt(o.messages)} tokens`],
+  ]);
+  $("insp-tools").hidden = !o.tools.length;
+  facts($("insp-toollist"), o.tools.map((t) => [t.name, `${fmt(t.tokens)}`]));
+  const n = $("insp-note");
+  n.hidden = !o.note;
+  n.textContent = o.note || "";
+}
+$("insp-run").onclick = runInspector;
+
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
 function inline(s) {
   const codes = [];

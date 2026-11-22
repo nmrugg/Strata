@@ -867,6 +867,48 @@ class CutCall(LoopFixture):
         self.assertEqual(results[0]["chars"], len(results[0]["text"]), "the note is the whole result")
 
 
+class Inspector(LoopFixture):
+    """item prompt-inspector: POST /inspect renders the request's own prompt and measures its parts, running
+    nothing.  The figures have to come from the same template call and the same tokenizer the chat path uses,
+    or the numbers are decoration."""
+
+    def inspect(self, body):
+        req = urllib.request.Request(self.base + "/inspect",
+                                     data=json.dumps({"model": "m", **body}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode())
+
+    def test_the_parts_add_up_and_nothing_runs(self):
+        self.start("</think>\n\nnever asked")
+        code, out = self.inspect({"messages": [{"role": "user", "content": "check it"}], "strata_mcp": True})
+        self.assertEqual(code, 200)
+        self.assertGreater(out["tools_block"], 0, "the tools block is the thing worth seeing")
+        self.assertTrue(out["tools"], "and the tools themselves are listed")
+        self.assertEqual(out["prompt_tokens"], out["tools_block"] + out["system_prompt"] + out["messages"],
+                         "the parts add up to the prompt")
+        self.assertEqual(out["tools"][0]["tokens"], max(t["tokens"] for t in out["tools"]),
+                         "sorted by what they cost, biggest first")
+        self.assertEqual(len(self.engine.prompts), 0, "inspecting ran no engine turn")
+        self.assertIsNone(out["pinned"], "this request pinned no list")
+
+    def test_the_chat_system_prompt_is_its_own_number(self):
+        self.start("</think>\n\nnever asked")
+        plain = self.inspect({"messages": [{"role": "user", "content": "check it"}]})[1]
+        with_sys = self.inspect({"messages": [{"role": "system", "content": "Today is Monday."},
+                                              {"role": "user", "content": "check it"}]})[1]
+        self.assertEqual(plain["system_prompt"], 0, "no system message, no line for it")
+        self.assertGreater(with_sys["system_prompt"], 0)
+        self.assertEqual(with_sys["messages"], plain["messages"], "the conversation part did not move")
+
+    def test_a_pinned_list_that_matches_nothing_says_so_in_the_answer(self):
+        self.start("</think>\n\nnever asked")
+        _, out = self.inspect({"messages": [{"role": "user", "content": "check it"}], "strata_mcp": True,
+                               "strata_mcp_tools": ["nosuch__tool"]})
+        self.assertIn("matched none of the MCP tools on offer", out["note"] or "", str(out)[:300])
+        self.assertTrue(out["tools"], "and it still lists what the request would actually be sent")
+
+
 class NoTools(LoopFixture):
     """A request that asks for MCP tools and is given none.  The model then has no tools block at all: it cannot
     call anything, and it ends the turn with plausible text - not an empty turn, not an abandoned call, not

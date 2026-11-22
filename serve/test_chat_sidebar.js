@@ -239,6 +239,7 @@ function run(hooks, stored, seed) {
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "loadHealth, healthPill, get health() { return health; }, " +
+    "runInspector, renderInspect, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
@@ -3578,6 +3579,35 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.strictEqual(sysrows().length, 1, "one row after the re-render, not two");
     assert.ok((sysrows()[0]._html || "").includes("revised"), "the page shows the new words");
     done.push("system-prompt: the row sits above the first message, and Edit opens a box that names the re-read in tokens");
+  }
+
+  // 106. prompt-inspector: the card measures THIS chat's own outgoing body and paints what the server counted
+  // - the same template call and tokenizer the request path uses, so the figures are the engine's, not the
+  // page's ~4 chars/token guess.
+  {
+    const calls = [];
+    const ins = run({fetch: async (u, opt) => {
+        calls.push([u, (opt || {}).method]);
+        if (u === "inspect") return {ok: true, json: async () => ({model: "m1", prompt_tokens: 431207,
+            tools_block: 4117, system_prompt: 26, messages: 427064, pinned: null, note: null,
+            tools: [{name: "easyCMP__fs_search", tokens: 788}, {name: "easyCMP__run_cmd", tokens: 298}]})};
+        return {ok: true, json: async () => ({})};
+      }}, {});
+    await wait();
+    ins.s.runInspector(); await wait(); await wait();
+    assert.ok(calls.some(([u, m]) => u === "inspect" && m === "POST"), "the card posts to /inspect");
+    const sum = ins.s.el("insp-sum")._html || "";
+    assert.ok(sum.includes("431,207"), "the prompt total: " + sum.slice(0, 170));
+    assert.ok(sum.includes("4,117"), "the tools block: " + sum.slice(0, 170));
+    const list = ins.s.el("insp-toollist")._html || "";
+    assert.ok(list.includes("easyCMP__fs_search") && list.includes("788"),
+              "each tool with what it costs: " + list.slice(0, 140));
+    assert.strictEqual(ins.s.el("insp-tools").hidden, false, "the per-tool list shows when there are tools");
+    const bad = run({fetch: async () => ({ok: false, json: async () => ({error: {message: "no"}})})}, {});
+    await wait();
+    bad.s.runInspector(); await wait(); await wait();
+    assert.strictEqual(bad.s.el("insp-run").disabled, false, "a failed measurement re-enables the button");
+    done.push("prompt-inspector: the card measures this chat's own body and paints what the server counted");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));

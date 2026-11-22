@@ -213,6 +213,14 @@
         <div class="cfg-actions"><button class="st-btn st-btn--primary" id="sys-save" type="button">Save</button>
           <span class="muted small" id="sys-msg" role="status"></span></div>
       </div>
+      <div class="st-card" id="insp-card">
+        <div class="req-head"><span class="card-title">What the model is sent</span>
+          <button class="st-btn st-btn--secondary" id="insp-run" type="button">Measure this chat</button></div>
+        <dl class="facts" id="insp-sum"></dl>
+        <details class="insp-tools" id="insp-tools" hidden><summary>Each tool</summary>
+          <dl class="facts" id="insp-toollist"></dl></details>
+        <p class="muted small" id="insp-note" hidden></p>
+      </div>
       <div class="st-card">
         <span class="card-title">This browser</span>
         <div class="st-field">
