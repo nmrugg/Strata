@@ -175,6 +175,13 @@ all: fold-control replaced them, and the four overlapping switches became one co
     code (conversation-cache eviction, idle-unload timer, --conversation-cache-min-free-mib) and document it.
     Feeds item pin-conversation (the configurable disk cache they want).
 
+`chat-date-on-send`  A chat's date in the list changes only when the answer finishes. [ui] TRIVIAL
+    `c.time = Date.now()` runs on write (serve/web/app.js, saveChat/putChat), so a chat you have just sent
+    into still shows its old timestamp in the sidebar while the model works - and a turn that never finishes
+    (Stop, a crash, the server dying) never moves it at all. Stamp the chat when the message is sent, and
+    again when the turn ends. Watch: the list re-renders on sort, so check the order does not jump under the
+    reader's cursor mid-turn.
+
 ## 2. Small - a few hours, one or two files, no design decision
 
 `sidebar-resize`  Make the chat list's width the reader's: drag the edge, keep it per browser. [ui] DONE 2026-11-19
@@ -285,6 +292,29 @@ all: fold-control replaced them, and the four overlapping switches became one co
     same as the tool-thinking toggle.
     This is the prerequisite for item warm-then-cancel (dynamic system prompt) and it makes item pin-conversation's
     prefix pin actually useful, so it is worth doing early despite being small.
+    ASKED FOR AGAIN 2026-11-21, with the shape spelled out.  The card goes in the Settings tab.  Dynamic
+    content - values computed ONCE when the chat starts and then frozen into the record: candidates the server
+    can already answer are date and time, model name, context window, GPU name and VRAM, RAM total, OS and
+    hostname, and which MCP servers / how many tools are on offer.  Re-evaluating any of them mid-chat changes
+    the system turn and re-reads silently, so the UI should show them as resolved-at-chat-start, not live.
+    Display: the prompt appears as a row at the top of a new chat, and the view then scrolls so the first
+    message sits at the top of the viewport - the page looks exactly as it does today unless you scroll up
+    (renderChat draws the rows; stickBottom is not it, this wants a scroll-to-row).
+    Editing costs a re-read and the number has to be said, not hidden: changing the first system turn re-reads
+    the whole conversation - measured on this box at 580,567 tokens / 228 s for a tools-block change.  The page
+    already knows how to print that figure (mcpCostText, mcpPaid, mcpSignature).
+    FOUR DECISIONS, asked 2026-11-21 and unanswered so far (the ask tool failed with "no request context" all
+    day, and the answer timed out on the human's side):
+      1. Where it lands in the system turn: AFTER the tools block (chat_template.jinja:84-85 already appends
+         merged system text there - free, and the pinned prefix keeps matching) or before it (changes the first
+         tokens; the --prompt-cache-root pin would have to move).  Recommend after.
+      2. A global default that seeds each new chat PLUS a frozen copy in the chat record (recommended - the
+         same reason strata_mcp_tools exists), vs one global string, where an edit re-reads every chat at once.
+      3. Which dynamic values, from the list above.
+      4. Whether item prompt-inspector ships with it or after.
+    For whoever implements: a leading system message already survives the API boundary (openai_to_messages
+    downgrades system messages only after the first user turn, serve/frontend.py:347), so the server may need
+    nothing at all.  Check before writing server code.
 
 
 `store-full-attachments`  Keep the original bytes of attached files/pictures in IndexedDB. [ui] DONE 2026-10-24
@@ -525,6 +555,47 @@ all: fold-control replaced them, and the four overlapping switches became one co
     auto-link-urls.  The decision left to the owner: an img path means the page fetches whatever URL the model
     writes - worth a rule (attachments already render pictures the user put there); titles, reference links and
     footnotes look like docs features a chat does not owe.
+
+`crash-recovers-last-turn`  A browser crash mid-turn loses the whole last exchange. [ui] SMALL
+    The chat record is written once, at the end of send() (saveChat after the stream closes). If the tab dies -
+    crash, OOM, the machine sleeping - the user's own message, the thinking, and every tool call that already
+    ran are gone. Write the record as each part finishes: when the message is sent, when the first token
+    arrives, when thinking ends, after each tool result, and at the end. The conversations are one IndexedDB
+    record per chat and can be megabytes, so this needs a cheap path: write on those boundaries only, never
+    per token (the composer draft already stays out of the record for that reason - store/localStorage).
+    Decide what a reloaded half-turn looks like: the answer so far with a note that the page was closed, and
+    whether the tool calls that ran are replayed or shown as spent.
+
+`sidebar-spinner-states`  The chat-list spinner: prefill blue, generating green, queued amber, waiting grey -
+    and an option to show it on the open chat too. [ui] SMALL
+    Today the dot is hidden for the chat you are looking at, and one colour covers the whole turn. The states
+    are already known to the page (live.state: reading / generating / running-tool / queued, plus this tab's
+    own busy), and the palette already encodes them: --st-accent green = the engine is producing tokens,
+    --st-info blue = it is not (a prompt read, an MCP call), --st-warn amber = queued (components.css, and
+    LESSONS.md "one colour per state" - a pill that disagreed with the Monitor's badge is what that entry is
+    about). So: blue while reading the prompt, green once the first token lands, amber when the request is
+    waiting behind another, grey when it is waiting on something outside the engine (a tool call, an MCP
+    server). Add a Settings switch to always show it, off by default - it is hidden now because the open chat
+    already shows the pill.
+
+`unpark-chat`  Un-park a parked conversation by hand. [py] SMALL
+    Ask for by the owner 2026-11-21 as a future item, independent of pin-conversation. Parking a conversation
+    (the live conversation cache) is automatic today; there is no way to say "drop this one, I do not want its
+    slot" - which matters because the engine keeps only 4 conversation-cache slots (measured on this box:
+    conversation_cache_slots 4, conversation_cache_mib 16384), so a chat you no longer care about is holding
+    room another one needs. Needs an identity for the conversation first - reuse is exact token-prefix
+    matching with no session id (see edit-last-message-reread and pin-conversation).
+
+`edit-last-message-reread`  Why does editing the LAST message re-read the whole chat? Measure it. [py] SMALL
+    It should not: the edit truncates the history to that turn and re-sends (serve/web/app.js, send(editOf)),
+    so everything before it is byte-identical and the prompt should reuse up to the edited turn. Two
+    candidates, and they need different fixes: (1) the engine keeps only 4 conversation-cache slots
+    (conversation_cache_slots: 4 on this box), so this chat's prefix may simply have been evicted - in which
+    case the re-read has nothing to do with editing and every chat beyond four pays it; (2) the replay differs
+    somewhere before the edited turn, which is the class of bug that produced the 36,281-token re-read fixed
+    on 2026-11-21 (item unread-call-recovery) - the tell is the reused/prompt_read pair in
+    /metrics?requests=all: a break at the tools block re-reads everything, a break at the tail re-reads a few
+    hundred tokens. Measure before touching anything.
 
 ## 3. Medium - two or three layers, or a decision to make first (days)
 
@@ -1602,6 +1673,25 @@ all: fold-control replaced them, and the four overlapping switches became one co
     background chat; it sends when that chat's turn is next.  Builds on item queue-another-chat (per-request state:
     controller, target message, chat id) and multi-tab-sync's per-chat busy tracking.  The FIFO already queues
     server-side (docs/BATCHING.md) - this is the front-end half.
+
+`prompt-inspector`  See - and edit - the other things sent to the model: the tool list, and the rendered prompt. [ui] [py] MEDIUM
+    Asked for 2026-11-21 next to item system-prompt: "a way to see/edit any other data sent to the llm, like
+    the mcp server stuff".  Two different things hide in that sentence and must not be built the same way.
+      - EDITABLE, and already half-supported: the per-conversation tool list.  The server accepts
+        `strata_mcp_tools` (todo #mcp-live-toggles) and no client has ever sent it; the page shows the servers
+        and their tools (the Settings MCP card, the wrench picker) but pins nothing, so a toggle changes the
+        tools block and re-reads the chat.  Letting the reader see and pin the exact list this conversation
+        uses - with what changing it costs - is the machinery that already exists (mcpPaid, mcpCostText).
+      - READ-ONLY, and it should stay that way: the prompt as the engine actually receives it - the tools
+        block, the reasoning-effort sentence the template writes, the thinking block of each turn.  The server
+        can produce it (ChatTemplate.render over the same messages the request carries); the api_monitor page
+        shows the request JSON, which is not the same thing.  Hand-editing the rendered text would desync the
+        server's build from the page's rebuild, and that desync is the cause of every re-read bug in this file
+        (the tool-picture shape, the round thinking, the call order).
+    A prompt here is 430k+ tokens, so the view needs sections and counts, not a dump: the system turn, the
+    tools block and its token cost, the per-turn thinking blocks - plus a download of the whole thing.
+    Decides nothing on its own.  It is how a reader learns what a toggle costs before pulling it.
+
 
 ## 4. Large - engine work, or a new subsystem (weeks)
 
