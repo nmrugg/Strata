@@ -677,6 +677,7 @@ class StrataEngine:
         self.log_path = log
         self.proc, self.pump, self.log = None, None, None
         self.ended, self.unloaded = True, True
+        self.started_once = False        # has this engine ever reported READY: what makes "again" the right word
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
@@ -766,6 +767,7 @@ class StrataEngine:
             # through the request path's handler - a RuntimeError there left the turn with no answer (#1527)
             raise EngineDied(why + (f" (see {log})" if log else "") +
                              start_failure_hint(log, log_start) + start_log_tail(log, log_start))
+        self.started_once = True                            # from here, "loading it again" is the honest phrase
         self.known_ctx = self.max_context   # survives a failed restart: requests keep their limit and restart it
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
         # report their own version (INFO engine=, 0.1.8+) win, the manifest stays the fallback for older ones
@@ -2942,6 +2944,13 @@ class Service:
         # rounds there is no live_reqs entry at all (it covers the turn, not the tool), which is why a tool
         # running for 90 seconds read as "idle" - this is what spans the whole turn.
         self.mcp_running: dict[object, str] = {}
+        # item server-before-model: the port listens before the model is up, so a page has to be told which of
+        # three states it is in - still loading, up, or it failed and why.  /health's "loaded" alone cannot say
+        # (LESSONS.md: it is just "the engine child process has not exited"), and with the port up first it
+        # would read as a plain false forever.
+        self.loading = False                            # the background load is running
+        self.load_error = None                          # why the model did not come up, when it did not
+        self.load_seconds = None                        # how long the load took, once it has
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
@@ -3179,7 +3188,11 @@ class Service:
         if self.loaded():
             return
         if getattr(self.engine, "unloaded", False):
-            print("[strata] loading the model again (it was unloaded) ...", flush=True)
+            # "again" only if it has been up: with the port listening before the model (item
+            # server-before-model) this is now the ordinary FIRST load, and saying "again" would be a lie
+            print("[strata] loading the model again (it was unloaded) ..."
+                  if getattr(self.engine, "started_once", False) else
+                  "[strata] loading the model (the first start takes a minute or two) ...", flush=True)
         else:
             code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
             print(f"[strata] the engine had stopped (exit code {code}); starting it again "
@@ -5494,9 +5507,18 @@ def make_handler(svc: Service):
                 self._send_static(ROOT / "serve" / "web" / ("monitor.html" if path else "index.html"),
                                   "text/html; charset=utf-8", self._page_bytes)
             elif path in ("/health", "/api/health"):
-                self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
-                                 "loaded": svc.loaded(), "service": "strata"})
+                # item server-before-model: with the port up before the model, "loaded": false has three
+                # causes and one boolean cannot tell them apart - still starting, up and unloaded by choice,
+                # or it failed.  The page needs the difference; LESSONS.md has the entry on what loaded()
+                # actually means (the engine child process has not exited).
+                body = {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
+                        "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                        "loaded": svc.loaded(), "loading": bool(svc.loading), "service": "strata"}
+                if svc.load_seconds:
+                    body["load_seconds"] = round(svc.load_seconds, 1)
+                if svc.load_error:
+                    body["load_error"] = svc.load_error
+                self._json(200, body)
             elif path == "/status":
                 if not self._authorized():                  # #212: it shows the end of the last answer
                     return
@@ -6632,6 +6654,46 @@ def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     return httpd
 
 
+def start_model_load(svc: Service, bell: str = "", when_ready=None) -> threading.Thread:
+    """item server-before-model: the port is listening already, so the model comes up here, on a thread.
+
+    The FIFO is held for the whole load, because that is the lock a request takes before it calls
+    ensure_loaded() itself - so a request that arrives while the model is starting waits its turn and is then
+    served, the same as one that arrived behind another conversation.  It is not refused: prepare() answers
+    503 "the engine is starting" only when the context is unknown (#344), and a lazy engine already knows its
+    context from --max-context.
+
+    A load that FAILS leaves the server up.  The page, the Monitor and /health are then the only place the
+    owner can read why, and a process that exits at that point takes the answer with it; the next request
+    tries to load again, as it does for an engine that died."""
+    svc.loading, svc.load_error, svc.load_seconds = True, None, None
+    t0 = time.time()
+
+    def go():
+        problem = None
+        try:
+            with svc.fifo:
+                svc.ensure_loaded()
+        except BaseException as e:                        # noqa: BLE001 - a thread that dies quietly is the bug
+            problem = e
+        svc.loading = False
+        if problem is not None:
+            svc.load_error = str(problem) or type(problem).__name__
+            print(f"[strata] the model did not start: {svc.load_error}", flush=True)
+            print("[strata] the page and the API stay up; the next request tries to load the model again",
+                  flush=True)
+            return
+        svc.load_seconds = time.time() - t0
+        if when_ready is not None:                        # the INFO warnings, then anything waiting on the model
+            when_ready()
+        print(f"[strata] model ready: {svc.model}, context {svc.reported_ctx():,} tokens, "
+              f"{svc.load_seconds:.1f} s{bell}", flush=True)
+
+    thread = threading.Thread(target=go, daemon=True)
+    thread.start()
+    return thread
+
+
 def origins_of(value, key: str, wildcard: bool) -> list[str]:
     """#321: a config's origin list ("https://chat.example.com" or a list of them) - scheme://host[:port], no path;
     "*" only where `wildcard` allows it.  A wrong entry stops the start rather than opening less or more than meant."""
@@ -6951,6 +7013,8 @@ def main() -> int:
         types = json.loads((tpath / "token_type.json").read_text())
         tok = ST.Tokenizer(tokens, merges, types)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
+    web_first = False                                   # set in the strata branch below; the mock engine has
+    # nothing to load, so it keeps answering the port exactly when it always did
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
@@ -6961,6 +7025,13 @@ def main() -> int:
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
+        # item server-before-model.  The engine constructor is what blocks for a minute or two, so the port
+        # cannot listen until the model is up - and a page with nothing to open has one signal ("my fetch of
+        # /health stopped failing"), which cannot tell "still loading" from "never started".  Both engines are
+        # therefore built lazy and started for real by start_model_load() the moment the port is listening: it
+        # takes the FIFO exactly as a request does, so a request that arrives mid-load waits its turn rather
+        # than meeting an engine that has never started.  --lazy is unchanged: nobody loads it until a request.
+        web_first = not lazy
         if cfg.get("vision"):
             print("loading the vision encoder ..." if not lazy else
                   "vision encoder unloaded; it starts with the model ...", flush=True)
@@ -6969,8 +7040,9 @@ def main() -> int:
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                     for k, v in cfg["vision"].items()}
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
-                            env=vision_env(cfg, env), lazy=lazy)
+                            env=vision_env(cfg, env), lazy=True)
         print("model unloaded; the first request loads it ..." if lazy else
+              "the page and the API come up before the model: it loads in the background" if web_first else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         warn_budget_over_ram(engine_args(cfg) if "args" in cfg else [])      # #1080
         if layer_split_of(cfg):
@@ -6999,16 +7071,22 @@ def main() -> int:
         except rp.ReplicaConfigError as e:
             raise SystemExit(f"[strata] config {e}")
         if groups:
-            engine = start_replicas(cfg, groups, exe, effort_end or [], lazy)
+            engine = start_replicas(cfg, groups, exe, effort_end or [], True)
         else:
+            # lazy=True always, from here: the loader thread below (or the first request, with --lazy) starts
+            # the real process, so the constructor never holds the port back
             engine = StrataEngine(exe, engine_args(cfg) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"),
-                                  env=env, lazy=lazy)
+                                  env=env, lazy=True)
         engine.silence_s = silence                      # an attribute of its own: restart() keeps it
-        warn_tight_ram(engine.info.get("arena_mib"))
-        note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
-                                 linux_desktop()) if not groups else None
-        if note:                                        # #560 #516: before --open starts a browser on that card
-            print(note, flush=True)
+
+        def post_load_notes():
+            """The two warnings that can only be made from what the engine reports when it is up (INFO).  Built
+            as a function because the engine no longer runs by the time main() gets here: the loader calls it."""
+            warn_tight_ram(engine.info.get("arena_mib"))
+            note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
+                                     linux_desktop()) if not groups else None
+            if note:                                    # #560 #516: before --open starts a browser on that card
+                print(note, flush=True)
     else:
         effort_end = None
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
@@ -7155,13 +7233,18 @@ def main() -> int:
               f"chat: {', '.join(hub.servers)}", flush=True)
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
-    httpd = serve(svc, host=a.host, port=a.port)
+    httpd = serve(svc, host=a.host, port=a.port)        # the port listens here; the model may still be loading
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     bell = start_beep(cfg)                              # "start_beep": true in the config; absent is off
+    # item server-before-model: with the port already up the model loads on a thread, and the bell belongs to
+    # the model being usable (its whole point), not to the port.  The banner keeps its "ready: http" wording -
+    # LESSONS.md greps for it to find where one process's log lines end and the next one's begin.
+    loader = start_model_load(svc, bell, post_load_notes) if web_first else None
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
-          f"{', API key required' if svc.api_key else ''}){bell}", flush=True)
+          f"{', API key required' if svc.api_key else ''}{', model loading' if web_first else ''})"
+          f"{bell if not web_first else ''}", flush=True)
     print(f"       open http://{here}:{a.port}/ in a browser to chat; close this window to stop the model", flush=True)
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         # issue #26: reachable from other devices - say at which address, and what can still block it
