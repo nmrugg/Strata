@@ -325,6 +325,13 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn("data-mcp-edit", self.js)
         self.assertIn("data-mcp-del", self.js)
         self.assertIn('$("mcp-set-list").addEventListener("click", mcpListClick);', self.js)
+        # the captions the owner deleted (AGENTS.md: never state what the reader already sees).  Pinned in both
+        # files so they cannot creep back with the next edit; neither string appears in a comment here, which
+        # is the trap that makes an assertNotIn match its own explanation (LESSONS.md).
+        for gone in ("new chats start with this", "Starts every new chat",
+                     "A server is a program that runs on this PC", "set when this chat started"):
+            self.assertNotIn(gone, self.html)
+            self.assertNotIn(gone, self.js)
         self.assertIn('$("mcp-set-add").onclick = () => openMcpForm(null);', self.js)
         # one write path, the same POST /mcp the switches use; add and edit carry the entry, remove the name
         self.assertIn('mcpPostAll([{server: n, [editing ? "edit" : "add"]: entry}]', self.js)

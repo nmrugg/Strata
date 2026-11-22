@@ -950,7 +950,6 @@ $("cfg-save").addEventListener("click", async () => {
 function renderSysCard() {
   const t = String(store.get("sysdefault", ""));
   if ($("sys-default").value !== t) $("sys-default").value = t;
-  $("sys-sum").textContent = t.trim() ? "new chats start with this" : "not used";
   const box = $("sys-vars");
   box.innerHTML = "";
   for (const v of SYS_VARS) {
@@ -972,9 +971,11 @@ $("sys-save").onclick = () => {
   const bad = sysMissing(t);                          // a brace word we do not know stays in the prompt as typed
   $("sys-msg").textContent = bad.length ? `Not filled in: ${bad.join(", ")}` : "";
   if (String(t).trim() && sysNeedHw(t)) sysFetchHw(); // the hardware words need one answer we do not poll for
+  // the only part of this that is not obvious: a chat already under way keeps the words it began with, and
+  // saying it costs nothing to change them.  Nothing at all when there is no such chat.
   toast("success", "System prompt saved",
-        String(t).trim() ? "New chats start with it. Chats you already started keep their own copy."
-                         : "New chats have none.");
+        String(t).trim() && chats.some((c) => c.messages.length)
+          ? "Chats you already started keep the words they began with." : "");
 };
 
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
