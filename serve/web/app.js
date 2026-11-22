@@ -2691,10 +2691,80 @@ function updateAssistant(el, m, streaming) {
 function renderChat() {
   const chat = $("chat");
   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
+  chat.querySelectorAll(".sysrow").forEach((e) => e.remove());
+  const sys = sysRowHtml();
+  if (sys) chat.insertAdjacentHTML("beforeend", sys);   // before the messages below, which is what puts it first
   $("chat-empty").hidden = messages.length > 0;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   renderSidebar();                                // the name in the list follows the first question
+  // A chat that starts with a system prompt should look exactly as it did without one: the prompt is above the
+  // first message, and the view opens with that message at the top. Once the conversation is longer than the
+  // first exchange, the normal follow-the-bottom rule applies - scrolling to the top of a 400-message chat on
+  // open would be the opposite of useful.
+  if (sys && messages.length <= 2 && scrollToFirstMessage()) return;
   scrollDown(true);
+}
+// Put the first message at the top of the scroll box.  Measured from rects rather than offsetTop, because
+// offsetTop is relative to the nearest positioned ancestor and #chat is not one.  Returns false when there is
+// nothing to measure (the harness stub has no layout) so the caller falls back to the usual behaviour.
+function scrollToFirstMessage() {
+  const s = $("chat-scroll"), row = $("chat").querySelector(".st-msg");
+  if (!s || !row || !row.getBoundingClientRect || !s.clientHeight) return false;
+  const top = row.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop;
+  s.scrollTop = Math.max(0, top);
+  autoTop = s.scrollTop;      // read back: a browser clamps it, and our own scroll must not look like a fight
+  return true;
+}
+// The system prompt of the chat on screen (todo #system-prompt): visible text at the top of the page, not a
+// fold - the whole point is that you scroll up and read what this conversation was told.
+function sysRowHtml() {
+  const t = String((chat && chat.sys) || "");
+  if (!t.trim()) return "";
+  return `<div class="sysrow"><div class="sysrow__head"><span class="sysrow__label">System prompt</span>` +
+         `<span class="muted small">set when this chat started</span>` +
+         `<button class="st-btn st-btn--secondary" data-sys-edit type="button">Edit</button></div>` +
+         `<div class="sysrow__text">${esc(t)}</div></div>`;
+}
+// Editing it re-reads: the system turn is the first thing in the prompt, so the conversation reads its history
+// once with the new words.  The number is said, not hidden (AGENTS.md), and it is the same figure the MCP
+// toggle note uses.
+function editSysRow() {
+  const row = $("chat").querySelector(".sysrow");
+  if (!row || !chat) return;
+  if (row._editing) return;                             // already open; a second click does not stack boxes
+  row._editing = true;                                  // a flag on the node, not a querySelector: the harness
+  // stub invents a node for any selector it cannot find, and a browser returns null - the flag is true in both
+  const head = row.querySelector(".sysrow__head");
+  const body = row.querySelector(".sysrow__text");
+  const ta = document.createElement("textarea");
+  ta.className = "st-input sysrow__area";
+  ta.rows = Math.min(18, Math.max(4, (chat.sys || "").split("\n").length + 1));
+  ta.value = chat.sys || "";
+  ta.setAttribute("aria-label", "System prompt for this chat");
+  const n = chatPromptTokens();
+  const acts = document.createElement("div");
+  acts.className = "sysrow__acts";
+  const save = document.createElement("button");
+  save.className = "st-btn st-btn--primary"; save.type = "button"; save.textContent = "Save";
+  const cancel = document.createElement("button");
+  cancel.className = "st-btn st-btn--secondary"; cancel.type = "button"; cancel.textContent = "Cancel";
+  const cost = document.createElement("span");
+  cost.className = "muted small";
+  cost.textContent = n ? `This re-reads ${fmt(n)} tokens in this conversation.` : "";
+  acts.append(save, cancel, cost);
+  body.replaceWith(ta);
+  head.replaceWith(acts);
+  ta.focus();
+  save.onclick = () => {
+    const v = ta.value;
+    if (String(v).trim() === String(chat.sys || "").trim()) { renderChat(); return; }   // nothing changed, nothing to pay
+    chat.sys = v;
+    writeChat(chat);
+    renderChat();
+    toast("success", "System prompt set", String(v).trim() && n
+      ? `The next message reads ${fmt(n)} tokens again.` : "");
+  };
+  cancel.onclick = () => renderChat();
 }
 // the row for a message in the chat currently on screen.  send() used to capture one element and paint into it
 // for the whole turn, which broke the moment the chat was re-rendered - renderChat() removes every .st-msg, so
@@ -2730,6 +2800,7 @@ $("chat-scroll").addEventListener("scroll", () => {
 });
 
 $("chat").addEventListener("click", (e) => {
+  if (e.target.closest("[data-sys-edit]")) { editSysRow(); return; }   // the chat's own system prompt
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const ti = e.target.closest("[data-tool-img]");        // a picture the tool returned (item ai-image-visible)

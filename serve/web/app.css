@@ -374,8 +374,20 @@ main { flex: 1; min-height: 0; display: flex; }
 /* the system prompt card (todo #system-prompt): a .st-input is 44px tall, which clips any multi-line field,
    so the textarea needs the same fix the MCP form learned (LESSONS.md).  The chips are the brace words that
    are filled in once, when a chat starts. */
-#sys-card textarea.st-input { height: auto; min-height: 8em; padding: 10px 14px; line-height: 1.5; resize: vertical; }
+#sys-card textarea.st-input, .sysrow__area { height: auto; min-height: 6em; padding: 10px 14px; line-height: 1.5; resize: vertical; }
 .sys-vars { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sys-vars__b { border: 1px solid var(--st-line); background: var(--st-surface-2); border-radius: 999px;
+               padding: 3px 9px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); cursor: pointer; }
+.sys-vars__b:hover { color: var(--st-ink); }
+/* the system prompt of the chat on screen (todo #system-prompt): visible text above the first message, not a
+   fold - you scroll up and read what this conversation was told. Muted so it never competes with the answer. */
+.sysrow { border: 1px solid var(--st-line); border-radius: var(--st-r-md, 10px); background: var(--st-surface-2);
+          padding: 10px 14px; margin-bottom: 14px; }
+.sysrow__head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.sysrow__head .st-btn { margin-left: auto; }
+.sysrow__label { font-weight: 700; font-size: var(--st-fs-sm); }
+.sysrow__text { white-space: pre-wrap; font-size: var(--st-fs-sm); color: var(--st-ink-soft); }
+.sysrow__acts { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .sys-vars__b { border: 1px solid var(--st-line); background: var(--st-surface-2); border-radius: 999px;
                padding: 3px 9px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); cursor: pointer; }
 .sys-vars__b:hover { color: var(--st-ink); }

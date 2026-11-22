@@ -3526,5 +3526,49 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     done.push("system-prompt: brace words resolve once at chat start and ride as a leading system message; unused, nothing changes");
   }
 
+  // 105. system-prompt, the visible half: the chat's own prompt is a row ABOVE the first message (so the page
+  // looks the same as it did - you scroll up and find it), and Edit is reached through the chat's real
+  // delegated click handler, not by calling the function.  querySelector in this stub invents a node it cannot
+  // find (LESSONS.md), so the row is counted among the real children instead.
+  {
+    const s = run({}, {"strata.chatId": JSON.stringify("csys2")},
+      {csys2: {id: "csys2", title: "prompted", time: Date.now(), sys: "You are a careful test.",
+               messages: [{id: "m1", role: "user", text: "hello", time: Date.now(),
+                           usage: {prompt_tokens: 431207}}]}});
+    await wait();
+    const sysrows = () => s.s.el("chat").children.filter((c) => (c.className || "").split(/\s+/).includes("sysrow"));
+    const msgs = () => s.s.el("chat").children.filter((c) => (c.className || "").split(/\s+/).includes("st-msg"));
+    assert.strictEqual(sysrows().length, 1, "one row for the chat that has a prompt");
+    assert.ok((sysrows()[0]._html || "").includes("You are a careful test."),
+              "the words are on the page, not behind a fold: " + (sysrows()[0]._html || "").slice(0, 120));
+    assert.ok((sysrows()[0]._html || "").includes("data-sys-edit"), "and it carries the control that edits it");
+    assert.ok(s.s.el("chat").children.indexOf(sysrows()[0]) < s.s.el("chat").children.indexOf(msgs()[0]),
+              "and it sits above the first message");
+    const none = run({}, {}, {cplain2: {id: "cplain2", title: "no prompt", time: Date.now(),
+        messages: [{id: "m1", role: "user", text: "hi", time: Date.now()}]}});
+    await wait();
+    assert.strictEqual(none.s.el("chat").children.filter((c) => (c.className || "").includes("sysrow")).length, 0,
+                       "a chat with no prompt gets no row at all");
+    const ev = {target: {closest: (sel) => (sel === "[data-sys-edit]" ? {} : null)}};
+    const click = (s.s.el("chat")._l || {}).click;      // the stub keeps one handler per type on an element
+    assert.ok(click, "the chat has a delegated click handler to reach the row with");
+    click(ev);
+    const row = sysrows()[0];
+    const ta = (row.children || []).find((c) => (c.className || "").includes("sysrow__area"));
+    assert.ok(ta, "clicking Edit opens a box");
+    assert.strictEqual(ta.value, "You are a careful test.", "starting from the words this chat was built with");
+    const acts = (row.children || []).find((c) => (c.className || "").includes("sysrow__acts"));
+    const cost = acts ? acts.children.map((c) => String(c.textContent || "")).join(" ") : "";
+    assert.ok(cost.includes((431207).toLocaleString()),
+              "and it says what saving costs, in tokens, next to the buttons: " + cost);
+    const save = acts.children.find((c) => c.textContent === "Save");
+    ta.value = "You are a careful test, revised.";
+    save.onclick();
+    assert.strictEqual(s.s.chat.sys, "You are a careful test, revised.", "Save writes it to the chat");
+    assert.strictEqual(sysrows().length, 1, "one row after the re-render, not two");
+    assert.ok((sysrows()[0]._html || "").includes("revised"), "the page shows the new words");
+    done.push("system-prompt: the row sits above the first message, and Edit opens a box that names the re-read in tokens");
+  }
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
