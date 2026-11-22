@@ -276,7 +276,10 @@ class ChatSidebar(unittest.TestCase):
         # the same markup as the card, so there is one look for "which tools" and no second style to keep in step
         self.assertIn('node("div", "mcp-server__head")', self.js)
         self.assertIn('node("div", "mcp-server__tools")', self.js)
-        self.assertIn('`chip mcp-tool${c.enabled ? "" : " off"}`', self.js)
+        self.assertIn('chip mcp-tool${c.enabled ? "" : " off"}', self.js)      # the Settings card
+        # the panel uses the same class with THIS chat's state, so there is one look for "which tools" and no
+        # second style to keep in step (todo #prompt-inspector: a chat pins its own list)
+        self.assertIn('chip mcp-tool${on ? "" : " off"}', self.js)
         self.assertNotIn("mcp-picker__head", self.js)                # no "Tools for X" heading
         # the row menu's item rule must be class-scoped: the panel is a .chat-menu too, and a bare descendant
         # rule reached every chip in it and turned them into full-width block rows

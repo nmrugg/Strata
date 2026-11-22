@@ -84,6 +84,7 @@ function makeEl() {
       return n;
     },
     setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
+    removeAttribute(k) { delete this.attrs[k]; },     // the wrench clears its dot attribute
     focus() {}, select() {},
     remove() { if (this._parent) this._parent.children = this._parent.children.filter((c) => c !== this); },
     replaceWith(next) { const p = this._parent; if (p) { p.children = p.children.map((c) => (c === this ? next : c)); next._parent = p; } },
@@ -239,7 +240,7 @@ function run(hooks, stored, seed) {
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "loadHealth, healthPill, get health() { return health; }, " +
-    "runInspector, renderInspect, renderSysCard, " +
+    "runInspector, renderInspect, renderSysCard, openMcpPicker, closePopover, " +
     "getLastHoverFetch: () => lastHoverFetch, setLastHoverFetch: (t) => { lastHoverFetch = t; }, " +
     "setTab: (t) => { tab = t; }, setHidden: (v) => { document.hidden = v; }, " +
     "get busy() { return busy; }, get chatId() { return chatId; }, " +
@@ -3614,6 +3615,60 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     bad.s.runInspector(); await wait(); await wait();
     assert.strictEqual(bad.s.el("insp-run").disabled, false, "a failed measurement re-enables the button");
     done.push("prompt-inspector: the card measures this chat's own body and paints what the server counted");
+  }
+
+  // 107. prompt-inspector, the editable half (the owner's design): a chat pins the tools it started with and
+  // keeps them when Settings changes; the wrench shows THAT list; the wrench gets a dot when the chat no
+  // longer matches Settings; a chip in the wrench changes this chat and writes the config for the next one.
+  // The pin goes on the wire as strata_mcp_tools, which is what keeps the tools block - and the cached
+  // prompt behind it - stable.
+  {
+    const posts = [], wire = [];
+    const enc = (s) => new TextEncoder().encode(s);
+    const servers = {tools: 2, configured: {}, servers: [{name: "easy", transport: "stdio", status: "ready",
+        info: {}, tools: [{name: "easy__a", tool: "a", enabled: true, description: ""},
+                          {name: "easy__b", tool: "b", enabled: true, description: ""},
+                          {name: "easy__c", tool: "c", enabled: false, description: ""}]}]};
+    const mk = (pinned) => run({fetch: async (u, opt) => {
+        if (u === "health") return {ok: true, json: async () => ({model: "m1", max_context: 4096, loaded: true})};
+        if (u === "metrics") return {ok: true, json: async () => ({lite: true, live: {state: "idle"}})};
+        if (u === "mcp" && opt && opt.method === "POST") { posts.push(JSON.parse(opt.body));
+          return {ok: true, json: async () => ({changed: []})}; }
+        if (u === "mcp") return {ok: true, json: async () => servers};
+        if (u === "v1/chat/completions") { wire.push(JSON.parse(opt.body));
+          let i = 0;
+          return {ok: true, body: {getReader: () => ({read: async () => i++ === 0
+            ? {value: enc('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'), done: false}
+            : {value: undefined, done: true}})}}; }
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("cp")},
+      {cp: {id: "cp", title: "pinned", time: Date.now(), tools: pinned,
+            messages: [{id: "m1", role: "user", text: "hi", time: Date.now(),
+                        usage: {prompt_tokens: 431207}}]}});
+    const diff = mk(["easy__a"]);                      // this chat keeps one tool; Settings has two on
+    await wait();
+    assert.strictEqual(diff.s.el("mcp-btn").attrs["data-differs"], "1",
+                       "the wrench marks a chat whose tools are not what Settings says now");
+    const same = mk(["easy__a", "easy__b"]);           // the chat matches the live list
+    await wait();
+    assert.strictEqual((same.s.el("mcp-btn").attrs || {})["data-differs"], undefined,
+                       "and the mark is gone when they agree - a comparison, not a flag");
+    diff.s.el("input").value = "next question";
+    await diff.s.send(); await wait();
+    assert.deepStrictEqual(wire[wire.length - 1].strata_mcp_tools, ["easy__a"],
+                           "the pin rides on the request, so the tools block does not move");
+    const panel = diff.s.openMcpPicker(diff.s.el("mcp-btn"));
+    const chips = panel.children.flatMap((c) => (c.children || []).filter((x) => (x.className || "").includes("mcp-tool")));
+    const onOf = (n) => chips.find((c) => c.attrs["data-mcp-pick"] === n).attrs["aria-checked"];
+    assert.strictEqual(onOf("easy__a"), "true", "the panel shows this chat's list: a is on");
+    assert.strictEqual(onOf("easy__b"), "false", "and b, though Settings has it on, is off here");
+    const chip = chips.find((c) => c.attrs["data-mcp-pick"] === "easy__b");
+    panel._l.click({target: {closest: (sel) => (sel === "[data-mcp-pick]" ? chip : null)}});
+    assert.ok(diff.s.chat.tools.includes("easy__b"), "the chip changed THIS chat");
+    assert.deepStrictEqual(posts[posts.length - 1].mcp, [{server: "easy", tool: "b", enabled: true}],
+                           "and wrote the config, so the next chat starts from the same choice");
+    diff.s.closePopover();
+    done.push("prompt-inspector: a chat pins its tools, the wrench shows and edits that list, and marks the difference");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));

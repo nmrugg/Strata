@@ -606,6 +606,47 @@ async function mcpPostAll(changes, label) {
   }
 }
 const mcpPost = (change) => mcpPostAll([change]);
+// ------------------------------------------------------------------ the tools a conversation is built with
+// (todo #prompt-inspector, the owner's design 2026-11-22): a chat pins the tools that were loaded when it
+// started, and keeps them even when Settings changes - the tools block is the first system turn, so a chat
+// whose list never changes never re-reads its history.  The wrench shows THIS chat's list, which is not
+// always what Settings says; when they differ the wrench gets a dot.  Editing from the wrench changes this
+// chat (which costs a re-read, said in the panel) and writes the global config too, so Settings stays the
+// answer for the next chat you start.
+// Names are the ones the model sees ("server__tool"), which is what strata_mcp_tools takes.
+const liveToolNames = () => mcpServers().filter((s) => !s.off)
+  .flatMap((s) => s.chips.filter((c) => c.enabled).map((c) => c.name));
+const chatToolNames = () => (chat && Array.isArray(chat.tools)) ? chat.tools : null;
+// the chat pins nothing until it has a list worth pinning: right after a start the hub may still be
+// connecting, and pinning an empty list would leave that chat unable to call anything
+function pinChatTools() {
+  if (!chat || chatToolNames()) return false;
+  const live = liveToolNames();
+  if (!live.length) return false;
+  chat.tools = live;
+  writeChat(chat);
+  return true;
+}
+const toolsDiffer = () => { const p = chatToolNames(); return !!p && !sameSet(new Set(p), new Set(liveToolNames())); };
+// what this chat will offer, shown in the wrench: its pinned list when it has one, the global state otherwise
+const chatToolOn = (name) => { const p = chatToolNames(); return p ? p.includes(name) : undefined; };
+function setChatTool(name, on) {
+  if (!chat) return;
+  if (!chatToolNames()) pinChatTools();
+  if (!chatToolNames()) { chat.tools = []; }              // nothing live to pin: start from an empty list
+  const set = new Set(chat.tools);
+  on ? set.add(name) : set.delete(name);
+  chat.tools = [...set];
+  writeChat(chat);
+}
+// The wrench says when this chat is not what Settings currently says.  A comparison, not a flag: the chat's
+// pinned list against the live one, so it goes quiet on its own when they agree again (LESSONS.md).
+function updateToolDot() {
+  const b = $("mcp-btn");
+  if (toolsDiffer()) b.setAttribute("data-differs", "1");
+  else b.removeAttribute("data-differs");
+}
+
 // The cost of what you just did, in the number that matters - and nothing at all until you do something.
 // (AGENTS.md: no UI text that states what the user already knows.)
 const chatPromptTokens = () => {
@@ -667,6 +708,7 @@ function renderMcp() {
   $("mcp-set-card").hidden = !list.length;          // the Settings tab: the one place that changes servers
   $("mcp-row").hidden = !list.length;
   $("mcp-btn").hidden = !list.length;              // the wrench is the same control, reachable from the composer
+  updateToolDot();
   const ready = list.filter((s) => s.status === "ready" || s.status === "stopped");
   const off = list.filter((s) => s.off).length;
   $("mcp-set-sum").textContent = list.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${list.length} servers connected`
@@ -708,9 +750,10 @@ function openMcpPicker(anchor) {
     panel.appendChild(row);
     const box = node("div", "mcp-server__tools");
     for (const c of s.chips) {
-      const b = node("button", `chip mcp-tool${c.enabled ? "" : " off"}`, c.tool);
+      const on = chatToolOn(c.name) ?? c.enabled;      // what THIS chat offers, which is not always Settings
+      const b = node("button", `chip mcp-tool${on ? "" : " off"}`, c.tool);
       b.setAttribute("data-mcp-pick", c.name); b.setAttribute("role", "switch");
-      b.setAttribute("aria-checked", String(c.enabled));
+      b.setAttribute("aria-checked", String(on));
       b.title = `${c.name}${c.description ? " — " + c.description : ""}`;
       box.appendChild(b);
     }
@@ -728,6 +771,10 @@ function openMcpPicker(anchor) {
   undo.title = "Put back everything as it was when you opened this.";
   foot.appendChild(undo);
   foot.appendChild(node("span", "mcp-picker__cost muted small", mcpCostText()));
+  const paid = chatPromptTokens();
+  if (chatToolNames() && paid)
+    foot.appendChild(node("span", "mcp-picker__cost muted small",
+      `Changing this chat's tools re-reads ${fmt(paid)} tokens.`));
   const add = node("button", "st-btn st-btn--secondary", "Add server");
   add.type = "button";
   add.setAttribute("data-mcp-add", "1");
@@ -745,8 +792,10 @@ function openMcpPicker(anchor) {
     if (sw) change = {server: sw.getAttribute("data-mcp-server"), disabled: sw.getAttribute("aria-checked") === "true"};
     else if (pick) {
       const name = pick.getAttribute("data-mcp-pick");
-      change = {server: name.split("__")[0], tool: name.slice(name.indexOf("__") + 2),
-                enabled: pick.getAttribute("aria-checked") !== "true"};
+      const on = pick.getAttribute("aria-checked") !== "true";
+      setChatTool(name, on);                        // this chat, immediately...
+      change = {server: name.split("__")[0], tool: name.slice(name.indexOf("__") + 2), enabled: on};
+      // ...and the config, so the next chat starts from the list you just chose
     }
     if (change) mcpPost(change).then(redrawMcpViews);
   });
@@ -2743,6 +2792,7 @@ function renderChat() {
   $("chat-empty").hidden = messages.length > 0;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   renderSidebar();                                // the name in the list follows the first question
+  updateToolDot();                                // the wrench marks a chat whose tools are not what Settings says
   // A chat that starts with a system prompt should look exactly as it did without one: the prompt is above the
   // first message, and the view opens with that message at the top. Once the conversation is longer than the
   // first exchange, the normal follow-the-bottom rule applies - scrolling to the top of a 400-message chat on
@@ -3111,6 +3161,10 @@ async function send(editOf) {
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) {          // this server may run MCP tools for it
     body.strata_mcp = true;
+    // Pin, then send the pin: the list this chat was built with, so a toggle in Settings does not reach it
+    // and its prompt keeps matching what the engine already holds (todo #prompt-inspector).
+    if (!chatToolNames()) pinChatTools();
+    if (chatToolNames()) body.strata_mcp_tools = chatToolNames();
     // The list THIS chat carries, not the current default: the tools block is the first system turn, so sending
     // whatever happens to be enabled now would change the start of its prompt and make it read its history again.
     // It rides on the chat record, so a reload does not lose it (todo #mcp-chat-tools).

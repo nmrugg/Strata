@@ -1723,6 +1723,21 @@ all: fold-control replaced them, and the four overlapping switches became one co
     and no client has ever sent it, so the inspector can show what pinning a chat's list would save, but
     sending it by default would change behaviour for every existing chat (a global toggle would stop reaching
     chats that pinned a list), and that needs the owner's call rather than a decision made in passing.
+    SLICE 2 DONE 2026-11-22, in the shape the owner gave: a chat pins the tools loaded when it starts and keeps
+    them when Settings changes; the wrench shows THAT list, not the config's; the wrench carries a blue dot
+    while the chat and the config disagree (a comparison of the two sets, so it clears itself); a chip in the
+    wrench changes this chat at once and writes the config too, so the next chat starts from that choice; and
+    the panel says what changing a chat's tools costs, in tokens, and only when there is a history to re-read.
+    The pin rides as strata_mcp_tools, which the server already took (mcp_only, include_disabled, and the
+    tools-block-empty fallback), so no server change was needed and this half is live on a browser reload.
+    Pinning waits for the first send with a non-empty live list: right after a start the hub may still be
+    connecting, and pinning an empty list would leave that chat unable to call anything.  A chat that existed
+    before this ships pins the list the server renders for it today, so it pays nothing to arrive.
+    Tests: harness case 107 (97 ok lines) - the dot appears and clears, the panel shows the chat's list, a chip
+    changes the chat AND posts the config, and the outgoing request carries the pin.  Controls bite: pin not
+    sent, panel showing the global list, and the dot never painted at either call site.  One existing Python
+    text assertion had to follow the panel's new expression - and it was matching the panel's line, not the
+    card's, which is worth knowing before trusting it as "the card and the panel agree".
 
 
 ## 4. Large - engine work, or a new subsystem (weeks)

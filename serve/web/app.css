@@ -378,6 +378,11 @@ main { flex: 1; min-height: 0; display: flex; }
 /* the row's own editor: a system prompt is a paragraph, so the box starts like one (the owner: "the textarea
    is really small").  app.js also grows it to the content as you type. */
 .sysrow__area { height: auto; min-height: 14em; padding: 10px 14px; line-height: 1.5; resize: vertical; width: 100%; }
+/* the wrench marks itself when the open chat's tools are not what Settings says now (todo #prompt-inspector).
+   Blue is the info colour: a state, not a fault (LESSONS.md, one colour per state). */
+#mcp-btn { position: relative; }
+#mcp-btn[data-differs]::after { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
+                                border-radius: 50%; background: var(--st-info); }
 .sys-vars { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .sys-vars__b { border: 1px solid var(--st-line); background: var(--st-surface-2); border-radius: 999px;
                padding: 3px 9px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); cursor: pointer; }
