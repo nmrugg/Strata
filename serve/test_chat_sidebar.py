@@ -318,7 +318,9 @@ class ChatSidebar(unittest.TestCase):
         self.assertIn('id="mcp-set-list"', self.html)
         self.assertIn('id="mcp-set-add"', self.html)
         self.assertIn('"chat", "monitor", "about", "settings"', self.js)     # showTab knows the fourth view
-        self.assertIn('if (tab === "settings") { mcpSnapshot(); loadMcp(); loadConfig(); }', self.js)
+        # the branch, not the whole line: what the view loads when it opens grows, and pinning the exact
+        # text made this fail the day a third loader was added (a stale literal, not a broken page)
+        self.assertIn('if (tab === "settings") { mcpSnapshot(); loadMcp(); loadConfig();', self.js)
         # the card the Settings list writes carries the two buttons that change the entry itself
         self.assertIn("data-mcp-edit", self.js)
         self.assertIn("data-mcp-del", self.js)

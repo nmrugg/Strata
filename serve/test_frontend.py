@@ -55,6 +55,35 @@ class EmptyAssistantHistory(unittest.TestCase):
         self.assertIn("file.txt", prompt)
         self.assertEqual(messages, before)
 
+    def test_a_leading_system_message_lands_after_the_tools_block(self):
+        """todo #system-prompt.  The web app sends a chat's system prompt as a LEADING system message, and the
+        template merges leading system messages into the first system turn - AFTER the tools block
+        (serve/chat_template.jinja:84-85).  That placement is what makes the feature cheap rather than
+        expensive: the tools block is the first thing in the prompt and the thing the pinned root checkpoint
+        (--prompt-cache-root) covers, and it stays byte-identical.  Only the chat whose prompt changed pays,
+        and it pays once."""
+        tools = [{"name": "files__read", "description": "read a file", "parameters": {"type": "object"}}]
+        ask = "zz-unique-question"
+        base = self.template.render([{"role": "user", "content": ask}], tools=tools, add_generation_prompt=True)
+        with_sys = self.template.render([{"role": "system", "content": "Today is Monday."},
+                                         {"role": "user", "content": ask}], tools=tools,
+                                        add_generation_prompt=True)
+        cut = base.index("</tools>") + len("</tools>")
+        self.assertEqual(base[:cut], with_sys[:cut], "the tools block is untouched")
+        self.assertGreater(with_sys.index("Today is Monday."), cut, "the prompt lands after it")
+        self.assertLess(with_sys.index("Today is Monday."), with_sys.index(ask), "and before the first turn")
+        # no tools on offer: the system text is its own turn, and the request still renders
+        plain = self.template.render([{"role": "system", "content": "Today is Monday."},
+                                      {"role": "user", "content": ask}], add_generation_prompt=True)
+        self.assertIn("Today is Monday.", plain)
+        # and the API boundary keeps a leading system message while downgrading one that arrives later
+        # (serve/frontend.py:347) - the template refuses a system message that is not at the beginning
+        msgs, _, _ = openai_to_messages({"messages": [{"role": "system", "content": "first"},
+                                                      {"role": "user", "content": ask},
+                                                      {"role": "system", "content": "mid-conversation"}]})
+        self.assertEqual([m["role"] for m in msgs], ["system", "user", "user"],
+                         "a mid-conversation system message is sent as user, as Claude Code's hook context is")
+
     def test_image_only_assistant_turn_is_kept(self):
         messages, tools, kwargs = openai_to_messages({"messages": [
             {"role": "user", "content": "describe the image"},

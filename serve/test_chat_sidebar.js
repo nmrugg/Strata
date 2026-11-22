@@ -3492,5 +3492,39 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     done.push("offline-web-assets: the empty state tells the truth with the server down, and exports keep the real model name");
   }
 
+  // 104. system-prompt: the brace words are filled in ONCE, when a chat starts, and the result rides to the
+  // server as a leading system message (the template merges it into the first system turn, after the tools
+  // block - pinned by serve/test_frontend.py).  A chat with none sends nothing extra: the default path is
+  // exactly what it was, which is what "opt-in, default byte-identical" means here.
+  {
+    const tpl = "Today is {{date}}. Model: {{model}}. Window: {{context}}. Note: {{bogus}}";
+    const sp = run({fetch: async (u) => (u === "health" ? {ok: true, json: async () => ({status: "ok",
+        model: "qwen3.8-flash-next-iq3_s", max_context: 1048576, images: false, loaded: true})}
+        : {ok: true, json: async () => ({})})}, {"strata.sysdefault": JSON.stringify(tpl)});
+    await wait();
+    const c = sp.s.chat;
+    assert.ok(c.sys, "a chat started with a default gets the prompt resolved");
+    const today = new Date().toLocaleDateString([], {year: "numeric", month: "long", day: "numeric"});
+    assert.ok(c.sys.includes(today), "the date is filled in: " + c.sys);
+    assert.ok(c.sys.includes("qwen3.8-flash-next-iq3_s"), "and the model name: " + c.sys);
+    assert.ok(c.sys.includes((1048576).toLocaleString()), "and the context window: " + c.sys);
+    assert.ok(c.sys.includes("{{bogus}}"),
+              "a name we do not know stays as written - dropping it would hide a typo inside the prompt: " + c.sys);
+    const seeded = run({}, {"strata.chatId": JSON.stringify("csys")},
+      {csys: {id: "csys", title: "with a prompt", time: Date.now(), sys: "You are a test.",
+              messages: [{id: "m1", role: "user", text: "hello", time: Date.now()}]}});
+    await wait();
+    const sent = seeded.s.apiMessages();
+    assert.deepStrictEqual(sent[0], {role: "system", content: "You are a test."},
+                           "the chat's own prompt is the first message sent: " + JSON.stringify(sent).slice(0, 140));
+    assert.strictEqual(sent[1].role, "user", "then the conversation, unchanged");
+    const none = run({}, {}, {cplain: {id: "cplain", title: "no prompt", time: Date.now(),
+        messages: [{id: "m1", role: "user", text: "hello", time: Date.now()}]}});
+    await wait();
+    assert.strictEqual(none.s.chat.sys, undefined, "a chat with no system prompt carries no such field");
+    assert.strictEqual(none.s.apiMessages()[0].role, "user", "and its request is exactly what it was before");
+    done.push("system-prompt: brace words resolve once at chat start and ride as a leading system message; unused, nothing changes");
+  }
+
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();

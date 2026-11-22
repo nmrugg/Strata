@@ -371,6 +371,14 @@ main { flex: 1; min-height: 0; display: flex; }
 .mcp-form .st-field { display: flex; flex-direction: column; gap: 4px; }
 .mcp-form .st-input { width: 100%; font-family: var(--st-font-mono); font-size: var(--st-fs-sm); }
 .mcp-form textarea.st-input { height: auto; min-height: 6em; padding: 10px 14px; line-height: 1.5; resize: vertical; }
+/* the system prompt card (todo #system-prompt): a .st-input is 44px tall, which clips any multi-line field,
+   so the textarea needs the same fix the MCP form learned (LESSONS.md).  The chips are the brace words that
+   are filled in once, when a chat starts. */
+#sys-card textarea.st-input { height: auto; min-height: 8em; padding: 10px 14px; line-height: 1.5; resize: vertical; }
+.sys-vars { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sys-vars__b { border: 1px solid var(--st-line); background: var(--st-surface-2); border-radius: 999px;
+               padding: 3px 9px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); cursor: pointer; }
+.sys-vars__b:hover { color: var(--st-ink); }
 .mcp-form__runs { margin: 4px 0 0; }
 
 /* ---------------------------------------------------------------- about */

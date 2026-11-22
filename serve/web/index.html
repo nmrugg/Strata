@@ -207,6 +207,17 @@
         <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
           <span class="muted small" id="cfg-msg" role="status"></span></div>
       </div>
+      <div class="st-card" id="sys-card">
+        <div class="req-head"><span class="card-title">System prompt</span>
+          <span class="muted small" id="sys-sum"></span></div>
+        <textarea class="st-input" id="sys-default" rows="5" aria-label="System prompt for new chats"
+          placeholder="Leave empty for no system prompt"></textarea>
+        <div class="sys-vars" id="sys-vars"></div>
+        <p class="muted small">Starts every new chat. Double-brace words are filled in once, when a chat starts,
+          and then stay with that chat - they are not re-read while it runs.</p>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="sys-save" type="button">Save</button>
+          <span class="muted small" id="sys-msg" role="status"></span></div>
+      </div>
       <div class="st-card">
         <span class="card-title">This browser</span>
         <div class="st-field">

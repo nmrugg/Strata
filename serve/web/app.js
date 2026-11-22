@@ -81,7 +81,7 @@ function showTab(name) {
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();          // status only: the switches and the entry buttons live in Settings
-  if (tab === "settings") { mcpSnapshot(); loadMcp(); loadConfig(); }
+  if (tab === "settings") { mcpSnapshot(); loadMcp(); loadConfig(); renderSysCard(); }
   if (lastMetrics) render(lastMetrics);
   pollNow();                       // the tab we just moved to wants its own kind of answer now (?lite vs full)
 }
@@ -946,6 +946,37 @@ $("cfg-save").addEventListener("click", async () => {
   }
 });
 
+// ------------------------------------------------------------------ the system prompt card (todo #system-prompt)
+function renderSysCard() {
+  const t = String(store.get("sysdefault", ""));
+  if ($("sys-default").value !== t) $("sys-default").value = t;
+  $("sys-sum").textContent = t.trim() ? "new chats start with this" : "not used";
+  const box = $("sys-vars");
+  box.innerHTML = "";
+  for (const v of SYS_VARS) {
+    const b = node("button", "sys-vars__b", `{{${v.name}}}`);
+    b.type = "button";
+    b.title = `Filled in when the chat starts. Now: ${v.get() || "unknown"}`;
+    b.onclick = () => {
+      const el = $("sys-default"), a = el.selectionStart ?? el.value.length, z = el.selectionEnd ?? a;
+      el.value = el.value.slice(0, a) + `{{${v.name}}}` + el.value.slice(z);
+      el.focus();
+    };
+    box.appendChild(b);
+  }
+}
+$("sys-save").onclick = () => {
+  const t = $("sys-default").value;
+  store.set("sysdefault", t);
+  renderSysCard();
+  const bad = sysMissing(t);                          // a brace word we do not know stays in the prompt as typed
+  $("sys-msg").textContent = bad.length ? `Not filled in: ${bad.join(", ")}` : "";
+  if (String(t).trim() && sysNeedHw(t)) sysFetchHw(); // the hardware words need one answer we do not poll for
+  toast("success", "System prompt saved",
+        String(t).trim() ? "New chats start with it. Chats you already started keep their own copy."
+                         : "New chats have none.");
+};
+
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
 function inline(s) {
   const codes = [];
@@ -1068,9 +1099,54 @@ const TITLE_MAX = 60;
 const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls;
   if (text != null) n.textContent = text; return n; };
 
+// ------------------------------------------------------------------ the system prompt (todo #system-prompt)
+// Words in double braces are filled in ONCE, when a chat starts, and the result is stored with that chat.
+// They are not re-read live on purpose: the system turn is the first thing in the prompt, and the engine
+// reuses a prompt only while it starts with exactly the tokens it already holds - so a date that changes
+// mid-conversation, or a GPU name that goes missing on a poll, would make the chat read its whole history
+// again without anyone asking. A chat with no system prompt sends nothing extra: the default path is untouched.
+const SYS_VARS = [
+  {name: "date", get: () => new Date().toLocaleDateString([], {year: "numeric", month: "long", day: "numeric"})},
+  {name: "time", get: () => new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})},
+  {name: "model", get: () => health.model || ""},
+  {name: "context", get: () => (health.max_context ? fmt(health.max_context) : "")},
+  {name: "gpu", get: () => (lastMetrics && lastMetrics.hardware_static || {}).gpu_name || ""},
+  {name: "vram", get: () => gib((lastMetrics && lastMetrics.hardware || {}).gpu_mem_total)},
+  {name: "ram", get: () => gib((lastMetrics && lastMetrics.hardware || {}).ram_total)},
+  {name: "cpu", get: () => (lastMetrics && lastMetrics.hardware_static || {}).cpu_name || ""},
+  {name: "host", get: () => location.hostname},
+];
+const gib = (n) => n ? `${Math.round(n / 2**30)} GB` : "";
+const sysMissing = (t) => (String(t).match(/\{\{\s*([a-z_]+)\s*\}\}/g) || [])
+  .map((m) => m.replace(/[{}\s]/g, "")).filter((n) => !SYS_VARS.some((v) => v.name === n));
+// The vars that need the server's hardware answer are not in the Chat tab's lite poll, and asking for them
+// every page load would be traffic nobody uses - so it is asked for once, and only when the saved prompt
+// actually names one.
+let sysHwAsked = false;
+function sysNeedHw(t) { return /\{\{\s*(gpu|vram|ram|cpu)\s*\}\}/.test(String(t)); }
+function sysFetchHw() {
+  if (sysHwAsked) return;
+  sysHwAsked = true;
+  fetch("metrics?lite=1&hw=1", {headers: headers()})
+    .then((r) => (r.ok ? r.json() : null))
+    .then((m) => { if (m) { lastMetrics = {...(lastMetrics || {}), ...m}; renderLite(m); } })
+    .catch(() => {});                                  // no answer: the words resolve to "unknown"
+}
+function resolveSys(t) {
+  return String(t).replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (all, name) => {
+    const v = SYS_VARS.find((x) => x.name === name);
+    if (!v) return all;                                // a name we do not know stays as written: silently
+    const val = v.get();                               // dropping it would hide a typo in the prompt itself
+    return val || "unknown";
+  });
+}
+
 function newChat() {
-  return {id: `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
-          title: "", time: Date.now(), messages: []};
+  const c = {id: `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
+             title: "", time: Date.now(), messages: []};
+  const t = store.get("sysdefault", "");               // the prompt this browser starts new chats with
+  if (String(t).trim()) c.sys = resolveSys(t);         // absent when empty, so old records and old prompts match
+  return c;
 }
 // a message's own id (todo #edit-posts): editing/deleting a post needs stable identity, not array position,
 // which shifts under concurrency (item multi-tab-sync).  It is identity only - the prompt replay
@@ -2764,6 +2840,10 @@ $("chat").addEventListener("scroll", (e) => {
 
 function apiMessages() {
   const out = [];
+  // The chat's own system prompt, frozen when it started (todo #system-prompt). The template merges a leading
+  // system message into the first system turn, after the tools block (serve/chat_template.jinja:84), so the
+  // tools block and the pinned prefix keep matching and only that chat pays if it changes.
+  if (chat && String(chat.sys || "").trim()) out.push({role: "system", content: chat.sys});
   for (const m of messages) {
     if (m.role === "user") {
       const imgs = (m.images || []).filter((i) => i.url);
