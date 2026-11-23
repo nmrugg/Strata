@@ -21,6 +21,11 @@ offers the same steps as tools.
   `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.
+- **Update [CHANGELOG.md](CHANGELOG.md) when a change is something the person using Strata would notice** — a new
+  capability, a behavior they'd miss if it broke, a bug they hit. One line under the group it belongs to, US
+  spelling, no hard wrapping, no open issues and no internals they don't care about. Order groups by what they'd
+  notice first, not by what you worked on last. Skip the small stuff: renames, tests, doc churn, fixes nobody
+  sees. A changelog that lists everything lists nothing.
 - **Never write UI text that states what the user already knows.** A switch that applies when you click it does
   not need "applied as you click", and a button does not need to describe itself. Say only what is not obvious
   and only when it is true: the cost of what you just did, in a number ("this re-reads 328,811 tokens"), and
