@@ -260,6 +260,13 @@ where the leave warning went, and `app.js` went from 0 to 1 `beforeunload` regis
 attached in `setBusy(true)` and undone in `setBusy(false)` (a permanent one costs the
 browser's back/forward cache).
 
+**`await send()` in the harness can end the whole run silently.** A turn's promise resolves only when the
+streamed reader ends, and the stub stream is held open on purpose until a test releases it. Await `send()` and
+the event loop empties, node exits **0**, and the final `console.log` never runs - 109 `ok -` lines becomes 0
+with no error anywhere (2026-11-22, case 119). Fire `send()` without awaiting it, pump the loop with
+`await wait()`, and release the stream when the test wants the turn to finish. Same family as the collector that
+only reports at the end: the symptom is a green run that tested nothing.
+
 **A web-app change needs no restart, and revalidating it is now a 304.** `serve/server.py`'s
 `_send_static` serves `/web/*` and the two pages: `Cache-Control: no-cache` so an edit to
 `app.js` shows on the next reload with no restart, plus an `ETag` and `Last-Modified` so that

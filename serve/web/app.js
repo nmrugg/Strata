@@ -2265,7 +2265,7 @@ function turnPhase() {
 // a conversation was recreating every mark on the list (the owner, 2026-11-22).
 function markFor(c) {
   const own = turnIn(c.id);
-  const waiting = !own && (c.queue || []).some((q) => !q.held);   // work pending behind a turn that ended
+  const waiting = !own && queueWaiting(c);              // work pending behind a turn that ended
   const running = (own || waiting) && (c.id !== chatId || showSpin);
   const phase = running ? (own ? (atEngine(own) ? turnPhase() : "queue") : "queue") : "";
   if (phase) return {cls: `run ${phase}`, tip: PHASE_TIP[phase]};
@@ -2988,8 +2988,10 @@ function syncToolBody(box, t) {
   // bottom of that box already (todo #tool-args-stream)
   const follow = t.state === "writing" && nearEnd(args, 48);
   if (args.textContent !== wantArgs) {
+    const left = args.scrollLeft;                       // replacing the text clamps a sideways scroll to 0
     args.textContent = wantArgs;
     if (follow) args.scrollTop = args.scrollHeight;
+    args.scrollLeft = left;
   }
   if (t.result == null) return;
   if (!box._hasResult) {                                  // the result arrived after the block was first opened
@@ -3121,9 +3123,14 @@ function syncCode(el, html) {
   if (!body) return false;                       // not the shape codeBlock() writes: fall back to replacing it
   const pre = el.querySelector("pre"), code = el.querySelector("code");
   if (!pre || !code) return false;
-  const at = pre.scrollTop, follow = nearEnd(pre, 48);   // geometry read BEFORE the write, as everywhere else
+  const at = pre.scrollTop, left = pre.scrollLeft, follow = nearEnd(pre, 48);   // geometry read BEFORE the write
   growCode(code, codeSrc(body[1]), hlFamily(el.dataset && el.dataset.lang));
   pre.scrollTop = follow ? pre.scrollHeight : at;
+  // and the sideways position: replacing the tail empties the widest content in the box for a moment, and a
+  // browser clamps a scroll offset that no longer fits - so scrollLeft fell to 0 every frame and a wide block
+  // could not be read across while it streamed (the owner, 2026-11-22).  Vertical has a follow rule; horizontal
+  // never does, because nobody wants the line ending dragged past them.
+  pre.scrollLeft = left;
   return true;
 }
 // Grow a code block instead of rebuilding it.  The invariant is simple: the keep span holds the source up to
@@ -3790,7 +3797,7 @@ function warnOnLeave(e) {
   e.preventDefault();
 }
 function setBusy() {
-  const mine = !!busy;                       // a turn in the chat you are looking at
+  const mine = !!busy || queueWaiting(chat);   // a turn in the chat you are looking at, or posts waiting behind one
   $("stop-btn").hidden = !mine;
   $("send-btn").disabled = false;            // a second message in this chat queues behind its turn instead
   // of being refused - and another chat's turn never stopped this one anyway
@@ -3831,6 +3838,9 @@ async function send(editOf) {
 // for the same reason.  Queued in this session fires on its own when the turn ahead of it ends; a queued post
 // that came back from the record waits for a click, because firing itself on page load spends tokens nobody
 // asked for (the owner's call, 2026-11-22).
+// Posts this chat is holding back for its next turn (todo #queue-other-chats). A held post waits for a Send
+// click - which is also what Stop does to them, so "stopped" means stopped.
+const queueWaiting = (c) => (((c || {}).queue) || []).some((q) => !q.held);   // c is null before the store opens
 function queuePush(c, item) {
   (c.queue = c.queue || []).push({id: mid(), text: item.text, images: item.images || [],
                                   files: item.files || [], time: Date.now()});
@@ -4037,7 +4047,15 @@ async function startTurn(c, item) {
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
-$("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
+// Stop belongs to the chat you are looking at: it aborts that chat's turn AND holds the posts waiting behind
+// it, so a conversation you stopped does not fire a queued message the moment the abort lands. Another chat's
+// turn and another chat's queue are untouched - they were never this button's business (the owner, 2026-11-22).
+$("stop-btn").onclick = () => {
+  if (busy) busy.controller.abort();
+  let held = 0;
+  for (const q of (chat.queue || [])) if (!q.held) { q.held = true; held++; }
+  if (held) { writeChat(chat); renderChat(); renderSidebar(); }
+};
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });

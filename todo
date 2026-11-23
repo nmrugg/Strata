@@ -646,6 +646,31 @@ all: fold-control replaced them, and the four overlapping switches became one co
     all bit.  Harness 104 -> 105, fast suite 273 OK, server + responses 357 OK, service worker 5.
     Not verified in a real browser: the stub has no layout, so the geometry numbers are set by hand as in case
     30.  The owner's reload is the check.
+    THIRD ROUND, 2026-11-22 (the owner: "I still can't scroll (sideways) code blocks while the page is
+    writing"): the vertical position was restored and the horizontal one was not.  Replacing the tail span
+    empties the widest content in the box for a moment, and a browser clamps a scroll offset that no longer
+    fits, so scrollLeft fell to 0 on every frame - which is why up-and-down worked and across did not.  Both
+    offsets are now read before the write and restored after it; there is no follow rule sideways on purpose,
+    because nobody wants the end of a long line dragged past them.  The same clamp applies to a streaming tool
+    call's arguments box (syncToolBody), fixed the same way; the node harness cannot drive that path, so its
+    wiring is pinned in serve/test_chat_sidebar.py.
+
+`stop-current-chat`  Stop should affect only the current chat, and should stop its queued posts too. [ui] DONE 2026-11-22
+    Asked 2026-11-22: "Clicking stop should only affect requests in the current chat. Does it? (Clicking stop
+    should also cancel queued requests.)"  The first half was already true - busy is turns.find(t => t.chatId ===
+    chatId), the handler aborted only that controller, and the button is hidden when the running turn belongs to
+    another chat - so the answer to the question is yes, with the citation rather than a guess.  The second half
+    was not: a stopped chat fired its queued post the moment the abort landed.  Stop now also holds the open
+    chat's pending posts (q.held = true, the state a post that came back from the record already uses), so the
+    text survives for a Send click, and it leaves every other chat's turn and queue alone.  Stop also shows when
+    the chat has a pending queue and nothing running: there is something to stop.
+    Case 119: two chats running; Stop in A aborts A's turn only, holds A's queue without deleting it, leaves B's
+    turn and queue untouched, hides with neither a turn nor a pending post, and shows for a queue alone.  Four
+    controls, all bit - the last one only after the first version of the test asserted the button while a turn
+    was still live, which masked the queue rule completely.
+    NOT DONE, and it needs the owner's call: a "queue after every other chat is totally done" control.  Two
+    different wants hide behind that sentence - this message goes last in everything, or this chat waits until
+    the others are idle - and the second one interacts with the per-conversation lock and the server FIFO.
     SECOND ROUND, 2026-11-22 (the owner: "I still can't scroll code blocks while you are writing"): the
     preserving code was right but the block could not scroll at all - `.st-code pre` had overflow:auto and NO
     height limit, so the <pre> grew to fit the output and the only scroll was the chat, which the page pulls

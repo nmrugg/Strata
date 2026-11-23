@@ -27,7 +27,7 @@ function makeEl() {
     // a real CSSStyleDeclaration has setProperty(); the page sets the sidebar width as a custom property, and
     // a test has to be able to read back what it set
     style: {setProperty(k, v) { this[k] = v; }, removeProperty(k) { delete this[k]; }},
-    scrollHeight: 0, scrollTop: 0, clientHeight: 0,
+    scrollHeight: 0, scrollTop: 0, scrollLeft: 0, scrollWidth: 0, clientHeight: 0,
     addEventListener(t, f) { (this._l = this._l || {})[t] = f; },   // one handler per type: tests call it directly
     appendChild(c) { this.children.push(c); c._parent = this; return c; },
     append(...a) { for (const x of a) { if (typeof x === "string") this.children.push({nodeType: 3, textContent: x, _parent: this}); else { this.children.push(x); x._parent = this; } } },
@@ -268,7 +268,7 @@ function run(hooks, stored, seed, shared) {
   const source = fs.readFileSync(path.join(__dirname, "web", "app.js"), "utf8") +
     "\nreturn {get chats() { return chats; }, get chat() { return chat; }, " +
     "get messages() { return messages; }, get db() { return db; }, get attachments() { return attachments; }, chatTitle, groupName, startChat, openChat, markdown, markdownBlocks, inline, highlight, esc, codeBlock, HL, HL_LANG, HL_MAX, hlSplit, hlRun, hlToks, tokHtml, codeSrc, placePopover, " +
-    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, writeChat, renderSidebar, setBusy, send, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, toolBodyHtml, " +
+    "deleteChat, renameChat, cloneChat, exportChatMd, saveChat, writeChat, renderSidebar, setBusy, send, queuePush, poll, noteLive, deleteAttachmentsOnly, addFiles, msgEl, updateAssistant, renderBubble, toolHtml, toolBodyHtml, " +
     "bubbleParts, toolSync, toolOpen, onTool, render, apiMessages, assistantMessages, turnMarkdown, safeFileName, " +
     "pollUrl, pollDelay, renderPill, renderLite, hoverTab, prefetchFull, " +
     "loadHealth, healthPill, get health() { return health; }, " +
@@ -4286,9 +4286,17 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     cm.text += "and one more line\n";
     sc.s.updateAssistant(cel, cm, true);
     assert.notStrictEqual(bub.children[bub.children.length - 1], pc, "a growing paragraph is still replaced");
-    done.push("code-scroll: a growing code block keeps its <pre> and its scrollTop, follows the tail only if " +
-              "you were at the bottom, and survives the frame its fence closes on - while a paragraph still " +
-              "updates the way it always did");
+    // sideways.  Replacing the tail empties the widest content in the box for a moment, and a browser clamps a
+    // scroll offset that no longer fits, so a wide block could not be read across while it streamed (the owner,
+    // 2026-11-22: "I still can't scroll (sideways) code blocks while the page is writing").
+    pre.scrollLeft = 140; pre.scrollTop = 400;
+    cm.text += "and a very long line of output that keeps going further and further right\n";
+    sc.s.updateAssistant(cel, cm, true);
+    assert.strictEqual(pre.scrollLeft, 140, "the sideways position survives a grow frame");
+    assert.strictEqual(pre.scrollTop, 400, "and the reader is still where they scrolled, vertically as well");
+    done.push("code-scroll: a growing code block keeps its <pre>, its scrollTop AND its scrollLeft, follows the " +
+              "tail only if you were at the bottom, and survives the frame its fence closes on - while a " +
+              "paragraph still updates the way it always did");
   }
 
   // 116. html-block-preview: a finished ```html block (and an untagged block that opens like a document) can be
@@ -4550,6 +4558,56 @@ const qlabel = (t) => { const d = new Date(t); return `${d.getFullYear()} Q${Mat
     assert.deepStrictEqual(order(), ["qa", "qb"], "A stays on top until you send somewhere else");
     done.push("sidebar-order-on-send: the chat's time is stamped when you send, not at the milestones, so two " +
               "running chats stop leapfrogging over each other in the list");
+  }
+
+  // 119. stop belongs to the chat you are looking at, and "stopped" means stopped: the abort plus the posts
+  //      waiting behind it, never another conversation's (the owner, 2026-11-22).
+  {
+    const rel = [];
+    const s119 = run({fetch: async (u) => {
+        if (u.startsWith("metrics")) return {ok: true, json: async () => ({lite: true, live: {state: "generating", queued: 0, tok_s: 9}})};
+        if (u === "health") return {ok: true, json: async () => ({model: "m", max_context: 4096, loaded: true})};
+        if (u === "v1/chat/completions")
+          return {ok: true, body: {getReader: () => ({read: () => new Promise((res) => {
+            rel.push(() => res({value: undefined, done: true})); })})}};
+        return {ok: true, json: async () => ({})};
+      }}, {"strata.chatId": JSON.stringify("qa"), "strata.history": "true"},
+      {qa: {id: "qa", title: "A", time: Date.now(), messages: [{id: "a1", role: "user", text: "hi", time: Date.now()}]},
+       qb: {id: "qb", title: "B", time: Date.now() - 5000, messages: [{id: "b1", role: "user", text: "yo", time: Date.now() - 5000}]}});
+    await wait();
+    const C = (id) => s119.s.chats.find((c) => c.id === id);
+
+    // never await send() while the stream is held: the turn's promise resolves only when the reader ends, the
+    // event loop empties, and node exits 0 printing nothing (the silent harness failure LESSONS.md warns of).
+    s119.s.el("input").value = "one in A"; s119.s.send(); await wait(); await wait();
+    s119.s.el("input").value = "two in A"; s119.s.send(); await wait(); await wait();   // queues behind A's turn
+    s119.s.openChat("qb"); await wait();
+    s119.s.el("input").value = "one in B"; s119.s.send(); await wait(); await wait();
+    assert.strictEqual(s119.s.turns.length, 2, "A and B are both answering");
+    assert.ok(!C("qa").queue.every((q) => q.held), "A has a post waiting behind its turn");
+
+    s119.s.openChat("qa"); await wait();
+    assert.strictEqual(s119.s.el("stop-btn").hidden, false, "Stop shows for the chat you are looking at");
+    s119.s.el("stop-btn").onclick();
+    const turnA = s119.s.turns.find((t) => t.chatId === "qa");
+    const turnB = s119.s.turns.find((t) => t.chatId === "qb");
+    assert.ok(turnA.controller.signal.aborted, "A's turn was aborted");
+    assert.ok(!turnB.controller.signal.aborted, "B's turn was not");
+    assert.ok(C("qa").queue.every((q) => q.held), "and A's queued post is held, so stopping A stops A");
+    assert.ok(C("qa").queue.length === 1, "held, not thrown away - the text is still there for a Send click");
+
+    // a chat with nothing running and nothing pending shows no Stop at all
+    rel.forEach((f) => f());
+    for (let i = 0; i < 8; i++) await wait();
+    s119.s.openChat("qa"); await wait();
+    assert.strictEqual(s119.s.el("stop-btn").hidden, true, "no turn and no pending post: no Stop button");
+    // but a chat that is only holding queued posts still gets a Stop, because there is something to stop
+    s119.s.queuePush(C("qa"), {text: "later", images: [], files: []});
+    s119.s.setBusy();
+    assert.strictEqual(s119.s.el("stop-btn").hidden, false, "a pending queue alone shows Stop");
+    s119.s.el("stop-btn").onclick();
+    assert.ok(C("qa").queue.every((q) => q.held), "and pressing it holds that queue with nothing running");
+    done.push("stop-current-chat: Stop aborts the open chat's turn and holds the posts waiting behind it, leaves another chat's turn and queue alone, and shows when there is a queue to stop even with nothing running");
   }
 
   console.log(done.map((d) => "ok - " + d).join("\n"));

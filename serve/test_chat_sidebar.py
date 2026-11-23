@@ -140,8 +140,13 @@ class ChatSidebar(unittest.TestCase):
         full = re.search(r"\.st-code--full pre[^{]*\{([^}]*)\}", css).group(1)
         self.assertIn("max-height:none", full)        # maximized, it uses the window instead of 65vh
         # and the scroll is read before the write and put back after it, following only if you were at the end
-        self.assertIn("const at = pre.scrollTop, follow = nearEnd(pre, 48);", self.js)
+        self.assertIn("const at = pre.scrollTop, left = pre.scrollLeft, follow = nearEnd(pre, 48);", self.js)
         self.assertIn("pre.scrollTop = follow ? pre.scrollHeight : at;", self.js)
+        # sideways: a streaming tool call's arguments box is rebuilt the same way and clamps the same way, and
+        # the node harness cannot drive that path, so the wiring is pinned here
+        self.assertIn("pre.scrollLeft = left;", self.js)
+        self.assertIn("const left = args.scrollLeft;", self.js)
+        self.assertIn("args.scrollLeft = left;", self.js)
 
     def test_the_copy_sizes_and_the_file_name(self):
         # todo #copy-whole-turn: plain click copies the answer, Shift adds the thinking, Ctrl/Cmd+Shift adds the tool calls.
